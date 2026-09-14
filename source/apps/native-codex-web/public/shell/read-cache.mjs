@@ -1,0 +1,10 @@
+// Read-only device cache. Commands, approvals and credentials never enter it.
+export class ReadCache {
+ constructor({name='betterCodex-device-reads-v1',maxBytes=8*1024*1024,ttl=24*3600000,storage=globalThis.indexedDB}={}){Object.assign(this,{name,maxBytes,ttl,storage});this.memory=new Map();}
+ async db(){if(!this.storage)return null;if(!this.opening)this.opening=new Promise(resolve=>{let settled=false;const done=value=>{if(settled){value?.close?.();return;}settled=true;clearTimeout(timer);resolve(value);},timer=setTimeout(()=>done(null),500);try{const r=this.storage.open(this.name,1);r.onupgradeneeded=()=>r.result.createObjectStore('reads',{keyPath:'key'});r.onsuccess=()=>done(r.result);r.onerror=r.onblocked=()=>done(null);}catch{done(null);}});return this.opening;}
+ async run(mode,operation){const db=await this.db();if(!db)return null;return new Promise(resolve=>{try{const tx=db.transaction('reads',mode),r=operation(tx.objectStore('reads'));let value=null;r.onsuccess=()=>value=r.result;tx.oncomplete=()=>resolve(value);tx.onerror=tx.onabort=()=>resolve(null);}catch{resolve(null);}});}
+ async get(key){const row=this.memory.get(key)||await this.run('readonly',s=>s.get(key));if(!row||Date.now()-row.savedAt>this.ttl){if(row)await this.remove(key);return null;}this.memory.set(key,row);return {value:row.value,savedAt:row.savedAt};}
+ async put(key,value){let bytes;try{bytes=new TextEncoder().encode(JSON.stringify(value)).length;}catch{return false;}if(bytes>this.maxBytes)return false;const row={key,value,bytes,savedAt:Date.now()};this.memory.set(key,row);await this.run('readwrite',s=>s.put(row));const rows=await this.run('readonly',s=>s.getAll())||[...this.memory.values()];let total=rows.reduce((n,r)=>n+r.bytes,0);for(const r of rows.sort((a,b)=>a.savedAt-b.savedAt))if(Date.now()-r.savedAt>this.ttl||total>this.maxBytes){await this.remove(r.key);total-=r.bytes;}return true;}
+ async remove(key){this.memory.delete(key);await this.run('readwrite',s=>s.delete(key));}
+ async clear(){this.memory.clear();await this.run('readwrite',s=>s.clear());}
+}

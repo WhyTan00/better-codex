@@ -1,0 +1,1 @@
+{"id":"/app","name":"Codex 私有工作台","short_name":"Codex","start_url":"/app?workspace=ai","scope":"/app","display":"standalone","background_color":"#ffffff","theme_color":"#ffffff","lang":"zh-CN","icons":[{"src":"/app/assets/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}

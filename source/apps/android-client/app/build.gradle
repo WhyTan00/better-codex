@@ -1,0 +1,64 @@
+plugins {
+    id "com.android.application"
+}
+
+// Keep the document-start bridge adapter byte-for-byte aligned with the
+// canonical Web implementation while still packaging it into the APK.
+tasks.register("syncAndroidNativeAdapter", Copy) {
+    from(rootProject.file("../native-codex-web/public/android-native-adapter.js"))
+    into(file("src/main/assets"))
+    rename { "android-native-adapter.js" }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("syncAndroidNativeAdapter")
+}
+
+android {
+    namespace "com.bettercodex.app"
+    compileSdk 36
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    defaultConfig {
+        applicationId "com.bettercodex.app"
+        minSdk 26
+        targetSdk 36
+        versionCode 11
+        versionName "1.0.10"
+    }
+
+    buildTypes {
+        debug {
+            // The release line is the installable target; never enable WebView
+            // debugging from application code, including debug variants.
+            debuggable false
+            minifyEnabled false
+        }
+        release {
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += ["META-INF/DEPENDENCIES", "META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt"]
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.core:core:1.17.0"
+    implementation "androidx.webkit:webkit:1.17.0"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+}

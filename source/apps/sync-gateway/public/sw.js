@@ -1,0 +1,6 @@
+const CACHE='betterCodex-outer-shell-v3',FILES=['/app?workspace=ai','/app/assets/app.css','/app/assets/app.mjs','/app/assets/markdown.mjs','/app/assets/viewport.mjs','/app/assets/theme.mjs','/app/assets/icon.svg'];
+self.addEventListener('install',event=>event.waitUntil((async()=>{const cache=await caches.open(CACHE);for(const file of FILES){const response=await fetch(file,{cache:'reload',credentials:'same-origin'});if(!response.ok||response.redirected)throw Error('authentication required');await cache.put(file,response);}await self.skipWaiting();})()));
+self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
+// Only the UI shell is stored in the browser. Conversation data and commands
+// always use the authenticated gateway; no offline command replay.
+self.addEventListener('fetch',event=>{const u=new URL(event.request.url);if(event.request.mode==='navigate'&&u.pathname.startsWith('/app/thread/'))return;if(u.origin!==location.origin||event.request.method!=='GET')return;if(event.request.mode==='navigate'&&u.pathname.startsWith('/app')){event.respondWith(fetch(event.request).catch(()=>caches.match('/app?workspace=ai')));return;}if(FILES.includes(u.pathname)){event.respondWith(fetch(event.request).catch(()=>caches.match(u.pathname)));}});

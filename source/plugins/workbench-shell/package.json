@@ -1,0 +1,25 @@
+{
+  "name": "betterCodex-workbench-shell",
+  "version": "0.15.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@native-ai/betterCodex-client-runtime",
+        "@native-ai/betterCodex-client-ui-layout",
+        "@native-ai/betterCodex-client-ui-sidebar",
+        "@native-ai/betterCodex-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  }
+}

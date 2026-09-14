@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+video/out/*
+!video/out/better-codex-explainer.mp4
+video/.remotion/
+coverage/
+__pycache__/

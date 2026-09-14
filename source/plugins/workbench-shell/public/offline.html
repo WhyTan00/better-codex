@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17211D">
+  <title>AI 工作台暂时离线</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f4f1e8; color: #17211d; padding: 24px; }
+    main { width: min(100%, 520px); border: 1px solid rgba(23, 33, 29, .14); border-radius: 24px; background: rgba(255, 255, 255, .72); padding: 32px; box-shadow: 0 24px 70px rgba(23, 33, 29, .10); }
+    .mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; background: #17211d; color: #f4f1e8; font-weight: 750; letter-spacing: -.04em; }
+    h1 { margin: 24px 0 10px; font-size: clamp(28px, 7vw, 42px); line-height: 1.06; letter-spacing: -.04em; }
+    p { margin: 0; color: #55605b; font-size: 16px; line-height: 1.7; }
+    button { margin-top: 26px; min-height: 46px; border: 0; border-radius: 14px; padding: 0 20px; background: #1f7a5a; color: white; font: inherit; font-weight: 650; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark" aria-hidden="true">AI</div>
+    <h1>工作台暂时离线</h1>
+    <p>为保护会话、持仓和日程数据，工作台不会离线保存私人内容。请确认这台 Mac 在线并恢复网络连接后重试。</p>
+    <button type="button" onclick="location.reload()">重新连接</button>
+  </main>
+</body>
+</html>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="betterCodex_brand_blue">#0B57D0</color>
+    <color name="betterCodex_surface">#FFFFFF</color>
+    <color name="betterCodex_on_surface">#1F1F1F</color>
+</resources>

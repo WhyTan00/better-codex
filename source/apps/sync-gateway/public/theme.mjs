@@ -1,0 +1,3 @@
+const dark=matchMedia('(prefers-color-scheme: dark)');
+function update(){const theme=dark.matches?'dark':'light',color=dark.matches?'#000000':'#ffffff';document.documentElement.dataset.theme=theme;const scope=new URL(location.href).searchParams.get('workspace')==='secondary'?'secondary':'ai';document.cookie='betterCodex-theme='+theme+'; Path=/; Max-Age=31536000; SameSite=Lax'+(location.protocol==='https:'?'; Secure':'');document.querySelector('#app-manifest').href='/app/manifest.webmanifest?theme='+theme+'&workspace='+scope;for(const meta of document.querySelectorAll('meta[name="theme-color"]'))if(!meta.media)meta.content=color;}
+update();dark.addEventListener('change',update);

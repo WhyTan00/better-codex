@@ -1,0 +1,13 @@
+{
+  "name": "betterCodex-workbench-shared",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./json-safe": "./json-safe.mjs",
+    "./tool-runtime": "./tool-runtime.mjs",
+    "./read-only-json-route": "./read-only-json-route.mjs",
+    "./cockpit-contract": "./cockpit-contract.mjs",
+    "./package.json": "./package.json"
+  }
+}

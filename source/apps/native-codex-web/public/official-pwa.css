@@ -1,0 +1,194 @@
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav){display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 10px;font:inherit;font-size:12px;line-height:1.4;flex-shrink:0;color:inherit}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(select,.betterCodex-snapshot-select),:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(button,.betterCodex-snapshot-button),:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) a{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:6px;min-height:32px;padding:5px 7px;text-decoration:none;cursor:pointer}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(select,.betterCodex-snapshot-select){min-width:0;flex:1;max-width:185px}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(button,.betterCodex-snapshot-button):hover,:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) a:hover{background:color-mix(in srgb,currentColor 7%,transparent)}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :focus-visible{outline:2px solid currentColor;outline-offset:2px}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) [hidden]{display:none}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) .betterCodex-pwa-status{flex-basis:100%;font-size:11px;opacity:.75}
+@media(pointer:coarse),(max-width:767px){:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(select,.betterCodex-snapshot-select),:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(button,.betterCodex-snapshot-button),:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) a{min-height:40px}}
+
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) .betterCodex-mobile-back{display:none}
+@media(pointer:coarse),(max-width:767px){
+ .app-shell-left-panel{position:absolute!important;inset:0!important;width:100%!important;z-index:60;background:var(--color-surface-tertiary,Canvas)!important;padding-top:env(safe-area-inset-top)!important;padding-bottom:env(safe-area-inset-bottom)}
+ html:has([data-app-shell-sidebar-trigger][aria-controls="app-shell-sidebar"][aria-expanded="false"]) .app-shell-left-panel{display:none!important}
+ .app-shell-left-panel>div:first-child{width:100%!important;min-width:100%!important;height:100%}
+ .app-shell-left-panel>[role=separator]{display:none}
+ :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) .betterCodex-mobile-back{display:block;flex-basis:100%;text-align:left;min-height:44px;font-size:14px}
+ :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav){padding-top:6px;padding-bottom:8px}
+}
+
+/* Color-only override: retain every official component and layout. */
+:root{color-scheme:light dark}html,body{background-color:#fff}
+.electron-dark{color-scheme:dark;--vscode-editor-background:#000!important;--vscode-sideBar-background:#000!important;--color-background-surface:#000!important;--color-background-surface-under:#000!important;--color-background-editor-opaque:#000!important;--color-surface-secondary:#000!important;--color-surface-tertiary:#000!important;background-color:#000!important}
+.electron-light{color-scheme:light;--vscode-editor-background:#fff!important;--vscode-sideBar-background:#fff!important;--color-background-surface:#fff!important;--color-background-editor-opaque:#fff!important;--color-surface-secondary:#fff!important;--color-surface-tertiary:#fff!important;background-color:#fff!important}
+@media(prefers-color-scheme:dark){html:not(.electron-light),body:not(.electron-light){background-color:#000}}
+html[data-betterCodex-theme="dark"],html[data-betterCodex-theme="dark"] body{background-color:#000;color-scheme:dark}
+html[data-betterCodex-theme="light"],html[data-betterCodex-theme="light"] body{background-color:#fff;color-scheme:light}
+
+/* Native sidebar list mode and a stable touch presentation across folds. */
+html[data-betterCodex-view="list"] .app-shell-left-panel{display:flex!important;position:fixed!important;inset:0!important;width:100%!important;max-width:none!important;z-index:80!important;background:var(--color-surface-secondary)!important;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+html[data-betterCodex-view="list"] .app-shell-left-panel>div:first-child{width:100%!important;min-width:100%!important;height:100%}
+html[data-betterCodex-view="list"] .app-shell-left-panel>[role="separator"],html[data-betterCodex-view="list"] [data-app-shell-sidebar-trigger]{visibility:hidden!important}
+html[data-betterCodex-view="list"] .betterCodex-mobile-back{display:none!important}
+html[data-betterCodex-touch="1"][data-betterCodex-view="chat"] .app-shell-left-panel{position:fixed!important;inset:0!important;width:100%!important;max-width:none!important;z-index:80!important}
+html[data-betterCodex-touch="1"] .app-shell-left-panel>div:first-child{width:100%!important;min-width:100%!important}
+html[data-betterCodex-touch="1"][data-betterCodex-view="chat"]:has([data-app-shell-sidebar-trigger][aria-expanded="false"]) .app-shell-left-panel{display:none!important}
+/* Moving the same sidebar between page and panel must not retain a stale
+   scroll-timeline mask that hides its first rows. */
+.app-shell-left-panel [class*="_headerFadeMask_"]{-webkit-mask-image:none!important;mask-image:none!important}
+/* Connection status never replaces, blanks or moves the native renderer. */
+.betterCodex-connection-status{position:fixed;z-index:10000;top:calc(env(safe-area-inset-top,0px) + 8px);left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);padding:7px 12px;border-radius:10px;font-size:12px;line-height:1.4;background:var(--color-background-elevated,#fff);color:var(--color-text-primary,#222);box-shadow:0 2px 12px #0002;pointer-events:auto}
+.betterCodex-connection-status button{margin-inline-start:8px;text-decoration:underline}
+.betterCodex-follow-up-row{display:flex;flex-basis:100%;width:100%;min-width:0;box-sizing:border-box;padding:4px 8px 2px 24%;align-items:center}
+.betterCodex-follow-up-choice{display:inline-flex;align-items:center;align-self:center;gap:4px;font-size:12px;line-height:18px;white-space:nowrap;flex-shrink:0}
+.betterCodex-follow-up-choice>span{display:none}
+.betterCodex-follow-up-choice select{width:112px;max-width:112px;height:28px;box-sizing:border-box;padding:2px 4px;border:1px solid color-mix(in srgb,currentColor 15%,transparent);border-radius:6px;background:transparent;color:inherit;font:inherit}
+@media(prefers-color-scheme:dark){.betterCodex-connection-status{background:#222;color:#eee}}
+
+
+/* Reading uses one fixed scale on both screens; metadata stays secondary. */
+:root{--betterCodex-reading-size:17px;--betterCodex-reading-line:1.65;--betterCodex-chat-size:16px;--betterCodex-chat-line:1.65}
+[data-betterCodex-unused="1"]{display:none!important}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts){display:flex;flex-direction:column;flex:none;gap:0;padding:4px 0 10px;position:static}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts)>button{width:100%;flex:none;text-align:left}
+.betterCodex-plugin-icon{flex:none}
+html[data-betterCodex-touch="1"] .app-shell-left-panel{--height-token-row:44px;--height-token-sidebar-row:44px}
+html[data-betterCodex-touch="1"] .app-shell-left-panel :is(.sidebar-item,[data-app-action-sidebar-thread-row]){font-size:var(--betterCodex-reading-size)!important;line-height:var(--betterCodex-reading-line)!important;min-height:44px}
+html[data-betterCodex-touch="1"] .app-shell-left-panel :is(.sidebar-item,[data-app-action-sidebar-thread-row]) :is(span,div){font-size:inherit!important;line-height:inherit!important}
+/* Sent prompts use text-tone, while replies use text-style in the native renderer. */
+html[data-betterCodex-touch="1"] :is([data-markdown-text-style],[data-markdown-text-tone="user-message"],.text-size-chat,[data-codex-composer]){--markdown-font-size:var(--betterCodex-chat-size)!important;--markdown-line-height:var(--betterCodex-chat-line)!important;font-size:var(--betterCodex-chat-size)!important;line-height:var(--betterCodex-chat-line)!important}
+html[data-betterCodex-touch="1"] :is([data-markdown-text-style],[data-markdown-text-tone="user-message"]) :is(p,li,blockquote){font-size:inherit!important;line-height:inherit!important}
+html[data-betterCodex-touch="1"] [data-codex-composer] :is(p,div){font-size:inherit!important;line-height:inherit!important}
+html[data-betterCodex-resizing="1"] .app-shell-left-panel,html[data-betterCodex-resizing="1"] .app-shell-left-panel *{animation-duration:0s!important;transition-duration:0s!important}
+.betterCodex-native-plugin{position:fixed;inset:0;z-index:70;background:var(--color-surface-secondary,Canvas);color:var(--color-text-primary,CanvasText);font:inherit;display:flex;flex-direction:column;overflow:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);--betterCodex-gain:#b42338;--betterCodex-loss:#137a53}
+.betterCodex-native-plugin>header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;min-height:56px;padding:8px 12px;flex:none;border-bottom:1px solid var(--color-border-secondary,rgba(127,127,127,.15))}
+.betterCodex-native-plugin h1{font-size:17px;font-weight:600;margin:0;text-align:center}
+.betterCodex-plugin-button{color:inherit;background:transparent;border:0;border-radius:8px;padding:10px;font:inherit;font-size:15px;cursor:pointer;text-decoration:none;white-space:nowrap;min-height:44px}
+.betterCodex-plugin-button:hover{background:var(--color-background-primary-ghost-hover,rgba(127,127,127,.12))}
+.betterCodex-secondary-frame{display:block;width:100%;height:100%;border:0;background:transparent}.betterCodex-native-plugin[data-secondary-frame="1"] .betterCodex-plugin-body{width:100%;max-width:none;padding:0;display:flex;flex-direction:column;overflow:hidden}.betterCodex-native-plugin[data-secondary-frame="1"] .betterCodex-plugin-body>div{flex:1;min-height:0}.betterCodex-native-plugin[data-secondary-frame="1"] .betterCodex-plugin-load-status{margin:0;padding:8px 16px;font-size:13px}.betterCodex-native-plugin[data-secondary-frame="1"] .betterCodex-plugin-load-status:empty{display:none}
+.betterCodex-plugin-body{overflow:auto;overscroll-behavior:contain;flex:1;min-height:0;width:min(100%,900px);margin-inline:auto;padding:20px 18px 48px;box-sizing:border-box;font-size:var(--betterCodex-reading-size);line-height:var(--betterCodex-reading-line)}
+.betterCodex-plugin-section{margin:26px 0}.betterCodex-plugin-section h2{font-size:17px;font-weight:600;margin:0 0 12px}
+.betterCodex-plugin-muted,.betterCodex-plugin-row small,.betterCodex-plugin-stats dt{font-size:14px;line-height:1.6;color:var(--color-text-tertiary,#888)}
+.betterCodex-plugin-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:20px 0}
+.betterCodex-plugin-stats>div{background:color-mix(in srgb,currentColor 3%,transparent);border:0;border-radius:14px;padding:16px}.betterCodex-plugin-stats dd{font-size:20px;font-weight:600;margin:4px 0 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.betterCodex-plugin-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 0;border-bottom:1px solid var(--color-border-secondary,rgba(127,127,127,.15))}.betterCodex-plugin-row>div{flex:1 1 160px;min-width:0;overflow-wrap:anywhere}.betterCodex-plugin-row small{display:block;margin-top:4px}.betterCodex-plugin-value{font-size:var(--betterCodex-reading-size);font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0;overflow-wrap:anywhere;max-width:100%;margin-left:auto}.betterCodex-plugin-focus{font-size:17px;font-weight:500}
+html:not([data-betterCodex-touch="1"]) .betterCodex-native-plugin{left:var(--betterCodex-plugin-sidebar-width,0px)}
+.betterCodex-native-plugin>header>button:first-child{justify-self:start}.betterCodex-native-plugin>header>button:last-child{justify-self:end}
+html[data-betterCodex-theme="dark"] .betterCodex-native-plugin,.electron-dark .betterCodex-native-plugin{--betterCodex-gain:#ff8091;--betterCodex-loss:#63d6a3}
+.betterCodex-pnl-up{color:var(--betterCodex-gain)}.betterCodex-pnl-down{color:var(--betterCodex-loss)}
+/* Use the native header's flex row; fixed coordinates drift inside containment. */
+[data-betterCodex-header-row="1"]{min-width:0;gap:6px}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav){position:static;display:flex;align-items:center;flex:1;min-width:0;box-sizing:border-box;padding:0!important;min-height:40px;flex-wrap:nowrap;gap:4px;background:transparent;z-index:auto}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(select,.betterCodex-snapshot-select){flex:0 1 auto;width:auto;min-width:0;max-width:160px;padding:6px;font-size:16px;min-height:40px}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(button,.betterCodex-snapshot-button){padding:6px;font-size:16px;min-height:40px;flex-shrink:0}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(button,.betterCodex-snapshot-button):last-of-type{margin-left:auto}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) .betterCodex-mobile-back{flex-basis:auto;min-width:28px;font-size:22px;padding:0 4px;text-align:center}
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) .betterCodex-pwa-status{position:fixed;z-index:1000;bottom:54px;left:16px;right:16px;background:var(--color-surface-secondary,Canvas);padding:6px;border-radius:8px}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts){padding:0 var(--padding-row-x,6px);gap:1px}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts)>button{display:flex;align-items:center;padding-inline:var(--padding-row-cell-x,var(--padding-row-x,6px));min-height:var(--height-token-row,30px)}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts) [data-betterCodex-action-label]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts) .betterCodex-plugin-icon{flex:none}
+:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts)>button[aria-current="page"]{background:var(--color-background-primary-ghost-hover,rgba(127,127,127,.12))}
+html[data-betterCodex-touch="1"] :is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts)>button{min-height:44px}
+.betterCodex-plugin-load-status{margin:0 0 12px;min-height:24px;font-size:14px;line-height:1.6;color:var(--color-text-secondary,#aaa)}
+.betterCodex-plugin-load-status[data-state="error"]{color:var(--color-text-primary,CanvasText)}
+.betterCodex-plugin-button:disabled{opacity:.55;cursor:wait}
+.betterCodex-plugin-button:focus-visible,:is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts)>button:focus-visible{outline:2px solid currentColor;outline-offset:-2px}
+.betterCodex-preferences{position:fixed!important;inset:0!important;z-index:2147483647!important;display:block!important;visibility:visible!important;opacity:1!important;margin:auto!important;box-sizing:border-box;height:fit-content;box-shadow:0 0 0 100vmax #0007;width:min(440px,calc(100vw - 28px));max-height:calc(100dvh - 40px);overflow:auto;border:1px solid var(--color-border-secondary,#8883);border-radius:18px;padding:22px;background:var(--color-surface-secondary,Canvas);color:var(--color-text-primary,CanvasText);font-size:17px;line-height:1.65}
+.betterCodex-preferences::backdrop{background:#0006}.betterCodex-preferences h2{font-size:19px;font-weight:600;margin:0 0 18px}.betterCodex-preferences h3{font-size:17px;font-weight:600;margin:22px 0 6px}.betterCodex-preferences p{margin:8px 0}.betterCodex-preferences small{font-size:13px;opacity:.7}.betterCodex-preferences button{font:inherit;min-height:44px;padding:8px 12px;border:1px solid var(--color-border-secondary,#8884);border-radius:10px;background:transparent;color:inherit;margin:6px 6px 0 0;cursor:pointer}.betterCodex-preferences button:disabled{opacity:.5;cursor:default}.betterCodex-preferences button.betterCodex-primary{background:var(--color-text-primary,CanvasText);color:var(--color-surface-secondary,Canvas)}
+
+@media(pointer:coarse),(max-width:767px){.betterCodex-preferences{width:100%!important;height:100dvh;max-height:100dvh;border:0;border-radius:0;padding:calc(20px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));overscroll-behavior:contain}}
+
+.betterCodex-preferences-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.betterCodex-preferences-header h2{margin:0}.betterCodex-preferences-header button{margin:0;flex-shrink:0}
+
+[data-betterCodex-empty-actions="1"]{display:none!important}
+
+.betterCodex-quota progress{display:block;width:100%;height:8px;margin:6px 0;accent-color:var(--color-text-primary,CanvasText)}.betterCodex-quota>p{margin-top:14px;font-weight:600}.betterCodex-quota>small{display:block;margin-bottom:10px}.betterCodex-quota>div{font-size:15px}
+
+:is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(button,.betterCodex-snapshot-button)[data-update-available=true]::after{content:'•';color:#5da6ff;margin-left:3px}
+
+.betterCodex-preferences select{font:inherit;max-width:100%;min-height:44px;padding:8px 10px;color:inherit;background:var(--color-surface-secondary,Canvas);border:1px solid var(--color-border-secondary,#8884);border-radius:10px}.betterCodex-preferences select:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+
+/* Keep outside list markers inside the mobile conversation content gutter. */
+html[data-betterCodex-touch="1"] :is([data-markdown-text-style],[data-markdown-text-tone="user-message"]) :is(ul,ol){padding-inline-start:1.5em!important;list-style-position:outside}
+html[data-betterCodex-touch="1"] :is([data-markdown-text-style],[data-markdown-text-tone="user-message"]) ol{padding-inline-start:2em!important}
+
+/* Match the installed app chrome and safe-area backing to the dark page. */
+html[data-betterCodex-theme="dark"]{--opencodex-wco-titlebar-background:#000!important;--opencodex-wco-titlebar-left-background:#000!important;--opencodex-wco-titlebar-right-background:#000!important}
+html[data-betterCodex-theme="dark"] [data-betterCodex-header-row="1"]{background-color:#000!important}
+
+/* Cached official sidebar paints before the full module graph is evaluated. */
+html[data-betterCodex-view="list"] .betterCodex-startup-preview{z-index:85!important}
+.betterCodex-startup-preview [data-betterCodex-preview-thread],.betterCodex-startup-preview [data-betterCodex-preview-action]{cursor:pointer}
+.betterCodex-startup-preview-status{position:absolute;right:max(12px,env(safe-area-inset-right));bottom:max(12px,env(safe-area-inset-bottom));padding:4px 9px;border-radius:12px;background:var(--color-surface-secondary,#fff);color:var(--color-text-secondary,#777);font-size:11px;pointer-events:none}
+
+/* Pre-created empty conversations stay available to the composer, but out of lists. */
+#root [data-app-action-sidebar-thread-row][data-betterCodex-unsent-thread="1"]{display:none!important}
+
+/* Android already receives the system bar insets from its native root. */
+html[data-betterCodex-android="1"] .app-shell-left-panel{padding-top:0!important;padding-bottom:0!important}
+html[data-betterCodex-android="1"] :is(#app-shell-sidebar,.betterCodex-snapshot-sidebar){padding-top:0!important}
+html[data-betterCodex-android="1"] [data-betterCodex-sidebar-header="1"]{padding-top:2px!important;padding-bottom:2px!important;gap:0!important;--sidebar-scroll-header-spacing:0px}
+html[data-betterCodex-android="1"] :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav){flex-wrap:nowrap;padding:0 4px;gap:4px;min-height:40px}
+html[data-betterCodex-android="1"] :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(select,button,a,.betterCodex-snapshot-select,.betterCodex-snapshot-button){min-height:40px;padding-top:3px;padding-bottom:3px}
+html[data-betterCodex-android="1"] [data-betterCodex-header-row="1"]{min-height:44px;align-items:center}
+html[data-betterCodex-android="1"] [data-app-action-sidebar-scroll]{margin-top:0!important;padding-top:2px!important;--sidebar-scroll-header-spacing:0px;--sidebar-scroll-content-top-padding:2px}
+html[data-betterCodex-android="1"] :is(#betterCodex-plugin-shortcuts,.betterCodex-snapshot-shortcuts){padding-top:0;padding-bottom:4px}
+.betterCodex-download-dialog{width:min(420px,calc(100vw - 32px));max-height:calc(100dvh - 40px);box-sizing:border-box;padding:20px;border:1px solid var(--color-border-secondary,#8884);border-radius:16px;background:var(--color-surface-secondary,Canvas);color:var(--color-text-primary,CanvasText);font:inherit;overflow:auto}
+.betterCodex-download-dialog::backdrop{background:#0007}.betterCodex-download-dialog h2{font-size:18px;margin:0 0 12px}.betterCodex-download-dialog p{overflow-wrap:anywhere;font-size:15px;line-height:1.5;margin:8px 0}.betterCodex-download-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}.betterCodex-download-actions :is(a,button){display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:8px 12px;box-sizing:border-box;font:inherit;border:1px solid var(--color-border-secondary,#8884);border-radius:10px;background:transparent;color:inherit;text-decoration:none;cursor:pointer}.betterCodex-download-actions .betterCodex-primary{background:var(--color-text-primary,CanvasText);color:var(--color-surface-secondary,Canvas)}.betterCodex-download-dialog input{box-sizing:border-box;width:100%;margin-top:12px;padding:10px;font:inherit;color:inherit;background:transparent;border:1px solid var(--color-border-secondary,#8884)}
+
+html[data-betterCodex-android="1"] :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) .betterCodex-mobile-back{flex:0 0 36px;min-width:36px;min-height:40px;padding-inline:4px;text-align:center}
+html[data-betterCodex-android="1"] :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav) :is(select,.betterCodex-snapshot-select){max-width:140px}
+
+html[data-betterCodex-android="1"] :is(#betterCodex-workspace-nav,.betterCodex-snapshot-nav):has(.betterCodex-pwa-status:not([hidden])){flex-wrap:wrap}
+.betterCodex-snapshot-select,.betterCodex-snapshot-button{box-sizing:border-box;display:inline-flex;align-items:center}
+
+/* Native Android root owns system insets on every surface, including plugins. */
+html[data-betterCodex-android="1"] .betterCodex-native-plugin{padding:0!important;box-sizing:border-box;top:0!important}
+html[data-betterCodex-android="1"] .betterCodex-native-plugin>header{position:relative!important;inset:auto!important;transform:none!important;margin:0!important;box-sizing:border-box;min-height:48px;height:auto;padding:2px 8px;gap:6px}
+html[data-betterCodex-android="1"] .betterCodex-native-plugin>header .betterCodex-plugin-button{min-height:44px;padding:6px 8px}
+html[data-betterCodex-android="1"][data-betterCodex-plugin] header[data-app-shell-header-edge-scroll]{visibility:hidden!important;pointer-events:none!important}
+/* Input mode follows the resized viewport; restore chrome after IME closes. */
+html[data-betterCodex-android="1"][data-betterCodex-keyboard="1"] :is(header[data-app-shell-header-edge-scroll],[data-betterCodex-header-row="1"],.betterCodex-native-plugin>header){visibility:hidden!important;pointer-events:none!important}
+html[data-betterCodex-android="1"][data-betterCodex-keyboard="1"] .betterCodex-native-plugin>header{display:none!important}
+html[data-betterCodex-android="1"][data-betterCodex-keyboard="1"] .betterCodex-connection-status{top:auto;bottom:8px}
+
+/* A pending prompt is part of the transcript, never a floating window. */
+.betterCodex-inline-prompts{position:relative;display:flex;flex-direction:column;gap:20px;box-sizing:border-box;width:100%;min-width:0;margin:0;padding:12px 0 0;flex:none}
+.betterCodex-inline-prompt{align-self:flex-end;box-sizing:border-box;max-width:85%;min-width:80px;color:var(--color-text-primary,CanvasText)}
+.betterCodex-inline-prompt-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--betterCodex-chat-size,16px);line-height:var(--betterCodex-chat-line,1.65);padding:12px 16px;border-radius:18px;background:var(--color-background-primary-ghost-hover,rgba(127,127,127,.12))}
+.betterCodex-inline-send-state{display:block;text-align:right;margin-top:5px;padding-inline:8px;font-size:12px;line-height:1.5;color:var(--color-text-secondary,#888)}
+.betterCodex-inline-send-state:empty{display:none}.betterCodex-inline-send-actions{display:flex;justify-content:flex-end;gap:10px}.betterCodex-inline-send-actions[hidden]{display:none}.betterCodex-inline-send-actions button{border:0;background:transparent;color:inherit;font:inherit;font-size:13px;min-height:36px;padding:4px 8px}
+
+.betterCodex-video-frame{display:block;width:100%;height:100%;border:0}.betterCodex-native-plugin[data-video-frame="1"] .betterCodex-plugin-body{width:100%;max-width:none;padding:0;display:flex;flex-direction:column;overflow:hidden}.betterCodex-native-plugin[data-video-frame="1"] .betterCodex-plugin-body>div{flex:1;min-height:0}.betterCodex-native-plugin[data-video-frame="1"] .betterCodex-plugin-load-status{margin:0;padding:6px 12px}.betterCodex-native-plugin[data-video-frame="1"] .betterCodex-plugin-load-status:empty{display:none}
+
+/* Scoped, device-local cache status in the existing settings surface. */
+.betterCodex-cache-status{min-width:0;overflow-wrap:anywhere}
+.betterCodex-cache-status>p{font-size:14px;line-height:1.55}
+.betterCodex-cache-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}
+.betterCodex-cache-metrics>div{min-width:0;padding:12px;border:1px solid var(--color-border-secondary,#8883);border-radius:12px}
+.betterCodex-cache-metrics strong,.betterCodex-cache-metrics small{display:block}
+.betterCodex-cache-metrics strong{font-size:20px;line-height:1.3;font-weight:600;font-variant-numeric:tabular-nums}
+.betterCodex-cache-metrics small{margin-top:5px;font-size:12px}
+.betterCodex-cache-status>progress{display:block;width:100%;height:8px;margin:8px 0 12px;accent-color:var(--color-text-primary,CanvasText)}
+.betterCodex-cache-activity{font-weight:500}
+.betterCodex-cache-note{display:block;margin-top:12px;line-height:1.55}
+.betterCodex-cache-details{border-top:1px solid var(--color-border-secondary,#8883);margin-top:16px;padding-top:8px}
+.betterCodex-cache-details>summary{padding:10px 0;min-height:44px;box-sizing:border-box;cursor:pointer;font-weight:500;font-size:15px}
+.betterCodex-cache-details>select{width:100%;margin:4px 0 8px;font-size:14px}
+.betterCodex-cache-row{padding:12px 0;border-bottom:1px solid var(--color-border-secondary,#8882);min-width:0;overflow-wrap:anywhere}
+.betterCodex-cache-row>strong{display:block;font-size:14px;line-height:1.5;font-weight:500}
+.betterCodex-cache-row>p{font-size:13px;margin:4px 0;line-height:1.5}
+.betterCodex-cache-row>small{display:block;font-size:12px;line-height:1.5}
+.betterCodex-cache-details button[hidden]{display:none}
+.betterCodex-cache-details summary:focus-visible,.betterCodex-cache-status button:focus-visible{outline:2px solid currentColor;outline-offset:3px;border-radius:6px}
+
+/* Local file feedback lives in the measured composer, never over the transcript. */
+.betterCodex-upload-preview{display:flex;flex-direction:column;gap:6px;max-width:100%;padding:8px 12px;box-sizing:border-box;color:var(--color-text-secondary,GrayText);font-size:12px;line-height:1.4}
+.betterCodex-upload-preview-items{display:flex;gap:8px;overflow-x:auto;max-width:100%}
+.betterCodex-upload-preview-item{display:flex;flex-direction:column;gap:4px;flex:0 0 76px;min-width:0}
+.betterCodex-upload-preview-item img{width:64px;height:64px;object-fit:cover;border-radius:8px}
+.betterCodex-upload-preview-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.betterCodex-upload-preview button{align-self:flex-start;padding:4px 8px}
+/* Phone sidebar gestures scroll; project/pin changes use explicit menu actions. */
+html[data-betterCodex-touch="1"] #app-shell-sidebar :is([aria-roledescription="draggable"],[data-app-action-sidebar-thread-row],[data-app-action-sidebar-project-row]){touch-action:pan-y!important;-webkit-user-drag:none}

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>Better Codex — native workbench demo</title>
+    <link rel="icon" href="./better-codex-mark.svg" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Workbench navigation">
+        <div class="brand-row">
+          <img src="./better-codex-mark.svg" alt="" width="36" height="36" />
+          <div>
+            <strong>Better Codex</strong>
+            <span>native workbench</span>
+          </div>
+        </div>
+
+        <label class="workspace-label" for="workspace">Workspace</label>
+        <select id="workspace" class="workspace-select">
+          <option value="ai">AI workspace</option>
+          <option value="zyy">Creative workspace</option>
+        </select>
+
+        <nav class="primary-nav">
+          <button class="nav-item active" data-view="chat"><span>◈</span> Conversations</button>
+          <button class="nav-item" data-view="documents"><span>▤</span> Documents</button>
+          <button class="nav-item" data-view="projects"><span>◇</span> Projects</button>
+          <button class="nav-item" data-view="plugins"><span>✦</span> Plugins</button>
+        </nav>
+
+        <div class="list-heading"><span>Pinned</span><span class="count">3</span></div>
+        <div class="thread-list" id="thread-list">
+          <button class="thread active" data-thread="native-harness">
+            <span class="thread-dot online"></span>
+            <span><b>Native Harness design</b><small>Shared execution, one owner</small></span>
+          </button>
+          <button class="thread" data-thread="document-flow">
+            <span class="thread-dot warm"></span>
+            <span><b>Document flow</b><small>Linking context to work</small></span>
+          </button>
+          <button class="thread" data-thread="video-story">
+            <span class="thread-dot violet"></span>
+            <span><b>Product video</b><small>Better Codex explainer</small></span>
+          </button>
+        </div>
+
+        <div class="sidebar-footer">
+          <span class="pulse"></span>
+          <span>Local projection warm</span>
+          <button class="icon-button" id="show-cache" aria-label="Show cache details">ⓘ</button>
+        </div>
+      </aside>
+
+      <main class="conversation-panel">
+        <header class="conversation-header">
+          <div class="conversation-title">
+            <span class="eyebrow">Conversation · native session</span>
+            <h1 id="conversation-name">Native Harness design</h1>
+          </div>
+          <div class="header-actions">
+            <span class="connection-pill" id="connection-pill"><span class="pulse"></span> Harness connected</span>
+            <button class="ghost-button" id="refresh">Reconcile</button>
+          </div>
+        </header>
+
+        <div class="conversation-scroll" id="conversation-scroll">
+          <div class="context-banner">
+            <div class="context-icon">↗</div>
+            <div>
+              <strong>One execution owner</strong>
+              <p>Desktop, web, and mobile clients can reconnect to the same native Harness.</p>
+            </div>
+            <span class="version-tag">v42</span>
+          </div>
+
+          <div class="message-list" id="message-list">
+            <article class="message user-message">
+              <div class="avatar user-avatar">Z</div>
+              <div class="message-body">
+                <div class="message-meta"><b>You</b><time>09:41</time></div>
+                <p>How do I keep the native execution experience while connecting documents and projects quickly?</p>
+              </div>
+            </article>
+            <article class="message assistant-message">
+              <div class="avatar assistant-avatar">✦</div>
+              <div class="message-body">
+                <div class="message-meta"><b>Better Codex</b><time>09:42</time></div>
+                <p>Keep the Harness as the source of truth. Let the workbench add navigation, bounded local projections, and project-scoped plugins around it.</p>
+                <div class="message-note"><span>✓</span> Event confirmed by native session</div>
+              </div>
+            </article>
+            <article class="message assistant-message compact">
+              <div class="avatar assistant-avatar">✦</div>
+              <div class="message-body">
+                <div class="message-meta"><b>System note</b><time>09:42</time></div>
+                <p>Cache is warm. Pinned summaries are available before the next network read.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <form class="composer" id="composer">
+          <div class="composer-topline"><span id="composer-state">Ready to send</span><span>Local-first preview</span></div>
+          <textarea id="prompt" rows="2" placeholder="Ask the native Harness…" aria-label="Prompt"></textarea>
+          <div class="composer-actions">
+            <button type="button" class="ghost-button" id="attach">＋ Attach document</button>
+            <div class="composer-right"><span class="shortcut">⌘ ↵</span><button class="send-button" type="submit">Send <span>↗</span></button></div>
+          </div>
+        </form>
+      </main>
+
+      <aside class="inspector" aria-label="Workbench status">
+        <div class="inspector-heading"><span>Workbench</span><button class="icon-button" id="close-inspector" aria-label="Close panel">×</button></div>
+        <div class="status-card accent-card">
+          <div class="card-label">Native Harness</div>
+          <div class="big-status"><span class="status-dot"></span>Connected</div>
+          <p>One source of truth for threads, turns, queue, and writer ownership.</p>
+          <div class="card-foot"><span>reconnect ready</span><code>v42</code></div>
+        </div>
+        <div class="status-card">
+          <div class="card-label">Local-first cache</div>
+          <div class="metric-row"><strong id="cache-count">18</strong><span>projections warm</span></div>
+          <div class="progress"><span id="cache-progress"></span></div>
+          <div class="card-foot"><span id="cache-time">updated just now</span><span class="green-text">healthy</span></div>
+        </div>
+        <div class="status-card">
+          <div class="card-label">Plugins</div>
+          <div class="plugin-row"><span class="plugin-icon blue">▤</span><span><b>Documents</b><small>context links</small></span><span class="plugin-check">✓</span></div>
+          <div class="plugin-row"><span class="plugin-icon pink">◉</span><span><b>Video Workbench</b><small>visual production</small></span><span class="plugin-check">✓</span></div>
+          <div class="plugin-row"><span class="plugin-icon green">◇</span><span><b>Project adapters</b><small>scoped facts</small></span><span class="plugin-check">✓</span></div>
+        </div>
+        <div class="status-card mini-card">
+          <div class="mini-icon">⌁</div>
+          <div><b>Background sync</b><p>Subscribed to native events</p></div>
+          <span class="toggle on"><i></i></span>
+        </div>
+      </aside>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

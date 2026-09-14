@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Better Codex mark</title>
+  <defs><linearGradient id="g" x1="12" y1="12" x2="116" y2="116" gradientUnits="userSpaceOnUse"><stop stop-color="#7dd3fc"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
+  <rect width="128" height="128" rx="32" fill="#0b1020"/>
+  <path d="M37 25h27c17 0 27 9 27 22 0 8-4 14-11 18 9 4 14 10 14 20 0 12-10 20-29 20H37V25Zm20 18v16h8c5 0 8-3 8-8s-3-8-8-8h-8Zm0 31v17h10c6 0 10-3 10-9s-4-8-10-8H57Z" fill="url(#g)"/>
+  <circle cx="25" cy="64" r="7" fill="#34d399"/><path d="M25 64h15" stroke="#34d399" stroke-width="4" stroke-linecap="round"/>
+</svg>
