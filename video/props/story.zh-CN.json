@@ -1,0 +1,5 @@
+{
+  "title": "whytan / Better Codex",
+  "subtitle": "不是另建一个聊天数据库，而是在同一个原生 Harness 之上，做更快、更诚实、更贴近项目的工作台。",
+  "compatibility": "结论先说：DSH 的契约和架构思路可以复用；插件代码通常需要重绑宿主、数据 adapter、路由和安全门，不能当作 Better Codex 的二进制 drop-in。"
+}

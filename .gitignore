@@ -5,6 +5,7 @@ build/
 *.log
 video/out/*
 !video/out/better-codex-explainer.mp4
+!video/out/better-codex-zh-vertical.mp4
 video/.remotion/
 coverage/
 __pycache__/

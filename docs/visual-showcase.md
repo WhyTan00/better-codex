@@ -57,6 +57,16 @@ The explainer video remains deterministic and code-authored through Remotion:
 see [`video/src/BetterCodexVideo.tsx`](../video/src/BetterCodexVideo.tsx) and
 the rendered [MP4](../video/out/better-codex-explainer.mp4).
 
+The Chinese vertical cut adds the cache/UX and DSH compatibility story for
+mobile feeds: [1080×1920 MP4](../video/out/better-codex-zh-vertical.mp4) ·
+[shot list](video-script.zh-CN.md) ·
+[DSH boundary](dsh-compatibility.zh-CN.md).
+
 讲解视频继续使用 Remotion 确定性地由代码生成，见
 [`video/src/BetterCodexVideo.tsx`](../video/src/BetterCodexVideo.tsx) 和已渲染的
 [MP4](../video/out/better-codex-explainer.mp4)。
+
+中文竖屏版针对手机信息流补充了缓存、体验优化和 DSH 兼容性说明：
+[1080×1920 MP4](../video/out/better-codex-zh-vertical.mp4) ·
+[分镜](video-script.zh-CN.md) ·
+[DSH 边界](dsh-compatibility.zh-CN.md)。

@@ -20,6 +20,9 @@ Better Codex 是一个公开的原生 AI 工作台参考实现：底层保留一
 - `video/`：使用 Remotion 编写的确定性产品讲解视频源项目。
 - [`video/out/better-codex-explainer.mp4`](video/out/better-codex-explainer.mp4)：
   已渲染的 32 秒讲解视频。
+- [`video/out/better-codex-zh-vertical.mp4`](video/out/better-codex-zh-vertical.mp4)：
+  面向微信视频号 / 小红书的 1080×1920 中文竖屏版，重点解释缓存、体验优化、
+  定制工作台和 DSH 兼容性。
 
 ## 可视化展示
 
@@ -40,6 +43,10 @@ Better Codex 是一个公开的原生 AI 工作台参考实现：底层保留一
 
 中英双语的视觉说明见
 [docs/visual-showcase.md](docs/visual-showcase.md)。
+
+DSH 插件能否直接复用的结论见
+[docs/dsh-compatibility.zh-CN.md](docs/dsh-compatibility.zh-CN.md)：可以复用契约
+和架构思路，但私有 DSH 插件不是可直接复制的二进制 drop-in。
 
 ## 运行 Demo
 
@@ -63,10 +70,12 @@ pnpm demo
 pnpm video:install
 pnpm video:typecheck
 pnpm video:render
+pnpm video:render:zh
 ```
 
-生成的 MP4 位于 `video/out/better-codex-explainer.mp4`，并作为轻量发布产物保留在
-仓库中。
+生成的 MP4 位于 `video/out/better-codex-explainer.mp4` 和
+`video/out/better-codex-zh-vertical.mp4`，并作为轻量发布产物保留在仓库中。中文
+竖屏版的分镜见 [docs/video-script.zh-CN.md](docs/video-script.zh-CN.md)。
 
 ## 公开边界
 

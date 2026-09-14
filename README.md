@@ -24,6 +24,9 @@ and it does not ship provider credentials or a provider connector.
 - `video/` — the deterministic Remotion source project for the explainer.
 - [`video/out/better-codex-explainer.mp4`](video/out/better-codex-explainer.mp4)
   — the rendered 32-second explainer.
+- [`video/out/better-codex-zh-vertical.mp4`](video/out/better-codex-zh-vertical.mp4)
+  — a caption-led 1080×1920 Chinese vertical cut for WeChat Channels and
+  Xiaohongshu, focused on cache/UX optimization and DSH compatibility.
 
 ## Visual showcase
 
@@ -48,6 +51,10 @@ actions disabled.*
 See the bilingual visual notes in
 [docs/visual-showcase.md](docs/visual-showcase.md).
 
+The DSH reuse boundary is documented in
+[docs/dsh-compatibility.zh-CN.md](docs/dsh-compatibility.zh-CN.md): contracts and
+architecture can be reused, but private DSH plugins are not binary drop-ins.
+
 ## Run the demo
 
 ```bash
@@ -71,10 +78,12 @@ technical story readable and repeatable.
 pnpm video:install
 pnpm video:typecheck
 pnpm video:render
+pnpm video:render:zh
 ```
 
-The generated MP4 is written to `video/out/better-codex-explainer.mp4` and is
-kept as the small release artifact in this repository.
+The generated MP4s are written to `video/out/better-codex-explainer.mp4` and
+`video/out/better-codex-zh-vertical.mp4`. The Chinese cut and its shot list are
+described in [docs/video-script.zh-CN.md](docs/video-script.zh-CN.md).
 
 ## Public boundary
 

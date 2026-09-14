@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "render": "remotion render src/index.tsx BetterCodexExplainer out/better-codex-explainer.mp4 --codec=h264 --crf=18"
+    "render": "remotion render src/index.tsx BetterCodexExplainer out/better-codex-explainer.mp4 --codec=h264 --crf=18",
+    "render:zh-vertical": "remotion render src/index.tsx BetterCodexZhVertical out/better-codex-zh-vertical.mp4 --codec=h264 --crf=18"
   },
   "dependencies": {
     "@remotion/cli": "4.0.524",

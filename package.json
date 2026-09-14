@@ -14,7 +14,8 @@
     "source:prepare": "python3 scripts/prepare-public-source.py --source ${BETTER_CODEX_PRIVATE_WORKBENCH:-../workbench} --destination source",
     "video:install": "pnpm --dir video install",
     "video:typecheck": "pnpm --dir video typecheck",
-    "video:render": "pnpm --dir video render"
+    "video:render": "pnpm --dir video render",
+    "video:render:zh": "pnpm --dir video render:zh-vertical"
   },
   "workspaces": [
     "packages/*",
