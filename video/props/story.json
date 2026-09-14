@@ -1,10 +1,10 @@
 {
-  "title": "Better Codex",
-  "subtitle": "Connect documents quickly. Keep the native Harness. Shape your own workbench.",
+  "title": "whytan / Better Codex",
+  "subtitle": "Connect documents quickly. Keep the native Harness. Build quant and video views around your work.",
   "scenes": [
     "one execution owner",
     "local-first interaction",
-    "custom plugins",
+    "quant and video adapters",
     "native underneath"
   ]
 }

@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">whytan Better Codex public workbench demo</title>
+  <desc id="desc">A sanitized static product capture with a native Harness conversation, local-first cache, and project plugins. All content is synthetic.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080c17"/><stop offset="1" stop-color="#111a2b"/></linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#173653"/><stop offset="1" stop-color="#382d67"/></linearGradient>
+    <linearGradient id="send" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#7dd3fc"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000" flood-opacity=".32"/></filter>
+  </defs>
+  <rect width="1600" height="1000" rx="28" fill="url(#bg)"/>
+  <rect x="20" y="20" width="1560" height="960" rx="22" fill="none" stroke="#c2d4ee" stroke-opacity=".16"/>
+  <circle cx="1390" cy="-90" r="430" fill="#265e8a" opacity=".22"/>
+  <circle cx="130" cy="1040" r="320" fill="#5d3568" opacity=".16"/>
+
+  <rect x="42" y="42" width="1516" height="74" rx="16" fill="#0a0f1c" stroke="#c2d4ee" stroke-opacity=".12"/>
+  <rect x="66" y="58" width="44" height="44" rx="12" fill="url(#brand)" stroke="#7dd3fc" stroke-opacity=".38"/>
+  <text x="88" y="88" fill="#7dd3fc" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="800" text-anchor="middle">B</text>
+  <text x="128" y="80" fill="#edf3ff" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700">whytan / Better Codex</text>
+  <text x="128" y="101" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="13">public static demo · synthetic data</text>
+  <rect x="1312" y="64" width="218" height="34" rx="17" fill="#34d399" fill-opacity=".08" stroke="#34d399" stroke-opacity=".34"/>
+  <circle cx="1334" cy="81" r="5" fill="#34d399"/>
+  <text x="1348" y="86" fill="#baf4d8" font-family="Inter,Arial,sans-serif" font-size="13">Harness connected</text>
+
+  <rect x="42" y="138" width="280" height="820" rx="18" fill="#0a0f1c" stroke="#c2d4ee" stroke-opacity=".12"/>
+  <text x="70" y="190" fill="#edf3ff" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">Workbench</text>
+  <text x="70" y="222" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="12" letter-spacing="2">WORKSPACE</text>
+  <rect x="68" y="238" width="228" height="42" rx="9" fill="#111a2b" stroke="#c2d4ee" stroke-opacity=".14"/>
+  <text x="84" y="264" fill="#edf3ff" font-family="Inter,Arial,sans-serif" font-size="14">AI workspace</text>
+  <text x="274" y="264" fill="#7dd3fc" font-family="Inter,Arial,sans-serif" font-size="15">⌄</text>
+  <g font-family="Inter,Arial,sans-serif" font-size="14">
+    <rect x="60" y="312" width="244" height="42" rx="9" fill="#7dd3fc" fill-opacity=".10"/>
+    <text x="82" y="339" fill="#edf3ff">◈  Conversations</text>
+    <text x="82" y="382" fill="#92a0b7">▤  Documents</text>
+    <text x="82" y="425" fill="#92a0b7">◇  Projects</text>
+    <text x="82" y="468" fill="#92a0b7">✦  Plugins</text>
+  </g>
+  <text x="70" y="526" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11" letter-spacing="2">PINNED  ·  3</text>
+  <g font-family="Inter,Arial,sans-serif">
+    <circle cx="79" cy="567" r="5" fill="#34d399"/><text x="96" y="563" fill="#dce6f7" font-size="14">Native Harness design</text><text x="96" y="583" fill="#92a0b7" font-size="11">shared execution, one owner</text>
+    <circle cx="79" cy="633" r="5" fill="#f7c978"/><text x="96" y="629" fill="#dce6f7" font-size="14">Quant Research</text><text x="96" y="649" fill="#92a0b7" font-size="11">synthetic paper workflow</text>
+    <circle cx="79" cy="699" r="5" fill="#a78bfa"/><text x="96" y="695" fill="#dce6f7" font-size="14">Video production</text><text x="96" y="715" fill="#92a0b7" font-size="11">Remotion storyboards</text>
+  </g>
+  <line x1="68" y1="878" x2="296" y2="878" stroke="#c2d4ee" stroke-opacity=".12"/>
+  <circle cx="80" cy="913" r="5" fill="#34d399"/><text x="96" y="918" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="12">local projection warm</text>
+
+  <rect x="342" y="138" width="846" height="820" rx="18" fill="#0d1321" stroke="#c2d4ee" stroke-opacity=".12"/>
+  <text x="374" y="184" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11" letter-spacing="2">CONVERSATION · NATIVE SESSION</text>
+  <text x="374" y="222" fill="#edf3ff" font-family="Inter,Arial,sans-serif" font-size="26" font-weight="700">Native Harness design</text>
+  <rect x="374" y="254" width="782" height="72" rx="12" fill="#7dd3fc" fill-opacity=".06" stroke="#7dd3fc" stroke-opacity=".20"/>
+  <rect x="394" y="274" width="32" height="32" rx="9" fill="#7dd3fc" fill-opacity=".16"/>
+  <text x="410" y="297" fill="#7dd3fc" font-family="Inter,Arial,sans-serif" font-size="18" text-anchor="middle">↗</text>
+  <text x="444" y="284" fill="#edf3ff" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700">One execution owner</text>
+  <text x="444" y="305" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="12">Clients reconnect to the same native Harness.</text>
+  <text x="1120" y="294" fill="#7dd3fc" font-family="ui-monospace,monospace" font-size="12" text-anchor="end">v42</text>
+
+  <g font-family="Inter,Arial,sans-serif">
+    <rect x="374" y="372" width="34" height="34" rx="10" fill="#24334c"/><text x="391" y="395" fill="#7dd3fc" font-size="14" font-weight="700" text-anchor="middle">W</text>
+    <text x="424" y="382" fill="#dce6f7" font-size="13" font-weight="700">whytan · synthetic prompt</text><text x="424" y="402" fill="#92a0b7" font-size="11">09:41</text>
+    <text x="374" y="442" fill="#d1d9e9" font-size="15">How do I keep the native execution experience while adding project views?</text>
+
+    <rect x="374" y="500" width="34" height="34" rx="10" fill="#303054"/><text x="391" y="523" fill="#a78bfa" font-size="15" text-anchor="middle">✦</text>
+    <text x="424" y="510" fill="#dce6f7" font-size="13" font-weight="700">Better Codex</text><text x="424" y="530" fill="#92a0b7" font-size="11">09:42</text>
+    <text x="374" y="570" fill="#d1d9e9" font-size="15">Keep the Harness as the source of truth. Add bounded project</text>
+    <text x="374" y="594" fill="#d1d9e9" font-size="15">projections around it; never create a second conversation owner.</text>
+    <rect x="374" y="622" width="238" height="28" rx="7" fill="#34d399" fill-opacity=".06" stroke="#34d399" stroke-opacity=".20"/><text x="390" y="641" fill="#9ee8c8" font-size="11">✓ event confirmed by native session</text>
+
+    <rect x="374" y="710" width="782" height="124" rx="13" fill="#111a2b" stroke="#7dd3fc" stroke-opacity=".22"/>
+    <text x="392" y="736" fill="#a7e8cf" font-size="11">READY TO SEND</text><text x="1137" y="736" fill="#92a0b7" font-size="11" text-anchor="end">local-first preview</text>
+    <text x="392" y="775" fill="#718098" font-size="14">Ask the native Harness…</text>
+    <rect x="1026" y="780" width="102" height="36" rx="9" fill="url(#send)"/><text x="1077" y="803" fill="#09101f" font-size="13" font-weight="700" text-anchor="middle">Send  ↗</text>
+  </g>
+
+  <rect x="1208" y="138" width="350" height="820" rx="18" fill="#0a0f1c" stroke="#c2d4ee" stroke-opacity=".12"/>
+  <text x="1240" y="184" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11" letter-spacing="2">WORKBENCH STATUS</text>
+  <rect x="1232" y="214" width="302" height="174" rx="13" fill="#30264d" fill-opacity=".48" stroke="#a78bfa" stroke-opacity=".28"/>
+  <text x="1256" y="248" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">NATIVE HARNESS</text><circle cx="1261" cy="280" r="6" fill="#34d399"/><text x="1278" y="287" fill="#c7f8e1" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="650">Connected</text>
+  <text x="1256" y="322" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="12">threads · turns · queue · writer owner</text><text x="1256" y="360" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">reconnect ready</text><text x="1508" y="360" fill="#a78bfa" font-family="ui-monospace,monospace" font-size="11" text-anchor="end">v42</text>
+  <rect x="1232" y="404" width="302" height="158" rx="13" fill="#111a2b" stroke="#c2d4ee" stroke-opacity=".14"/>
+  <text x="1256" y="438" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">LOCAL-FIRST CACHE</text><text x="1256" y="484" fill="#7dd3fc" font-family="ui-monospace,monospace" font-size="31">18</text><text x="1310" y="481" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="12">projections warm</text>
+  <rect x="1256" y="507" width="254" height="6" rx="3" fill="#243047"/><rect x="1256" y="507" width="188" height="6" rx="3" fill="url(#send)"/><text x="1256" y="540" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">updated just now</text><text x="1510" y="540" fill="#9ee8c8" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="end">healthy</text>
+  <rect x="1232" y="578" width="302" height="260" rx="13" fill="#111a2b" stroke="#c2d4ee" stroke-opacity=".14"/>
+  <text x="1256" y="612" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">PROJECT PLUGINS</text>
+  <circle cx="1266" cy="650" r="14" fill="#7dd3fc" fill-opacity=".14"/><text x="1266" y="655" fill="#7dd3fc" font-family="Inter,Arial,sans-serif" font-size="14" text-anchor="middle">▤</text><text x="1292" y="650" fill="#dce6f7" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="700">Documents</text><text x="1292" y="669" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">context links</text><text x="1499" y="660" fill="#34d399" font-size="15">✓</text>
+  <circle cx="1266" cy="720" r="14" fill="#f7c978" fill-opacity=".14"/><text x="1266" y="725" fill="#f7c978" font-family="Inter,Arial,sans-serif" font-size="14" text-anchor="middle">◌</text><text x="1292" y="720" fill="#dce6f7" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="700">Quant Research</text><text x="1292" y="739" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">paper-only cockpit</text><text x="1499" y="730" fill="#34d399" font-size="15">✓</text>
+  <circle cx="1266" cy="790" r="14" fill="#f8a8cf" fill-opacity=".14"/><text x="1266" y="795" fill="#f8a8cf" font-family="Inter,Arial,sans-serif" font-size="14" text-anchor="middle">◉</text><text x="1292" y="790" fill="#dce6f7" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="700">Video production</text><text x="1292" y="809" fill="#92a0b7" font-family="Inter,Arial,sans-serif" font-size="11">Remotion storyboards</text><text x="1499" y="800" fill="#34d399" font-size="15">✓</text>
+</svg>

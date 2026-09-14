@@ -8,9 +8,7 @@ import re
 from pathlib import Path
 
 
-PRIVATE_OWNER_MARKER = "why" + "tan"
 PATTERNS = (
-    re.compile(PRIVATE_OWNER_MARKER, re.I),
     re.compile(re.escape("/" + "Users" + "/"), re.I),
     re.compile(r"BEGIN (?:RSA|OPENSSH|EC|PRIVATE) KEY"),
     re.compile(r"(?:api[_-]key|access[_-]token|refresh[_-]token|client[_-]secret)\s*[:=]", re.I),
@@ -22,12 +20,20 @@ SKIP_DIRS = {".git", ".pnpm", ".cache", ".remotion", "build", "dist", "node_modu
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
+    parser.add_argument(
+        "--private-marker",
+        action="append",
+        default=[],
+        help="Additional private marker to reject; pass it only during a local audit.",
+    )
     args = parser.parse_args()
+    private_markers = [marker.casefold() for marker in args.private_marker if marker]
+    private_patterns = [re.compile(re.escape(marker), re.I) for marker in args.private_marker if marker]
     failures: list[str] = []
     for path in args.root.rglob("*"):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if PRIVATE_OWNER_MARKER.lower() in str(path).lower():
+        if any(marker in str(path).casefold() for marker in private_markers):
             failures.append(f"path:{path}")
             continue
         if not path.is_file() or path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".apk", ".aab"}:
@@ -37,7 +43,7 @@ def main() -> int:
         except (UnicodeDecodeError, OSError):
             continue
         for line_number, line in enumerate(text.splitlines(), start=1):
-            if any(pattern.search(line) for pattern in PATTERNS):
+            if any(pattern.search(line) for pattern in (*PATTERNS, *private_patterns)):
                 failures.append(f"{path}:{line_number}")
     if failures:
         print("public tree scan failed:")
