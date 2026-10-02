@@ -19,7 +19,7 @@ func TestPinsPersistAndSortAheadOfRecent(t *testing.T) {
 	g.flush()
 	g = NewGateway(g.dir, g.origin, g.secret, false)
 	r := httptest.NewRequest("GET", "/sync/v1/w/ai/threads", nil)
-	r.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	r.Header.Set("X-DSH-Authenticated", "1")
 	w := httptest.NewRecorder()
 	g.Handler().ServeHTTP(w, r)
 	var result struct {
@@ -29,7 +29,7 @@ func TestPinsPersistAndSortAheadOfRecent(t *testing.T) {
 	if len(result.Data) != 2 || result.Data[0].ID != threadID || !result.Data[0].Pinned || result.Data[1].Pinned {
 		t.Fatal(result)
 	}
-	if len(g.topicLocked("secondary", "").PinnedIDs) != 0 {
+	if len(g.topicLocked("zyy", "").PinnedIDs) != 0 {
 		t.Fatal("pins crossed scope")
 	}
 }
@@ -37,7 +37,7 @@ func TestBothManifestColorsKeepNativeListEntry(t *testing.T) {
 	g := testGateway(t)
 	for _, mode := range []string{"light", "dark"} {
 		r := httptest.NewRequest("GET", "/app/manifest.webmanifest?theme="+mode, nil)
-		r.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+		r.Header.Set("X-DSH-Authenticated", "1")
 		w := httptest.NewRecorder()
 		g.Handler().ServeHTTP(w, r)
 		var m map[string]any

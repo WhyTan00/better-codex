@@ -1,0 +1,8 @@
+{
+  "schema": "workbench.plugin.v1",
+  "id": "project-overview",
+  "label": "Project overview",
+  "description": "Top-level project folders in this workspace.",
+  "readOnly": true,
+  "entry": "index.mjs"
+}

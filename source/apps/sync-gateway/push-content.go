@@ -77,7 +77,7 @@ func completionContent(db pushContentReader, scope, thread, turn string) (string
 func (p *PushService) notificationContent(j pushJob) (string, string) {
 	var title, summary string
 	_ = p.store.db.QueryRow("SELECT title,summary FROM push_completion_content WHERE scope=? AND thread_id=? AND turn_id=?", j.Scope, j.Thread, j.Turn).Scan(&title, &summary)
-	if title == "" || summary == "" {
+	if !p.isolated && (title == "" || summary == "") {
 		freshTitle, freshSummary := completionContent(p.store.db, j.Scope, j.Thread, j.Turn)
 		if title == "" {
 			title = freshTitle

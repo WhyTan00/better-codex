@@ -33,7 +33,7 @@ def main() -> int:
     for path in args.root.rglob("*"):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if any(marker in str(path).casefold() for marker in private_markers):
+        if any(marker in str(path.relative_to(args.root)).casefold() for marker in private_markers):
             failures.append(f"path:{path}")
             continue
         if not path.is_file() or path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".apk", ".aab"}:

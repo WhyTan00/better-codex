@@ -1,4 +1,4 @@
-const CACHE='betterCodex-outer-shell-v3',FILES=['/app?workspace=ai','/app/assets/app.css','/app/assets/app.mjs','/app/assets/markdown.mjs','/app/assets/viewport.mjs','/app/assets/theme.mjs','/app/assets/icon.svg'];
+const CACHE='dsh-outer-shell-v3',FILES=['/app?workspace=ai','/app/assets/app.css','/app/assets/app.mjs','/app/assets/markdown.mjs','/app/assets/viewport.mjs','/app/assets/theme.mjs','/app/assets/icon.svg'];
 self.addEventListener('install',event=>event.waitUntil((async()=>{const cache=await caches.open(CACHE);for(const file of FILES){const response=await fetch(file,{cache:'reload',credentials:'same-origin'});if(!response.ok||response.redirected)throw Error('authentication required');await cache.put(file,response);}await self.skipWaiting();})()));
 self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
 // Only the UI shell is stored in the browser. Conversation data and commands

@@ -1,17 +1,39 @@
+import {randomUUID} from 'node:crypto';
 import {workspace,fail} from './registry.mjs';
 import {createOfficialSettings} from './official-settings.mjs';
+import {ThreadTitleGeneration} from './thread-title-generation.mjs';
 // AppHost contracts follow the pinned official renderer. Native execution still
 // flows through OfficialBoundary; browser-only presentation has no auto-answer.
-export function createAppHostFactory({RpcTarget,boundary,state,persist,files,native,clients,send,browserAction,fileUrl,settings=createOfficialSettings({RpcTarget,state,persist})}){
+export function createAppHostFactory({RpcTarget,boundary,state,persist,files,native,clients,send,browserAction,fileUrl,titleDiagnostic=()=>{},titleGenerator=new ThreadTitleGeneration({native,diagnostic:titleDiagnostic}),settings=createOfficialSettings({RpcTarget,state,persist})}){
  class Noop extends RpcTarget {dispose(){}unsubscribe(){}stateChanged(){}update(){}}
  class ConversationPresentation extends RpcTarget {
   constructor(scope,client){super();this.scope=scope;this.client=client;}
   async setConversationPresented(p){return boundary.serial('presentation:'+this.client.pageId,async()=>{
    if(p.hostId!=='local')throw fail(403,'宿主不属于当前工作区');await boundary.checked(workspace(this.scope),p.conversationId);
-   if(p.presented){this.client.presentedThreadId=p.conversationId;send(this.client,{type:'betterCodex:route',path:'/local/'+p.conversationId});}
-   else if(this.client.presentedThreadId===p.conversationId){this.client.presentedThreadId=null;send(this.client,{type:'betterCodex:route',path:'/'});}
+   // Presentation is a renderer acknowledgement, never a navigation command.
+   if(p.presented){this.client.presentedThreadId=p.conversationId;}
+   else if(this.client.presentedThreadId===p.conversationId){this.client.presentedThreadId=null;}
   });}
   async recordConversationActivity(p){if(p.hostId!=='local')throw fail(403,'宿主不属于当前工作区');await boundary.checked(workspace(this.scope),p.conversationId);}
+ }
+ class ThreadMetadataGeneration extends RpcTarget {
+  constructor(scope){super();this.scope=scope;}
+  generateTitle(p){return titleGenerator.generateTitle(this.scope,p);}
+  // Optional metadata functions do not regenerate or overwrite existing names.
+  async generateDescription(){return null;}
+  async reconsiderTitle(){return null;}
+ }
+ class ThreadArchive extends RpcTarget {
+  constructor(scope,client){super();this.scope=scope;this.client=client;}
+  checkHost(p){if(p.hostId!=='local')throw fail(403,'宿主不属于当前工作区');}
+  async deleteArchivedThread(p){this.checkHost(p);await boundary.call(this.scope,{id:randomUUID(),method:'thread/delete',params:{threadId:p.threadId}},{clientId:this.client.stableId});return {deletedThreadIds:[p.threadId]};}
+  async deleteAllArchivedThreads(p){
+   this.checkHost(p);const ids=await boundary.archivedIds(this.scope),deletedThreadIds=[];
+   // Enumerate a scoped snapshot before mutating; never call an account-wide delete.
+   for(const threadId of ids){await this.deleteArchivedThread({...p,threadId});deletedThreadIds.push(threadId);}
+   return {deletedThreadIds};
+  }
+  async archiveInactiveThread(p){this.checkHost(p);await boundary.call(this.scope,{id:randomUUID(),method:'thread/archive',params:{threadId:p.threadId}},{clientId:this.client.stableId});return {success:true};}
  }
  class HttpFetch extends RpcTarget {
   async fetch(id,request){
@@ -62,7 +84,7 @@ export function createAppHostFactory({RpcTarget,boundary,state,persist,files,nat
   async check(p){if(p.hostId&&p.hostId!=='local')throw fail(403,'宿主不属于当前工作区');const id=p.conversationId||p.threadId;if(id)await boundary.checked(workspace(this.scope),id);return id;}
   async setThreadOwnership(p){const id=await this.check(p);if(p.ownsThread){for(const c of clients)if(c!==this.client&&c.scope===this.scope&&c.readyState===1&&c.ownedThreads?.has(id))throw fail(409,'另一页面已持有此会话');this.client.ownedThreads.add(id);}else this.client.ownedThreads.delete(id);}
   async findThreadOwner(p){const id=await this.check(p);return [...clients].find(c=>c.scope===this.scope&&c.readyState===1&&c.ownedThreads?.has(id))?.pageId??null;}
-  async broadcast(method,p,targets){await this.check(p);const calls=[];for(const c of clients)if(c!==this.client&&c.scope===this.scope&&c.readyState===1&&(!targets||targets.includes(c.pageId))&&c.viewServices)calls.push(c.viewServices.clientCoordination[method]({sourceClientId:this.client.pageId,params:p}));await Promise.allSettled(calls);}
+  async broadcast(method,p,targets){await this.check(p);const calls=[];for(const c of clients)if(c!==this.client&&c.scope===this.scope&&c.readyState===1&&(!targets||targets.includes(c.pageId))&&c.viewServices)calls.push(Promise.resolve().then(()=>c.viewServices?.clientCoordination?.[method]?.({sourceClientId:this.client.pageId,params:p})));await Promise.allSettled(calls);}
   threadArchived(p){return this.broadcast('threadArchived',p);}
   threadUnarchived(p){return this.broadcast('threadUnarchived',p);}
   threadQueuedFollowUpsChanged(p){return this.broadcast('threadQueuedFollowUpsChanged',p);}
@@ -78,7 +100,7 @@ export function createAppHostFactory({RpcTarget,boundary,state,persist,files,nat
   }
  }
  class AppHost extends RpcTarget {
-  constructor(scope,client){super();const scopedSettings=settings.forScope(scope);client.cleanup??=new Set();client.cleanup.add(()=>scopedSettings.close());this.value={settings:scopedSettings,httpFetch:new HttpFetch(),requestUserInputAutoResolution:new ConversationPresentation(scope,client),threadProjectAssignments:new Assignments(scope),startup:new Startup(),appInfo:new AppInfo(),clipboard:new Clipboard(client),workspaceFiles:new WorkspaceFiles(scope,client),fileAttachments:new FileAttachments(scope),dynamicToolCalls:new DynamicToolCalls(scope),clientCoordination:new Coordination(scope,client)};}
+  constructor(scope,client){super();const scopedSettings=settings.forScope(scope);client.cleanup??=new Set();client.cleanup.add(()=>scopedSettings.close());this.value={threadMetadataGeneration:new ThreadMetadataGeneration(scope),threadArchive:new ThreadArchive(scope,client),settings:scopedSettings,httpFetch:new HttpFetch(),requestUserInputAutoResolution:new ConversationPresentation(scope,client),threadProjectAssignments:new Assignments(scope),startup:new Startup(),appInfo:new AppInfo(),clipboard:new Clipboard(client),workspaceFiles:new WorkspaceFiles(scope,client),fileAttachments:new FileAttachments(scope),dynamicToolCalls:new DynamicToolCalls(scope),clientCoordination:new Coordination(scope,client)};}
   get services(){return this.value;}
  }
  return (scope,client)=>new AppHost(scope,client);

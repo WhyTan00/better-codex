@@ -17,7 +17,7 @@ func TestCommittedDeltaAndCursorSurviveWithoutFlush(t *testing.T) {
 		t.Fatal(e)
 	}
 	other := NewGateway(g.dir, g.origin, g.secret, false)
-	defer other.durable.db.Close()
+	defer other.durable.close()
 	if other.agentSeq != 2 || other.agentEpoch != "source" {
 		t.Fatal("committed sender cursor not restored")
 	}
@@ -50,7 +50,7 @@ func TestFailedCommitNeitherPublishesNorAdvancesAndDoesNotRecoverShadowFile(t *t
 		t.Fatal("uncommitted event published")
 	}
 	other := NewGateway(g.dir, g.origin, g.secret, false)
-	defer other.durable.db.Close()
+	defer other.durable.close()
 	if value := other.topics[topicKey("ai", threadID)]; value != nil && value.Snapshot != nil {
 		t.Fatal("uncommitted shadow file became authority")
 	}
@@ -63,12 +63,12 @@ func TestNativeFullDTOAndCatalogTombstoneRemainScopedAfterRestart(t *testing.T) 
 		t.Fatal(e)
 	}
 	other := NewGateway(g.dir, g.origin, g.secret, false)
-	defer other.durable.db.Close()
+	defer other.durable.close()
 	got, e := other.durable.nativeRecord("ai", r.Key)
 	if e != nil || got == nil || !strings.Contains(string(got.Payload), "opaqueNewNativeField") {
 		t.Fatal("full native DTO lost", e)
 	}
-	if got, e = other.durable.nativeRecord("secondary", r.Key); e != nil || got != nil {
+	if got, e = other.durable.nativeRecord("zyy", r.Key); e != nil || got != nil {
 		t.Fatal("cache crossed workspace")
 	}
 	r.Revision = 2
@@ -79,7 +79,7 @@ func TestNativeFullDTOAndCatalogTombstoneRemainScopedAfterRestart(t *testing.T) 
 		t.Fatal(e)
 	}
 	req := httptest.NewRequest("GET", "/sync/v1/w/ai/native-catalog?after=1", nil)
-	req.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	req.Header.Set("X-DSH-Authenticated", "1")
 	w := httptest.NewRecorder()
 	other.Handler().ServeHTTP(w, req)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"deleted":true`) {

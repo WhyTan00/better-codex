@@ -31,7 +31,7 @@ func TestHistoryPagesSurviveRestartWithoutTimeOrderedIDs(t *testing.T) {
 	if len(page.Turns) != 2 || page.Turns[0].ID != tid(100) || page.Turns[1].ID != tid(99) || page.NextCursor != nil {
 		t.Fatalf("wrong native order: %+v", page)
 	}
-	if _, err = h.page("secondary", threadID, *cursor, head.Thread); err == nil {
+	if _, err = h.page("zyy", threadID, *cursor, head.Thread); err == nil {
 		t.Fatal("cross-scope history accepted")
 	}
 	// A fresh head replaces its tail after rollback, preserving older pages.
@@ -51,7 +51,7 @@ func TestSnapshotConditionalReadHasNoBodyOffline(t *testing.T) {
 	}
 	g.flush()
 	r := httptest.NewRequest("GET", "/sync/v1/w/ai/thread/"+threadID, nil)
-	r.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	r.Header.Set("X-DSH-Authenticated", "1")
 	w := httptest.NewRecorder()
 	g.Handler().ServeHTTP(w, r)
 	if w.Code != 200 || w.Header().Get("ETag") == "" {
@@ -83,7 +83,7 @@ func TestPendingApprovalSurvivesBrowserReopen(t *testing.T) {
 	request := json.RawMessage(`{"id":7,"method":"item/commandExecution/requestApproval","threadId":"` + threadID + `"}`)
 	_ = g.apply(frame{Epoch: "source", Seq: 2, Scope: "ai", ThreadID: threadID, Event: Event{Type: "approval", Request: request}})
 	r := httptest.NewRequest("GET", "/sync/v1/w/ai/thread/"+threadID, nil)
-	r.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	r.Header.Set("X-DSH-Authenticated", "1")
 	w := httptest.NewRecorder()
 	g.Handler().ServeHTTP(w, r)
 	var value struct {

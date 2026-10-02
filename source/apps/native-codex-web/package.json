@@ -1,1 +1,0 @@
-{"name":"native-codex-web","version":"1.0.0","private":true,"type":"module","scripts":{"start":"node src/main.mjs","test":"node --test test/*.test.mjs"}}

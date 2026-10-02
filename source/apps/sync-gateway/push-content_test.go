@@ -18,8 +18,8 @@ func TestCompletionPreviewUsesExactFinalAnswerAndSurvivesLaterTurn(t *testing.T)
 		}
 	}
 	snapshot := Snapshot{Thread: Thread{ID: pushThread, Name: "缓存优化验证"}, Turns: []Turn{
-		{ID: "00000000-0000-4000-8000-f82fe242e2a8", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "final_answer", Text: "旧回答不可复用"}}},
-		{ID: "00000000-0000-4000-8000-ce3e780abe4a", Status: "inProgress", Items: []Item{
+		{ID: "22222222-2222-4222-a222-222222222222", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "final_answer", Text: "旧回答不可复用"}}},
+		{ID: "33333333-3333-4333-a333-333333333333", Status: "inProgress", Items: []Item{
 			{Type: "userMessage", Text: "用户输入不能做摘要"},
 			{Type: "agentMessage", Phase: "commentary", Text: "还在处理"},
 			{Type: "commandExecution", Text: "工具秘密"},
@@ -28,18 +28,18 @@ func TestCompletionPreviewUsesExactFinalAnswerAndSurvivesLaterTurn(t *testing.T)
 	}}
 	apply(Event{Type: "snapshot", Snapshot: &snapshot})
 	now := float64(time.Now().UnixMilli()) / 1000
-	completeTest(t, g, "ai", "00000000-0000-4000-8000-ce3e780abe4a", now)
-	j := pushJob{Scope: "ai", Thread: pushThread, Turn: "00000000-0000-4000-8000-ce3e780abe4a"}
+	completeTest(t, g, "ai", "33333333-3333-4333-a333-333333333333", now)
+	j := pushJob{Scope: "ai", Thread: pushThread, Turn: "33333333-3333-4333-a333-333333333333"}
 	title, body := g.push.notificationContent(j)
 	if title != "Codex · 缓存优化验证" || body != "已完成最近6轮缓存。 查看详细说明" {
 		t.Fatalf("unexpected preview: %q %q", title, body)
 	}
-	apply(Event{Type: "snapshot", Snapshot: &Snapshot{Thread: Thread{ID: pushThread, Name: "新标题"}, Turns: []Turn{{ID: "00000000-0000-4000-8000-065ebedd1a42", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "final_answer", Text: "下一轮回答"}}}}}})
+	apply(Event{Type: "snapshot", Snapshot: &Snapshot{Thread: Thread{ID: pushThread, Name: "新标题"}, Turns: []Turn{{ID: "44444444-4444-4444-a444-444444444444", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "final_answer", Text: "下一轮回答"}}}}}})
 	title, body = g.push.notificationContent(j)
 	if title != "Codex · 缓存优化验证" || strings.Contains(body, "下一轮") {
 		t.Fatal("queued completion changed with later turn")
 	}
-	_, other := g.push.notificationContent(pushJob{Scope: "secondary", Thread: pushThread, Turn: "00000000-0000-4000-8000-ce3e780abe4a"})
+	_, other := g.push.notificationContent(pushJob{Scope: "zyy", Thread: pushThread, Turn: "33333333-3333-4333-a333-333333333333"})
 	if strings.Contains(other, "最近6轮") {
 		t.Fatal("cross-workspace preview")
 	}
@@ -47,7 +47,7 @@ func TestCompletionPreviewUsesExactFinalAnswerAndSurvivesLaterTurn(t *testing.T)
 
 func TestMissingFinalAnswerDoesNotUseCommentaryOrPreviousTurn(t *testing.T) {
 	g := newPushTest(t)
-	payload, _ := json.Marshal(durableTopic{Snapshot: &Snapshot{Thread: Thread{ID: pushThread, Name: "工作"}, Turns: []Turn{{ID: "00000000-0000-4000-8000-f82fe242e2a8", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "final_answer", Text: "00000000-0000-4000-8000-f82fe242e2a8"}}}, {ID: "new", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "commentary", Text: "progress"}}}}}})
+	payload, _ := json.Marshal(durableTopic{Snapshot: &Snapshot{Thread: Thread{ID: pushThread, Name: "工作"}, Turns: []Turn{{ID: "22222222-2222-4222-a222-222222222222", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "final_answer", Text: "22222222-2222-4222-a222-222222222222"}}}, {ID: "new", Status: "completed", Items: []Item{{Type: "agentMessage", Phase: "commentary", Text: "progress"}}}}}})
 	if _, err := g.durable.db.Exec("INSERT INTO topics VALUES(?,?)", topicKey("ai", pushThread), payload); err != nil {
 		t.Fatal(err)
 	}

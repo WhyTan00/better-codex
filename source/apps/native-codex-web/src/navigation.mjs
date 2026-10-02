@@ -9,7 +9,7 @@ export function isWorkspaceNavigation(req){
  const legacyDocument=!mode&&!dest&&(!accept||accept==='*/*'||/\btext\/html\b/i.test(accept));
  if(!(mode==='navigate'&&(!dest||dest==='document'||dest==='empty'))&&!legacyDocument)return false;
  let path;try{path=new URL(req.url,'http://localhost').pathname;}catch{return false;}
- return /^(?:\/|\/conversations\/?|\/ui\/(?:official|legacy)\/?|\/official\/?|\/workbench\/?|\/projects\/?|\/video-workbench\/?|\/workspaces\/(?:ai|secondary)\/?|\/local\/[0-9a-f-]{36}|\/w\/(?:ai|secondary)\/api\/local-file\/[A-Za-z0-9_-]{32}\/[^/]+)$/i.test(path);
+ return /^(?:\/|\/conversations\/?|\/ui\/(?:official|legacy)\/?|\/official\/?|\/workbench\/?|\/projects\/?|\/video-workbench\/?|\/workspaces\/(?:ai|zyy)\/?|\/local\/[0-9a-f-]{36}|\/w\/(?:ai|zyy)\/api\/local-file\/[A-Za-z0-9_-]{32}\/[^/]+)$/i.test(path);
 }
 
 let denialWindow=0,denialCount=0;

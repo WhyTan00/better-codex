@@ -16,13 +16,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
-// Opt-in subscriptions and pending deliveries live in the same private durable
-// store as the consumed event cursor. Replayed completions never enqueue twice.
+// Opt-in subscriptions and pending deliveries live in a private durable store.
+// Replayed completions never enqueue twice; realtime mode isolates this store
+// from the optional reading replica.
 const pushSchema = `
 CREATE TABLE IF NOT EXISTS push_device_owners(device_id TEXT PRIMARY KEY,recipient TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS push_devices(scope TEXT,device_id TEXT,subscription BLOB NOT NULL,enabled INTEGER NOT NULL,enabled_at INTEGER NOT NULL,last_received_at INTEGER NOT NULL DEFAULT 0,last_received_job TEXT NOT NULL DEFAULT '',last_failure TEXT NOT NULL DEFAULT '',last_test_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(scope,device_id));
@@ -36,15 +38,35 @@ type vapidKeys struct {
 	Private string `json:"private"`
 }
 type PushService struct {
-	store  *DurableStore
-	keys   vapidKeys
-	origin string
-	client webpush.HTTPClient
-	wake   chan struct{}
+	gateway          *Gateway
+	store            *DurableStore
+	keys             vapidKeys
+	origin           string
+	client           webpush.HTTPClient
+	wake             chan struct{}
+	isolated         bool
+	projectionFailed atomic.Bool
 }
 
 func newPushService(g *Gateway) (*PushService, error) {
-	p := &PushService{store: g.durable, origin: g.origin, wake: make(chan struct{}, 1), client: &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	if g.cachePersistence() == "memory" && g.replica == nil {
+		return nil, errors.New("persistent notification storage unavailable")
+	}
+	p := &PushService{gateway: g, store: g.durable, origin: g.origin, wake: make(chan struct{}, 1), client: &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	if g.replica != nil {
+		store, err := openNotificationStore(g.dir)
+		if err != nil {
+			return nil, err
+		}
+		p.store = store
+		p.isolated = true
+	}
+	succeeded := false
+	defer func() {
+		if !succeeded && p.isolated {
+			_ = p.store.close()
+		}
+	}()
 	path := filepath.Join(g.dir, "push-vapid-v1.json")
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -72,6 +94,7 @@ func newPushService(g *Gateway) (*PushService, error) {
 		return nil, errors.New("invalid notification key file")
 	}
 	_, err = p.store.db.Exec("UPDATE push_jobs SET state='queued' WHERE state='sending'")
+	succeeded = err == nil
 	return p, err
 }
 func deviceID(key string) string {
@@ -109,6 +132,9 @@ func validPushSubscription(s webpush.Subscription) bool {
 
 func enqueueCompletion(tx *sql.Tx, f frame, now int64) error {
 	if f.Event.Type != "turn" || f.Event.Turn == nil || f.Event.Turn.Status != "completed" || !validScope(f.Scope) || !validID(f.ThreadID) || f.Event.Turn.ID == "" {
+		return nil
+	}
+	if completionIsSubagent(tx, f.Scope, f.ThreadID) {
 		return nil
 	}
 	turn := f.Event.Turn
@@ -190,13 +216,28 @@ type pushJob struct {
 }
 
 func (p *PushService) sendNext(ctx context.Context) bool {
+	if !p.notificationAvailable() {
+		return false
+	}
 	now := time.Now().UnixMilli()
 	_, _ = p.store.db.Exec("UPDATE push_jobs SET state='expired' WHERE state IN ('queued','sending') AND created_at<?", now-int64(15*time.Minute/time.Millisecond))
 	var j pushJob
 	var raw []byte
-	err := p.store.db.QueryRow(`SELECT j.id,j.scope,j.device_id,j.thread_id,j.turn_id,j.receipt,j.created_at,j.attempts,d.subscription FROM push_jobs j JOIN push_devices d ON d.scope=j.scope AND d.device_id=j.device_id JOIN push_device_owners o ON o.device_id=j.device_id AND o.recipient=j.scope WHERE j.state='queued' AND j.next_at<=? AND d.enabled=1 ORDER BY j.created_at LIMIT 1`, now).Scan(&j.ID, &j.Scope, &j.Device, &j.Thread, &j.Turn, &j.Receipt, &j.Created, &j.Attempts, &raw)
+	classification := `EXISTS (SELECT 1 FROM native_records n WHERE n.scope=j.scope AND n.key='thread:'||j.thread_id AND n.deleted=0)`
+	if p.isolated {
+		classification = `EXISTS (SELECT 1 FROM notification_threads n WHERE n.scope=j.scope AND n.thread_id=j.thread_id AND n.known=1)`
+	}
+	err := p.store.db.QueryRow(`SELECT j.id,j.scope,j.device_id,j.thread_id,j.turn_id,j.receipt,j.created_at,j.attempts,d.subscription FROM push_jobs j JOIN push_devices d ON d.scope=j.scope AND d.device_id=j.device_id JOIN push_device_owners o ON o.device_id=j.device_id AND o.recipient=j.scope WHERE j.state='queued' AND j.next_at<=? AND d.enabled=1 AND (j.thread_id='' OR `+classification+`) ORDER BY j.created_at LIMIT 1`, now).Scan(&j.ID, &j.Scope, &j.Device, &j.Thread, &j.Turn, &j.Receipt, &j.Created, &j.Attempts, &raw)
 	if err != nil {
 		return false
+	}
+	known, child := completionThreadClassification(p.store.db, j.Scope, j.Thread)
+	if p.isolated {
+		_ = p.store.db.QueryRow("SELECT known,child FROM notification_threads WHERE scope=? AND thread_id=?", j.Scope, j.Thread).Scan(&known, &child)
+	}
+	if j.Thread != "" && (!known || child) {
+		_, _ = p.store.db.Exec("UPDATE push_jobs SET state='cancelled' WHERE id=? AND state='queued'", j.ID)
+		return true
 	}
 	if json.Unmarshal(raw, &j.Subscription) != nil || !validPushSubscription(j.Subscription) {
 		_, _ = p.store.db.Exec("UPDATE push_jobs SET state='failed' WHERE id=?", j.ID)
@@ -219,7 +260,7 @@ func (p *PushService) sendNext(ctx context.Context) bool {
 	if validID(j.Thread) {
 		target = "/local/" + j.Thread + "?workspace=" + j.Scope + "&fromNotification=1"
 	}
-	payload, _ := json.Marshal(map[string]any{"title": title, "body": body, "tag": "betterCodex-" + j.ID, "scope": j.Scope, "recipient": j.Scope, "url": target, "jobId": j.ID, "receipt": j.Receipt})
+	payload, _ := json.Marshal(map[string]any{"title": title, "body": body, "tag": "dsh-" + j.ID, "scope": j.Scope, "recipient": j.Scope, "url": target, "jobId": j.ID, "receipt": j.Receipt})
 	requestCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	resp, err := webpush.SendNotificationWithContext(requestCtx, payload, &j.Subscription, &webpush.Options{HTTPClient: p.client, Subscriber: p.origin, TTL: 900, Urgency: webpush.UrgencyNormal, Topic: j.ID, VAPIDPublicKey: p.keys.Public, VAPIDPrivateKey: p.keys.Private})
@@ -251,7 +292,7 @@ func (p *PushService) sendNext(ctx context.Context) bool {
 }
 
 func (g *Gateway) servePush(w http.ResponseWriter, r *http.Request, scope, op string) {
-	if g.push == nil {
+	if g.push == nil || !g.push.notificationAvailable() {
 		writeJSON(w, 503, map[string]any{"error": "通知服务尚未就绪"})
 		return
 	}
@@ -279,7 +320,7 @@ func (g *Gateway) servePush(w http.ResponseWriter, r *http.Request, scope, op st
 		http.Error(w, "invalid request", 400)
 		return
 	}
-	db := g.durable.db
+	db := g.push.store.db
 	now := time.Now().UnixMilli()
 	if op == "push-received" {
 		if len(body.JobID) != 32 || len(body.Receipt) != 32 {

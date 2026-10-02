@@ -13,13 +13,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const threadID = "00000000-0000-4000-8000-4ba7215b54d2"
-const turnID = "00000000-0000-4000-8000-f82fe242e2a8"
+const threadID = "11111111-1111-4111-a111-111111111111"
+const turnID = "22222222-2222-4222-a222-222222222222"
 
 func testGateway(t *testing.T) *Gateway {
 	t.Helper()
 	g := NewGateway(t.TempDir(), "http://127.0.0.1", []byte(strings.Repeat("a", 32)), false)
 	g.agentEpoch = "source"
+	t.Cleanup(func() { g.agentHandlers.Wait(); g.closeCaches() })
 	return g
 }
 func snapshotFrame(seq uint64) frame {
@@ -78,7 +79,7 @@ func TestSSOAndOriginRequired(t *testing.T) {
 			r.Header.Set("Sec-Fetch-Mode", "cors")
 			r.Header.Set("Sec-Fetch-Dest", "empty")
 		}
-		r.Header.Set("X-BETTER_CODEX-Authenticated", test.auth)
+		r.Header.Set("X-DSH-Authenticated", test.auth)
 		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 		response, err := client.Do(r)
 		if err != nil {
@@ -120,7 +121,7 @@ func TestBrowserReplaysOnlyItsScopeAndRequestsResyncForExpiredCursor(t *testing.
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	g.origin = server.URL
-	headers := http.Header{"Origin": {server.URL}, "X-BETTER_CODEX-Authenticated": {"1"}}
+	headers := http.Header{"Origin": {server.URL}, "X-DSH-Authenticated": {"1"}}
 	u := "ws" + strings.TrimPrefix(server.URL, "http") + "/sync/v1/w/ai/events/" + threadID + "?epoch=" + g.epoch + "&after=0"
 	conn, _, err := websocket.DefaultDialer.Dial(u, headers)
 	if err != nil {
@@ -153,7 +154,7 @@ func TestBrowserReplaysOnlyItsScopeAndRequestsResyncForExpiredCursor(t *testing.
 	if value["type"] != "resync" {
 		t.Fatal("expired empty buffer did not request resync")
 	}
-	z := "ws" + strings.TrimPrefix(server.URL, "http") + "/sync/v1/w/secondary/events/" + threadID + "?epoch=" + g.epoch + "&after=0"
+	z := "ws" + strings.TrimPrefix(server.URL, "http") + "/sync/v1/w/zyy/events/" + threadID + "?epoch=" + g.epoch + "&after=0"
 	third, _, err := websocket.DefaultDialer.Dial(z, headers)
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +165,7 @@ func TestBrowserReplaysOnlyItsScopeAndRequestsResyncForExpiredCursor(t *testing.
 		t.Fatal(err)
 	}
 	if value["type"] != "hello" {
-		t.Fatal("AI event leaked into SECONDARY")
+		t.Fatal("AI event leaked into ZYY")
 	}
 }
 func TestAgentRequiresSeparateCredentialAndRejectsBrowserOrigin(t *testing.T) {
@@ -172,7 +173,7 @@ func TestAgentRequiresSeparateCredentialAndRejectsBrowserOrigin(t *testing.T) {
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	u := "ws" + strings.TrimPrefix(server.URL, "http") + "/_sync-agent"
-	for _, header := range []http.Header{{}, {"Authorization": {"Bearer " + string(g.secret)}, "Origin": {"http://localhost:3080"}}} {
+	for _, header := range []http.Header{{}, {"Authorization": {"Bearer " + string(g.secret)}, "Origin": {"https://example.invalid"}}} {
 		conn, r, err := websocket.DefaultDialer.Dial(u, header)
 		if conn != nil {
 			conn.Close()
@@ -191,7 +192,7 @@ func TestCachedReadDoesNotWaitForMac(t *testing.T) {
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	request, _ := http.NewRequest("GET", server.URL+"/sync/v1/w/ai/thread/"+threadID, nil)
-	request.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	request.Header.Set("X-DSH-Authenticated", "1")
 	start := time.Now()
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

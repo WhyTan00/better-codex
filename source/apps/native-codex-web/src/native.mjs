@@ -1,8 +1,9 @@
+import {existsSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {EventEmitter} from 'node:events';
 import {fail} from './registry.mjs';
-export const CODEX='/Applications/${BETTER_CODEX_APP_BIN}/Contents/Resources/codex';
+export const CODEX=['/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex','/Applications/ChatGPT.app/Contents/Resources/codex'].find(existsSync)??'/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 export class Native extends EventEmitter {
   constructor(ws,{binary=CODEX}={}) { super(); this.ws=ws;this.binary=binary;this.pending=new Map();this.seq=0;this.state='notStarted'; }
   async start() {
@@ -21,7 +22,7 @@ export class Native extends EventEmitter {
         const p=this.pending.get(msg.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(msg.id);
         msg.error?p.reject(fail(502,`原生协议错误: ${msg.error.message}`)):p.resolve(msg.result);
       });
-      this.initialization=await this.rpc('initialize',{clientInfo:{name:'betterCodex_native_codex_web',title:'Private Codex Workbench',version:'1.0.0'},capabilities:{experimentalApi:true}});
+      this.initialization=await this.rpc('initialize',{clientInfo:{name:'dsh_native_codex_web',title:'Private Codex Workbench',version:'1.0.0'},capabilities:{experimentalApi:true}});
       this.send({method:'initialized',params:{}});this.state='ready';return this;
     })(); return this.ready;
   }

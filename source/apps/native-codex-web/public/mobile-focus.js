@@ -12,7 +12,7 @@
  document.addEventListener('pointerdown',e=>{if(e.isTrusted&&editor(e.target))allow();},true);
  document.addEventListener('keydown',e=>{if(e.isTrusted&&e.key==='Tab')allow();},true);
  document.addEventListener('focusin',e=>{const target=editor(e.target);if(target&&!permitted){suppressed++;e.stopImmediatePropagation();target.blur();}},true);
- addEventListener('betterCodex:native-route',e=>reset(e.detail.path));
+ addEventListener('dsh:native-route',e=>reset(e.detail.path));
  const observer=new MutationObserver(records=>{for(const r of records){if(r.type==='attributes'){if(r.target.matches?.(selector)){const node=r.target;if(!modes.has(node))modes.set(node,node.getAttribute('inputmode'));editors.add(node);if(permitted)restore(node);else node.setAttribute('inputmode','none');}}else for(const n of r.addedNodes)discover(n);}});observer.observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:['class','contenteditable','role']});discover(document.documentElement);
- window.__BETTER_CODEX_FOCUS_POLICY__={reset,get suppressed(){return suppressed;}};
+ window.__DSH_FOCUS_POLICY__={reset,get suppressed(){return suppressed;}};
 })();

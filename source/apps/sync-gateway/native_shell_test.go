@@ -11,18 +11,18 @@ import (
 
 func TestNativeShellAssetsAndBootstrapWithoutMac(t *testing.T) {
 	g := testGateway(t)
-	defer g.durable.db.Close()
+	defer g.durable.close()
 	version := "0123456789abcdef"
 	dir := filepath.Join(g.dir, "native-ui", version)
 	os.MkdirAll(dir, 0700)
-	manifest := map[string]any{"schemaVersion": 1, "version": version, "shell": "/betterCodex-native-assets/" + version + "/shell.html"}
+	manifest := map[string]any{"schemaVersion": 1, "version": version, "shell": "/dsh-native-assets/" + version + "/shell.html"}
 	raw, _ := json.Marshal(manifest)
 	os.WriteFile(filepath.Join(g.dir, "native-ui", "manifest.json"), raw, 0600)
 	os.WriteFile(filepath.Join(dir, "shell.html"), []byte("<html>native shell</html>"), 0600)
 	for _, url := range []string{"http://127.0.0.1/local/" + threadID + "?workspace=ai", "http://127.0.0.1/?view=chat&workspace=ai", "http://127.0.0.1" + manifest["shell"].(string)} {
 		r := httptest.NewRequest("GET", url, nil)
 		w := httptest.NewRecorder()
-		if !g.serveNativeShell(w, r) || w.Code != 200 || w.Header().Get("X-BETTER_CODEX-Credential-Free-Shell") != "1" || !strings.Contains(w.Body.String(), "native shell") {
+		if !g.serveNativeShell(w, r) || w.Code != 200 || w.Header().Get("X-DSH-Credential-Free-Shell") != "1" || !strings.Contains(w.Body.String(), "native shell") {
 			t.Fatal("shell not served", url, w.Code)
 		}
 	}
@@ -31,7 +31,7 @@ func TestNativeShellAssetsAndBootstrapWithoutMac(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatal("unknown workspace accepted")
 	}
-	record := NativeRecord{Scope: "ai", Key: "bootstrap", Kind: "bootstrap", SourceGeneration: "source-db", Generation: "g", Revision: 1, Payload: json.RawMessage(`{"config":{"workspaceRoots":["${BETTER_CODEX_WORKSPACE}"]}}`)}
+	record := NativeRecord{Scope: "ai", Key: "bootstrap", Kind: "bootstrap", SourceGeneration: "source-db", Generation: "g", Revision: 1, Payload: json.RawMessage(`{"config":{"workspaceRoots":["/workspace/primary"]}}`)}
 	raw, _ = json.Marshal(record)
 	if e := g.apply(frame{Epoch: "source", Seq: 1, Scope: "ai", Event: Event{Type: "nativeRecord"}, Data: raw}); e != nil {
 		t.Fatal(e)
@@ -42,14 +42,14 @@ func TestNativeShellAssetsAndBootstrapWithoutMac(t *testing.T) {
 		t.Fatal("offline bootstrap unavailable", w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	g.serveNativeBootstrap(w, httptest.NewRequest("GET", "http://127.0.0.1/sync/v1/w/secondary/native-bootstrap", nil), "secondary")
-	if w.Code == 200 || strings.Contains(w.Body.String(), "${BETTER_CODEX_WORKSPACE}") {
+	g.serveNativeBootstrap(w, httptest.NewRequest("GET", "http://127.0.0.1/sync/v1/w/zyy/native-bootstrap", nil), "zyy")
+	if w.Code == 200 || strings.Contains(w.Body.String(), "/workspace/primary") {
 		t.Fatal("bootstrap crossed scope")
 	}
 }
 func TestHistoryEvictionProtectsCatalogTombstonesAndCurrentReply(t *testing.T) {
 	g := testGateway(t)
-	defer g.durable.db.Close()
+	defer g.durable.close()
 	for _, v := range []struct {
 		key, kind string
 		deleted   bool
@@ -80,7 +80,7 @@ func TestHistoryEvictionProtectsCatalogTombstonesAndCurrentReply(t *testing.T) {
 
 func TestCompletedItemHeadReuseKeepsOpaquePagingAndGeneration(t *testing.T) {
 	g := testGateway(t)
-	defer g.durable.db.Close()
+	defer g.durable.close()
 	params := map[string]any{"threadId": threadID, "turnId": turnID, "cursor": "new-head", "limit": float64(20), "sortDirection": "desc"}
 	aliasKey, _ := json.Marshal([]any{threadID, turnID, 20, "desc"})
 	records := []NativeRecord{
@@ -105,7 +105,7 @@ func TestCompletedItemHeadReuseKeepsOpaquePagingAndGeneration(t *testing.T) {
 	if e != nil || cached == nil || cached.Key != "new-page" || !strings.Contains(string(cached.Payload), "12345678901234567890") || !strings.Contains(string(cached.Payload), "native-next") {
 		t.Fatal("native page lost", e)
 	}
-	if other, _ := g.stableNativeItemHead("secondary", "new-page", params); other != nil {
+	if other, _ := g.stableNativeItemHead("zyy", "new-page", params); other != nil {
 		t.Fatal("scope crossed")
 	}
 	records[1].Generation = "rewrite"

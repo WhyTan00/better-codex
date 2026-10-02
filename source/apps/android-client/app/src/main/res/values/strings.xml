@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Codex 工作台</string>
-    <string name="sync_channel_name">持续同步</string>
-    <string name="sync_notification_title">持续同步</string>
-    <string name="sync_notification_stop">停止同步</string>
-    <string name="completion_channel_name">任务完成提醒</string>
-    <string name="completion_notification_text">任务完成提醒，点击查看</string>
-</resources>

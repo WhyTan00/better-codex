@@ -16,7 +16,7 @@ func (g *Gateway) serveSnapshot(w http.ResponseWriter, r *http.Request, scope, i
 	cursor := r.URL.Query().Get("cursor")
 	g.mu.Lock()
 	t := g.topicLocked(scope, id)
-	seq, epoch, online := t.Seq, g.epoch, g.bridge != nil && g.nativeOnline
+	seq, epoch, online := t.Seq, g.epoch, g.nativeOnlineNow()
 	var snapshot Snapshot
 	cached := t.Snapshot != nil
 	if cached {
@@ -25,7 +25,7 @@ func (g *Gateway) serveSnapshot(w http.ResponseWriter, r *http.Request, scope, i
 	}
 	g.mu.Unlock()
 	if strings.HasPrefix(cursor, "cached:") && cached {
-		page, err := g.history.page(scope, id, cursor, snapshot.Thread)
+		page, err := g.boundedHistoryPage(r.Context(), scope, id, cursor, snapshot.Thread)
 		if err != nil {
 			writeJSON(w, 409, map[string]any{"error": err.Error()})
 			return
@@ -43,7 +43,11 @@ func (g *Gateway) serveSnapshot(w http.ResponseWriter, r *http.Request, scope, i
 			writeJSON(w, 502, map[string]any{"error": "会话内容尚未同步"})
 			return
 		}
-		_ = g.history.save(scope, snapshot, cursor == "", snapshot.NextCursor == nil)
+		if g.replica != nil {
+			g.mirrorHistoryPage(scope, snapshot, cursor == "")
+		} else {
+			_ = g.history.save(scope, snapshot, cursor == "", snapshot.NextCursor == nil)
+		}
 		if cursor == "" {
 			g.mu.Lock()
 			t = g.topicLocked(scope, id)
@@ -58,7 +62,9 @@ func (g *Gateway) serveSnapshot(w http.ResponseWriter, r *http.Request, scope, i
 		cached = false
 	}
 	if cursor == "" {
-		snapshot.NextCursor = g.history.cursor(scope, id, snapshot)
+		if g.replica == nil {
+			snapshot.NextCursor = g.history.cursor(scope, id, snapshot)
+		}
 		g.refresh(scope, id)
 	}
 	g.mu.Lock()
@@ -101,7 +107,7 @@ func (g *Gateway) serveCatalog(w http.ResponseWriter, r *http.Request, scope str
 			list = append(list, thread)
 		}
 	}
-	seq, epoch, online := t.Seq, g.epoch, g.bridge != nil && g.nativeOnline
+	seq, epoch, online := t.Seq, g.epoch, g.nativeOnlineNow()
 	g.mu.Unlock()
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Pinned != list[j].Pinned {

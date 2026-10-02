@@ -1,21 +1,27 @@
 import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
-import {workspace,belongs} from './registry.mjs';
+import {workspace,belongs,SCOPES} from './registry.mjs';
 import {displayItem,displayThread,displayTurn,applyDisplayEvent,mergeFetchedSnapshot,publicSnapshot} from './sync-projection.mjs';
 
 // The existing native host remains the only execution authority. This feed
 // reuses its official paginated history and turn/item events, not rollout files.
 export class SyncFeed extends EventEmitter {
- constructor({native,boundary,outbox=null,nativeCache=null}){super();Object.assign(this,{native,boundary,outbox,nativeCache});this.epoch=outbox?.epoch||randomUUID();this.sequence=outbox?.sequence||0;this.cache=new Map();this.scopes=new Map();this.loading=new Map();this.snapshotVersions=new Map();this.pinVersions=new Map();this.interests=new Map();this.deltas=new Map();this.attachments=new Set();this.eventChain=Promise.resolve();
-  native.on('notification',event=>{this.eventChain=this.eventChain.then(()=>this.observe(event)).catch(()=>{});});
-  native.on('request',event=>{boundary.observe(event);this.eventChain=this.eventChain.then(()=>this.observeRequest(event)).catch(()=>{});});
+ constructor({native,boundary,outbox=null,nativeCache=null}){super();Object.assign(this,{native,boundary,outbox,nativeCache});this.epoch=outbox?.epoch||randomUUID();this.sequence=outbox?.sequence||0;this.cache=new Map();this.scopes=new Map();this.loading=new Map();this.snapshotVersions=new Map();this.pinVersions=new Map();this.interests=new Map();this.deltas=new Map();this.attachments=new Set();this.eventChains=new Map();
+  native.on('notification',event=>this.enqueueEvent(event,()=>this.observe(event)));
+  native.on('request',event=>{boundary.observe(event);this.enqueueEvent(event,()=>this.observeRequest(event));});
   native.on('interrupted',()=>{this.attachments.clear();this.publish({event:{type:'host',online:false}});});
   native.on('ready',()=>{this.publish({event:{type:'host',online:true}});for(const[threadId,scope]of this.interests)this.watch(scope,threadId).catch(()=>{});});
  }
- publish(value){const frame=this.outbox?this.outbox.append(value):{...value,type:'publish',epoch:this.epoch,seq:this.sequence+1};this.sequence=frame.seq;this.emit('publish',frame);return frame.seq;}
- async scopeFor(id){if(this.scopes.has(id))return this.scopes.get(id);const t=(await this.native.rpc('thread/read',{threadId:id,includeTurns:false})).thread;for(const scope of ['ai','secondary'])if(await belongs(t.cwd,workspace(scope))){this.scopes.set(id,scope);return scope;}return null;}
+ get eventChain(){return Promise.all(this.eventChains.values());}
+ enqueueEvent(event,work){this.nativeCache?.noteEvent?.(event);const id=event.params?.threadId||event.params?.thread?.id||this.boundary.approvals.get(String(event.params?.requestId))?.params?.threadId||'host',previous=this.eventChains.get(id)||Promise.resolve();const next=previous.then(work).catch(error=>{if(this.outbox&&(error.code==='ENOSPC'||error.errcode===13)){this.outbox.defer(SCOPES);this.emit('deferred',{reason:'storage'});}}).finally(()=>{if(this.eventChains.get(id)===next)this.eventChains.delete(id);});this.eventChains.set(id,next);return next;}
+ publish(value){return this.publishBatch([value]);}
+ publishBatch(values,persist){let frames;try{frames=this.outbox?this.outbox.appendBatch(values,persist):values.map((value,index)=>({...value,type:'publish',epoch:this.epoch,seq:this.sequence+index+1}));}catch(error){
+  if(!this.outbox||!(error.code==='OUTBOX_CAPACITY'||error.code==='ENOSPC'||error.errcode===13))throw error;
+  this.outbox.defer(values.filter(v=>!['host','nativeRecord'].includes(v.event?.type)).flatMap(v=>v.scope?[v.scope]:SCOPES));this.emit('deferred',{reason:error.code==='OUTBOX_CAPACITY'?'backpressure':'storage'});return null;
+ }if(!frames.length)return this.sequence;if(!this.outbox)persist?.();this.sequence=frames.at(-1).seq;for(const frame of frames)this.emit('publish',frame);return this.sequence;}
+ async scopeFor(id){if(this.scopes.has(id))return this.scopes.get(id);const t=(await this.native.rpc('thread/read',{threadId:id,includeTurns:false})).thread;for(const scope of SCOPES)if(await belongs(t.cwd,workspace(scope))){this.scopes.set(id,scope);return scope;}return null;}
  async catalog(scope,cursor=null,search=''){const result=await this.boundary.call(scope,{method:'thread/list',params:{limit:40,cursor,searchTerm:search||null,sortKey:'updated_at'}});if(!cursor)await this.pins(scope);for(const thread of result.data)this.nativeCache?.rememberThread(scope,thread);const data=result.data.map(displayThread);for(const t of data)this.scopes.set(t.id,scope);return {data,nextCursor:result.nextCursor??null};}
- async pins(scope){let cursor=null;const seen=new Set(),data=[];do{const page=await this.boundary.call(scope,{method:'thread/list',params:{sectionId:'01984de2-8f74-7c91-a3b2-5c5e937cf318',sortKey:'section_position',sortDirection:'asc',limit:40,cursor}});data.push(...page.data.map(displayThread));cursor=page.nextCursor;if(cursor&&seen.has(cursor))throw Error('pin cursor repeated');seen.add(cursor);}while(cursor);const result={ids:data.map(t=>t.id),data},version=JSON.stringify(result);if(this.pinVersions.get(scope)!==version){this.pinVersions.set(scope,version);this.publish({scope,threadId:'',event:{type:'pins'},data:result});}return result;}
+ async pins(scope){let cursor=null;const seen=new Set(),data=[];do{const page=await this.boundary.call(scope,{method:'thread/list',params:{sectionId:'01984de2-8f74-7c91-a3b2-5c5e937cf318',sortKey:'section_position',sortDirection:'asc',limit:40,cursor}});data.push(...page.data.map(displayThread));cursor=page.nextCursor;if(cursor&&seen.has(cursor))throw Error('pin cursor repeated');seen.add(cursor);}while(cursor);const result={ids:data.map(t=>t.id),data},version=JSON.stringify(result);if(this.pinVersions.get(scope)!==version){if(this.publish({scope,threadId:'',event:{type:'pins'},data:result})!==null)this.pinVersions.set(scope,version);}return result;}
  async ensureAttached(scope,id){if(this.attachments.has(id)||this.boundary.unmaterialized.has(id))return;if(!(await this.boundary.loadedIds()).has(id))return;try{await this.native.rpc('thread/resume',{threadId:id,excludeTurns:true});this.attachments.add(id);}catch(e){if(this.boundary.journal.ownsThread(scope,id)&&/no rollout found|not materialized/.test(e.message)){this.boundary.unmaterialized.add(id);return;}throw e;}}
  async watch(scope,id){await this.boundary.checked(workspace(scope),id);this.interests.delete(id);this.interests.set(id,scope);while(this.interests.size>100)this.interests.delete(this.interests.keys().next().value);
   // Attaching to a thread already loaded in this SAME host adds a notification
@@ -32,7 +38,7 @@ export class SyncFeed extends EventEmitter {
   const fetched={thread:displayThread(t),turns,nextCursor:page.nextCursor??null,confirmedAt:new Date().toISOString()};
   if(cursor)return publicSnapshot(fetched);
   this.flushDeltas();const merged=mergeFetchedSnapshot(fetched,this.cache.get(id),startRevision);this.cache.delete(id);this.cache.set(id,merged);while(this.cache.size>100)this.cache.delete(this.cache.keys().next().value);
-  const projection=publicSnapshot(merged),version=JSON.stringify({...projection,confirmedAt:undefined});if(this.snapshotVersions.get(id)!==version){this.snapshotVersions.set(id,version);this.publish({scope,threadId:id,event:{type:'snapshot',snapshot:projection}});}return projection;
+  const projection=publicSnapshot(merged),version=JSON.stringify({...projection,confirmedAt:undefined});if(this.snapshotVersions.get(id)!==version){const seq=this.publish({scope,threadId:id,event:{type:'snapshot',snapshot:projection}});if(seq!==null)this.snapshotVersions.set(id,version);else if(background)throw Error('snapshot publication deferred');}return projection;
  }
  update(scope,id,event){event.threadId=id;const revision=this.sequence+1;this.cache.set(id,applyDisplayEvent(this.cache.get(id),event,revision));while(this.cache.size>150)this.cache.delete(this.cache.keys().next().value);this.publish({scope,threadId:id,event});}
  flushDeltas(){clearTimeout(this.deltaTimer);this.deltaTimer=null;for(const value of this.deltas.values())this.update(value.scope,value.threadId,{type:'delta',turnId:value.turnId,itemId:value.itemId,delta:value.delta});this.deltas.clear();}
@@ -56,5 +62,5 @@ export class SyncFeed extends EventEmitter {
   // tool arguments stay on the Mac and can be requested explicitly as details.
   if(['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/tool/requestUserInput'].includes(m.method))this.publish({scope,threadId:id,event:{type:'approval',request:{id:m.id,method:m.method,threadId:id,questions:p.questions,availableDecisions:p.availableDecisions}}});
  }
- close(){clearTimeout(this.deltaTimer);this.deltas.clear();}
+ close(){clearTimeout(this.deltaTimer);this.deltas.clear();return this.outbox?.close();}
 }

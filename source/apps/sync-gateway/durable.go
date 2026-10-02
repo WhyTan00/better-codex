@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -13,21 +14,23 @@ import (
 	"time"
 )
 
-// FULL synchronous WAL is the acknowledgement boundary. Native data, topic
-// projections, replay events and the consumed sender cursor commit together.
-type DurableStore struct{ db *sql.DB }
+// Disk mode uses FULL synchronous WAL. Memory mode explicitly acknowledges
+// an ephemeral read projection; execution and command identity stay on Mac.
 
 // Only rebuildable history is evicted. Catalog, tombstones, approval state and
 // command identities are retained. The just-committed response stays readable.
 func pruneNativeHistory(tx *sql.Tx, scope, key string, budget int64) error {
+	return pruneNativeHistoryProtected(tx, map[recordTouchKey]bool{{scope, key}: true}, budget)
+}
+func pruneNativeHistoryProtected(tx *sql.Tx, protected map[recordTouchKey]bool, budget int64) error {
 	var total int64
-	if e := tx.QueryRow("SELECT COALESCE(SUM(length(payload)),0) FROM native_records WHERE kind IN ('history','turn','item') AND deleted=0").Scan(&total); e != nil {
+	if e := tx.QueryRow("SELECT CAST(value AS INTEGER) FROM sync_meta WHERE key='nativeHistoryBytes'").Scan(&total); e != nil {
 		return e
 	}
 	if total <= budget {
 		return nil
 	}
-	rows, e := tx.Query("SELECT scope,key,length(payload) FROM native_records WHERE kind IN ('history','turn','item') AND deleted=0 AND NOT(scope=? AND key=?) ORDER BY accessed_at", scope, key)
+	rows, e := tx.Query("SELECT scope,key,length(payload) FROM native_records WHERE kind IN ('history','turn','item') AND deleted=0 ORDER BY accessed_at")
 	if e != nil {
 		return e
 	}
@@ -41,6 +44,9 @@ func pruneNativeHistory(tx *sql.Tx, scope, key string, budget int64) error {
 		if e = rows.Scan(&v.scope, &v.key, &v.bytes); e != nil {
 			rows.Close()
 			return e
+		}
+		if protected[recordTouchKey{v.scope, v.key}] {
+			continue
 		}
 		victims = append(victims, v)
 		total -= v.bytes
@@ -94,20 +100,23 @@ func cloneTopic(t *Topic) *Topic {
 	_ = json.Unmarshal(b, &p)
 	return &Topic{Seq: p.Seq, Events: p.Events, Bytes: p.Bytes, Snapshot: p.Snapshot, List: p.List, PinnedIDs: p.PinnedIDs, NextCursor: p.NextCursor, Approvals: p.Approvals, Dirty: t.Dirty, Subscribers: t.Subscribers}
 }
-func openDurable(dir string) (*DurableStore, error) {
-	db, err := sql.Open("sqlite", filepath.Join(dir, "read-model-v1.sqlite"))
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+
+const readModelSchema = `
  CREATE TABLE IF NOT EXISTS sync_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS topics(key TEXT PRIMARY KEY,payload BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS received(epoch TEXT,seq INTEGER,hash TEXT NOT NULL,PRIMARY KEY(epoch,seq));
  CREATE TABLE IF NOT EXISTS native_records(scope TEXT,key TEXT,kind TEXT,thread_id TEXT,generation TEXT,revision INTEGER,payload BLOB,deleted INTEGER,accessed_at INTEGER,PRIMARY KEY(scope,key));
  CREATE INDEX IF NOT EXISTS native_record_change ON native_records(scope,kind,revision);
  CREATE INDEX IF NOT EXISTS native_record_lru ON native_records(kind,accessed_at);
- CREATE TABLE IF NOT EXISTS history_pages(scope TEXT,thread_id TEXT,page_hash TEXT,payload BLOB,PRIMARY KEY(scope,thread_id,page_hash));`)
+ CREATE TABLE IF NOT EXISTS history_pages(scope TEXT,thread_id TEXT,page_hash TEXT,payload BLOB,PRIMARY KEY(scope,thread_id,page_hash));`
+
+func openDurable(dir string) (*DurableStore, error) {
+	db, err := sql.Open("sqlite", filepath.Join(dir, "read-model-v1.sqlite"))
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;` + readModelSchema)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -117,11 +126,15 @@ func openDurable(dir string) (*DurableStore, error) {
 		db.Close()
 		return nil, err
 	}
-	return &DurableStore{db}, nil
+	if err = initializeNativeHistoryBudget(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return newDurableReaders(db, dir)
 }
 func (d *DurableStore) meta(key string) string {
 	var v string
-	_ = d.db.QueryRow("SELECT value FROM sync_meta WHERE key=?", key).Scan(&v)
+	_ = d.reader.QueryRow("SELECT value FROM sync_meta WHERE key=?", key).Scan(&v)
 	return v
 }
 func (d *DurableStore) setMeta(key, value string) error {
@@ -129,12 +142,19 @@ func (d *DurableStore) setMeta(key, value string) error {
 	return e
 }
 func (d *DurableStore) reset(epoch string, seq uint64) error {
+	return d.resetProjection(epoch, seq, "")
+}
+func (d *DurableStore) resetProjection(epoch string, seq uint64, serverEpoch string) error {
 	tx, e := d.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	for k, v := range map[string]string{"adapterEpoch": epoch, "adapterSeq": fmt.Sprint(seq)} {
+	values := map[string]string{"adapterEpoch": epoch, "adapterSeq": fmt.Sprint(seq)}
+	if serverEpoch != "" {
+		values["serverEpoch"] = serverEpoch
+	}
+	for k, v := range values {
 		if _, e = tx.Exec("INSERT INTO sync_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", k, v); e != nil {
 			return e
 		}
@@ -160,14 +180,37 @@ func (d *DurableStore) checkDuplicate(f frame) error {
 	}
 	return nil
 }
-func (d *DurableStore) commit(f frame, topics map[string]*Topic) error {
+func (d *DurableStore) commitBatch(frames []frame, topics map[string]*Topic, metrics *publicationMetrics) error {
+	started := time.Now()
 	tx, err := d.db.Begin()
+	metrics.DBWaitMs = time.Since(started).Milliseconds()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	touches := d.takeTouches()
+	touchStarted := time.Now()
+	committed := false
+	defer func() {
+		if !committed {
+			d.restoreTouches(touches)
+		}
+	}()
+	for _, touch := range touches {
+		if _, err = tx.Exec("UPDATE native_records SET accessed_at=MAX(accessed_at,?) WHERE scope=? AND key=? AND generation=? AND revision=?", touch.at, touch.scope, touch.key, touch.generation, touch.revision); err != nil {
+			return err
+		}
+	}
+	metrics.RecencyWriteMs = time.Since(touchStarted).Milliseconds()
+	encodeStarted := time.Now()
 	for key, t := range topics {
+		// g.topics already owns the live in-memory event projection. Avoid
+		// copying every conversation body into a second volatile SQL table.
+		if d.memory {
+			continue
+		}
 		raw, e := json.Marshal(persistable(t))
+		metrics.TopicBytes += len(raw)
 		if e != nil {
 			return e
 		}
@@ -175,59 +218,81 @@ func (d *DurableStore) commit(f frame, topics map[string]*Topic) error {
 			return e
 		}
 	}
-	if f.Event.Type == "nativeRecord" {
-		var r NativeRecord
-		if json.Unmarshal(f.Data, &r) != nil || r.Scope != f.Scope || r.ThreadID != f.ThreadID || r.Key == "" || r.Generation == "" || r.Revision == 0 {
-			return errors.New("invalid native record")
-		}
-		if r.SourceGeneration == "" {
-			return errors.New("native source generation missing")
-		}
-		var generation string
-		_ = tx.QueryRow("SELECT value FROM sync_meta WHERE key='nativeGeneration'").Scan(&generation)
-		if generation != r.SourceGeneration {
-			if _, err = tx.Exec("DELETE FROM native_records"); err != nil {
-				return err
+	metrics.TopicWriteMs = time.Since(encodeStarted).Milliseconds()
+	protected := map[recordTouchKey]bool{}
+	nativeStarted := time.Now()
+	for _, f := range frames {
+		if f.Event.Type == "nativeRecord" {
+			var r NativeRecord
+			if json.Unmarshal(f.Data, &r) != nil || r.Scope != f.Scope || r.ThreadID != f.ThreadID || r.Key == "" || r.Generation == "" || r.Revision == 0 {
+				return errors.New("invalid native record")
 			}
-			if _, err = tx.Exec("INSERT INTO sync_meta VALUES('nativeGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", r.SourceGeneration); err != nil {
-				return err
+			if r.SourceGeneration == "" {
+				return errors.New("native source generation missing")
 			}
-		}
-		var old NativeRecord
-		var raw []byte
-		e := tx.QueryRow("SELECT payload FROM native_records WHERE scope=? AND key=?", r.Scope, r.Key).Scan(&raw)
-		if e != nil && !errors.Is(e, sql.ErrNoRows) {
-			return e
-		}
-		if len(raw) > 0 {
-			if e = json.Unmarshal(raw, &old); e != nil {
+			var generation string
+			_ = tx.QueryRow("SELECT value FROM sync_meta WHERE key='nativeGeneration'").Scan(&generation)
+			if generation != r.SourceGeneration {
+				if _, err = tx.Exec("DELETE FROM native_records"); err != nil {
+					return err
+				}
+				if _, err = tx.Exec("INSERT INTO sync_meta VALUES('nativeGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", r.SourceGeneration); err != nil {
+					return err
+				}
+			}
+			var old NativeRecord
+			var raw []byte
+			e := tx.QueryRow("SELECT payload FROM native_records WHERE scope=? AND key=?", r.Scope, r.Key).Scan(&raw)
+			if e != nil && !errors.Is(e, sql.ErrNoRows) {
 				return e
 			}
-			if old.Generation == r.Generation && old.Revision > r.Revision {
-				return errors.New("native record revision moved backwards")
+			if len(raw) > 0 {
+				if e = json.Unmarshal(raw, &old); e != nil {
+					return e
+				}
+				if old.Generation == r.Generation && old.Revision > r.Revision {
+					return errors.New("native record revision moved backwards")
+				}
+				if old.Generation == r.Generation && old.Revision == r.Revision && string(raw) != string(f.Data) {
+					return errors.New("native record identity mismatch")
+				}
 			}
-			if old.Generation == r.Generation && old.Revision == r.Revision && string(raw) != string(f.Data) {
-				return errors.New("native record identity mismatch")
+			if _, e = tx.Exec(`INSERT INTO native_records VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,key) DO UPDATE SET kind=excluded.kind,thread_id=excluded.thread_id,generation=excluded.generation,revision=excluded.revision,payload=excluded.payload,deleted=excluded.deleted,accessed_at=excluded.accessed_at`, r.Scope, r.Key, r.Kind, r.ThreadID, r.Generation, r.Revision, []byte(f.Data), r.Deleted, time.Now().UnixMilli()); e != nil {
+				return e
+			}
+			protected[recordTouchKey{r.Scope, r.Key}] = true
+		}
+		// historyPage is already committed to HistoryStore by applyMemory. This
+		// content-hash table had no reader and accumulated every changed page.
+		// Keep the table schema for rollback compatibility, not another copy.
+		if !d.memory && !d.separateNotifications {
+			if err = enqueueCompletion(tx, f, time.Now().UnixMilli()); err != nil {
+				return err
 			}
 		}
-		if _, e = tx.Exec(`INSERT INTO native_records VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,key) DO UPDATE SET kind=excluded.kind,thread_id=excluded.thread_id,generation=excluded.generation,revision=excluded.revision,payload=excluded.payload,deleted=excluded.deleted,accessed_at=excluded.accessed_at`, r.Scope, r.Key, r.Kind, r.ThreadID, r.Generation, r.Revision, []byte(f.Data), r.Deleted, time.Now().UnixMilli()); e != nil {
-			return e
-		}
-		if e = pruneNativeHistory(tx, r.Scope, r.Key, 512*1024*1024); e != nil {
-			return e
-		}
-	}
-	if f.Event.Type == "historyPage" {
-		if _, err = tx.Exec("INSERT OR REPLACE INTO history_pages VALUES(?,?,?,?)", f.Scope, f.ThreadID, frameHash(frame{Data: f.Data}), []byte(f.Data)); err != nil {
+		if _, err = tx.Exec("INSERT INTO received VALUES(?,?,?)", f.Epoch, f.Seq, frameHash(f)); err != nil {
 			return err
 		}
 	}
-	if err = enqueueCompletion(tx, f, time.Now().UnixMilli()); err != nil {
-		return err
+	metrics.NativeWriteMs = time.Since(nativeStarted).Milliseconds()
+	pruneStarted := time.Now()
+	if len(protected) > 0 {
+		budget := int64(512 * 1024 * 1024)
+		if d.memory {
+			budget = 32 * 1024 * 1024
+		}
+		if err = pruneNativeHistoryProtected(tx, protected, budget); err != nil {
+			return err
+		}
+		if d.memory {
+			if err = pruneMemoryRecords(tx, protected, &d.catalogLimited); err != nil {
+				return err
+			}
+		}
 	}
-	if _, err = tx.Exec("INSERT INTO received VALUES(?,?,?)", f.Epoch, f.Seq, frameHash(f)); err != nil {
-		return err
-	}
+	metrics.PruneMs = time.Since(pruneStarted).Milliseconds()
+	journalStarted := time.Now()
+	f := frames[len(frames)-1]
 	if _, err = tx.Exec("INSERT INTO sync_meta VALUES('adapterSeq',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", fmt.Sprint(f.Seq)); err != nil {
 		return err
 	}
@@ -238,7 +303,13 @@ func (d *DurableStore) commit(f frame, topics map[string]*Topic) error {
 	if _, err = tx.Exec("DELETE FROM received WHERE epoch<>? OR seq<?", f.Epoch, int64(f.Seq)-4096); err != nil {
 		return err
 	}
-	return tx.Commit()
+	metrics.JournalMs = time.Since(journalStarted).Milliseconds()
+	syncStarted := time.Now()
+	err = tx.Commit()
+	metrics.SyncMs = time.Since(syncStarted).Milliseconds()
+	metrics.TransactionMs = time.Since(started).Milliseconds() - metrics.DBWaitMs
+	committed = err == nil
+	return err
 }
 func (d *DurableStore) seed(topics map[string]*Topic) error {
 	tx, e := d.db.Begin()
@@ -247,6 +318,9 @@ func (d *DurableStore) seed(topics map[string]*Topic) error {
 	}
 	defer tx.Rollback()
 	for key, t := range topics {
+		if d.memory {
+			continue
+		}
 		raw, err := json.Marshal(persistable(t))
 		if err != nil {
 			return err
@@ -261,6 +335,9 @@ func (d *DurableStore) seed(topics map[string]*Topic) error {
 	return tx.Commit()
 }
 func (d *DurableStore) saveTopic(key string, t *Topic) error {
+	if d.memory {
+		return nil
+	}
 	raw, e := json.Marshal(persistable(t))
 	if e != nil {
 		return e
@@ -289,23 +366,10 @@ func (d *DurableStore) restore(g *Gateway) error {
 	return rows.Err()
 }
 func (d *DurableStore) nativeRecord(scope, key string) (*NativeRecord, error) {
-	var raw []byte
-	e := d.db.QueryRow("SELECT payload FROM native_records WHERE scope=? AND key=?", scope, key).Scan(&raw)
-	if errors.Is(e, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if e != nil {
-		return nil, e
-	}
-	var r NativeRecord
-	if e = json.Unmarshal(raw, &r); e != nil {
-		return nil, e
-	}
-	_, _ = d.db.Exec("UPDATE native_records SET accessed_at=? WHERE scope=? AND key=?", time.Now().UnixMilli(), scope, key)
-	return &r, nil
+	return d.nativeRecordContext(context.Background(), scope, key, nil, "")
 }
 func (d *DurableStore) nativeChanges(scope, kind string, after uint64, limit int) ([]NativeRecord, error) {
-	rows, e := d.db.Query("SELECT payload FROM native_records WHERE scope=? AND kind=? AND revision>? ORDER BY revision LIMIT ?", scope, kind, after, limit)
+	rows, e := d.reader.Query("SELECT payload FROM native_records WHERE scope=? AND kind=? AND revision>? ORDER BY revision LIMIT ?", scope, kind, after, limit)
 	if e != nil {
 		return nil, e
 	}

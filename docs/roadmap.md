@@ -1,13 +1,7 @@
 # Roadmap
 
-The public core is intentionally small. Possible follow-up work:
+The portable Mac host, local relay, Tailscale Serve configuration, installer, doctor and configurable plugin interface ship in the 0.2 beta line.
 
-- a reference WebSocket adapter for a self-hosted Harness;
-- an encrypted, bounded IndexedDB cache implementation;
-- a native Android shell with a foreground-service policy that is explicit per
-  provider and operating system;
-- a plugin SDK with permission declarations and fixture-based contract tests;
-- more Remotion scenes for document linking, queue controls, and reconnects.
+Remaining acceptance work: actual phone PWA rendering and lifecycle, live device-to-device Tailscale use, Intel Mac, and signed-in execution with user-owned credentials.
 
-Provider compatibility and operating-system background behavior should be
-verified against the current provider documentation before implementation.
+Future changes should keep Native ownership and source-backed project adapters intact. Additional hosts or workspace slots need protocol and upgrade coverage. A launch agent, packaged application, Android APK, public Funnel or cloud deployment is not installed by the portable beta.

@@ -1,7 +1,7 @@
 // Reconcile display state from verified Native reads after missed terminal events.
 // Never emit turn/completed: a cache repair must not send a second notification.
 (()=>{
- const scope=window.__BETTER_CODEX_SCOPE__;if(!scope)return;
+ const scope=window.__DSH_SCOPE__;if(!scope)return;
  let client=null,applying=false;const registered=new WeakSet(),epochs=new Map();
  const stats={statusCorrections:0,turnCorrections:0,supersededReads:0};
  const turns=c=>c?.turnHistory?.kind==='canonical'?Object.values(c.turnHistory.history.entitiesByKey||{}):c?.turns||[];
@@ -32,5 +32,5 @@
    client.updateTurnState?.(id,turn.id,value=>{if(value.status!=='inProgress')return;value.status=turn.status;for(const key of ['error','durationMs'])if(Object.hasOwn(turn,key))value[key]=turn[key];});stats.turnCorrections++;
   }
  }
- window.__BETTER_CODEX_NATIVE_STATUS_RECOVERY__={register,beginRead,acceptRead,activeThreadIds:()=>[...new Set([...(client?.getCachedConversations?.()||[]).filter(active).map(c=>c.id),...(client?.getThreadSummaries?.()||[]).filter(t=>t.threadRuntimeStatus?.type==='active').map(t=>t.conversationId)])],diagnostics:()=>({...stats})};
+ window.__DSH_NATIVE_STATUS_RECOVERY__={register,beginRead,acceptRead,activeThreadIds:()=>[...new Set([...(client?.getCachedConversations?.()||[]).filter(active).map(c=>c.id),...(client?.getThreadSummaries?.()||[]).filter(t=>t.threadRuntimeStatus?.type==='active').map(t=>t.conversationId)])],diagnostics:()=>({...stats})};
 })();

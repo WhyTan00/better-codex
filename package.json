@@ -1,21 +1,23 @@
 {
   "name": "better-codex",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "private": false,
-  "description": "A native Codex workbench pattern: shared Harness, local-first sync, and custom plugins. / 原生 Codex 工作台模式：共享 Harness、本地优先同步与自定义插件。",
+  "description": "Run a native Codex workbench on your Mac with private Tailscale access and project plugins.",
   "author": "whytan",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.32.1",
   "scripts": {
     "demo": "python3 -m http.server 4173 --directory apps/demo",
-    "test": "node --test packages/harness-contract/test/*.test.mjs",
+    "test": "node --test packages/host-cli/test/*.test.mjs packages/harness-contract/test/*.test.mjs",
     "public:scan": "python3 scripts/scan-public-tree.py .",
-    "source:prepare": "python3 scripts/prepare-public-source.py --source ${BETTER_CODEX_PRIVATE_WORKBENCH:-../workbench} --destination source",
+    "source:prepare": "python3 scripts/prepare-portable-source.py",
     "video:install": "pnpm --dir video install",
     "video:typecheck": "pnpm --dir video typecheck",
     "video:render": "pnpm --dir video render",
-    "video:render:zh": "pnpm --dir video render:zh-vertical"
+    "video:render:zh": "pnpm --dir video render:zh-vertical",
+    "host": "node scripts/better-codex.mjs",
+    "verify:portable": "node scripts/verify-portable.mjs"
   },
   "workspaces": [
     "packages/*",

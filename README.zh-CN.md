@@ -1,91 +1,49 @@
-# Better Codex · whytan
+# Better Codex
 
-[English](README.md) · [中文说明](README.zh-CN.md)
+[下载 Mac 安装包](https://github.com/WhyTan00/better-codex/releases/download/v0.2.0-beta.1/Better-Codex-v0.2.0-beta.1-mac.zip)：解压到长期保留的位置，双击 `Install.command` 安装并启动。需要已安装并登录官方 Codex 桌面应用，首次安装会联网下载依赖。
 
-Better Codex 是一个公开的原生 AI 工作台参考实现：底层保留一个执行所有权，
-界面采用本地优先交互，再把项目范围内的插件放在原生对话渲染器周围。
+[English](README.md) · [安装说明](docs/open-source-setup.md) · [插件开发](docs/plugins.md)
 
-这是 **whytan** 的社区项目。它不是 OpenAI 官方产品，也不包含供应商凭据或
-真实供应商连接器。
+在自己的 Mac 上运行 Codex 工作台，用 Tailscale 从手机或另一台电脑继续同一个会话，无需 CVM。
 
-## 仓库内容
+Mac 保留原生执行、审批与命令回执；本机中继传送实时事件，读取缓存可重建。网页复用官方会话界面，并加入工作区导航和可配置的项目插件。
 
-- `packages/harness-contract`：原生 Harness 适配器、线程摘要、事件、队列控制
-  与缓存快照的供应商无关契约。
-- `apps/demo`：无需登录的浏览器 Demo，包含合成对话、本地优先发送、工作区切换
-  和项目插件卡片。
-- `source/`：经过白名单和脱敏处理的 Web、同步、插件及 Android 集成边界参考源。
-- `docs/media/`：公开安全的静态工作台、量化研究和视频制作展示图；其中所有数值
-  都是合成或示意数据。
-- `video/`：使用 Remotion 编写的确定性产品讲解视频源项目。
-- [`video/out/better-codex-explainer.mp4`](video/out/better-codex-explainer.mp4)：
-  已渲染的 32 秒讲解视频。
-- [`video/out/better-codex-zh-vertical.mp4`](video/out/better-codex-zh-vertical.mp4)：
-  面向微信视频号 / 小红书的 1080×1920 中文竖屏版，重点解释缓存、体验优化、
-  定制工作台和 DSH 兼容性。
+## 安装与使用
 
-## 可视化展示
+先安装官方 Codex 桌面应用并登录，然后运行：
 
-下面的图片是静态公开素材，用来解释产品结构，不包含真实会话、持仓、证券代码、
-本地路径、凭据、生产端点或私有媒体。
-
-![工作台总览](docs/media/workbench-overview.png)
-
-*工作台总览：一个原生 Harness，加上本地优先状态和有边界的项目插件。*
-
-![量化研究 Demo](docs/media/quant-research-demo.png)
-
-*量化研究：只展示合成的纸面研究证据，实时交易和券商动作均已关闭。*
-
-![视频制作 Demo](docs/media/video-production-demo.png)
-
-*视频制作：静态 Remotion 分镜和本地渲染状态。*
-
-中英双语的视觉说明见
-[docs/visual-showcase.md](docs/visual-showcase.md)。
-
-DSH 插件能否直接复用的结论见
-[docs/dsh-compatibility.zh-CN.md](docs/dsh-compatibility.zh-CN.md)：可以复用契约
-和架构思路，但私有 DSH 插件不是可直接复制的二进制 drop-in。
-
-## 运行 Demo
-
-```bash
-pnpm install
-pnpm demo
+```sh
+git clone https://github.com/WhyTan00/better-codex.git
+cd better-codex
+./install.sh --workspace "$HOME/Code"
+"$HOME/.better-codex/start"
 ```
 
-打开 <http://localhost:4173>。Demo 使用内存中的 Mock Harness，无需网络请求或
-账号即可运行。
+打开 `http://127.0.0.1:4173/?workspace=ai`。保留服务终端，Ctrl-C 停止本次启动的进程。也可以双击 `Install.command`，按默认目录完成安装并启动。
 
-完整配置说明（包括替换 Mock Harness 和添加插件）见
-[docs/open-source-setup.md](docs/open-source-setup.md)。
+手机接入：Mac 与手机先安装并登录 Tailscale，停止工作台后运行：
 
-## 渲染讲解视频
-
-视频使用确定性的 React/Remotion 场景表达架构、本地优先状态变化、项目适配器和
-界面标签，便于复现和审阅。
-
-```bash
-pnpm video:install
-pnpm video:typecheck
-pnpm video:render
-pnpm video:render:zh
+```sh
+"$HOME/.better-codex/better-codex" tailscale --enable
+"$HOME/.better-codex/start"
 ```
 
-生成的 MP4 位于 `video/out/better-codex-explainer.mp4` 和
-`video/out/better-codex-zh-vertical.mp4`，并作为轻量发布产物保留在仓库中。中文
-竖屏版的分镜见 [docs/video-script.zh-CN.md](docs/video-script.zh-CN.md)。
+用手机打开打印的 HTTPS `ts.net` 地址，可添加到主屏幕。入口同时检查 Tailscale 身份和允许的登录名；不会开启 Funnel。已有 Serve 路由冲突时会停止配置并保留原服务。
 
-## 公开边界
+## 按自己的项目配置
 
-私有实现包含真实会话、运行时状态、凭据、设备发布文件和受保护服务路由；这些内容
-不会复制到这里。添加适配器或部署示例前，请阅读
-[docs/public-boundary.md](docs/public-boundary.md)。
+`~/.better-codex/deployment.json` 控制工作区路径、名称、端口、插件和访问方式。自带的 `project-overview` 只读取所选工作区的目录名称。
 
-README 中的量化和视频截图是合成的公开 Demo，不表示本仓库可以登录券商、提交订单、
-访问私人媒体库或部署生产渲染器。
+插件可以提供数据卡片或在工作台中嵌入自己的页面。项目数据和编辑事务仍由插件原系统维护，工作台不另建业务事实来源。[完整配置与排错](docs/open-source-setup.md) · [插件接口](docs/plugins.md)。
 
-## 许可证
+## 当前交付范围
 
-MIT，见 [LICENSE](LICENSE)。
+这是 macOS 本机宿主测试版。Apple Silicon 已做隔离安装验证，Intel 尚未实机验证；手机通过 PWA 使用，本次不提供 Android APK 安装。真实手机体验与真实 Tailscale Serve 接入单独记录，不能用本地协议测试替代。[验收范围](docs/portable-validation.md)。
+
+公开核心已同步会话恢复路径修复、自动标题服务、可选中继缓存和当前网页适配。仓库中的旧演示页面、截图和视频使用示例数据，用于说明产品，不代表真实安装结果。
+
+安装器从上游下载并校验依赖，在本机提取官方界面资源；仓库不分发官方程序、账号、凭据或私人项目资料。官方桌面升级后可能需要更新兼容层。此项目不是 OpenAI 官方产品。
+
+## 许可
+
+自有代码采用 [MIT](LICENSE)。独立运行的 OpenCodex 及其修改采用 [AGPL-3.0-only](integrations/opencodex/LICENSE)，保留完整来源、固定版本和构建修改。官方资源沿用原有条款。详见 [第三方说明](THIRD_PARTY_NOTICES.md)。

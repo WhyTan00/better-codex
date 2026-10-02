@@ -7,6 +7,6 @@ export function cacheableBootstrap(config,{initialization,defaults={},settings={
  const safe=new Set(['pending_worktrees','local-projects','selected-project','project-order']);
  if(copy.initialSidebarBootstrap)copy.initialSidebarBootstrap.globalStateEntries=(copy.initialSidebarBootstrap.globalStateEntries||[]).filter(e=>safe.has(e.key));
  const strip=value=>Array.isArray(value)?value.map(strip):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).filter(([key])=>!/^(?:authToken|accessToken|refreshToken|apiKey|api_key|scopeToken|authorization)$/i.test(key)).map(([key,v])=>[key,strip(v)])):value;
- copy.betterCodexReadDefaults=strip(defaults);copy.betterCodexNativeInitialization=initialization;copy.betterCodexSettings=strip(settings);
+ copy.dshReadDefaults=strip(defaults);copy.dshNativeInitialization=initialization;copy.dshSettings=strip(settings);
  return copy;
 }

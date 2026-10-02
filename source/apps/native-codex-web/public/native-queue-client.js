@@ -1,42 +1,42 @@
 // Adapt the original queue UI; Native is the sole automatic consumer.
 (()=>{
- const scope=window.__BETTER_CODEX_SCOPE__;if(!scope)return;
+ const scope=window.__DSH_SCOPE__;if(!scope)return;
  const installed=new WeakSet(),clientId=crypto.randomUUID(),inflightCommands=new Map();
  async function rawAPI(request,threadId,commandId){
-  if(window.__BETTER_CODEX_NATIVE_ONLINE__===false)throw Error('Mac 暂未连接，消息尚未提交');
+  if(window.__DSH_NATIVE_ONLINE__===false)throw Error('Mac 暂未连接，消息尚未提交');
   const query=commandId?'?commandId='+encodeURIComponent(commandId):threadId?'?threadId='+encodeURIComponent(threadId):'';
-  const response=await fetch('/w/'+scope.id+'/api/native-queue'+query,{method:request?'POST':'GET',headers:{'x-betterCodex-scope':scope.token,...(request?{'content-type':'application/json'}:{})},...(request?{body:JSON.stringify({clientId,request})}:{}),cache:'no-store',redirect:'manual'});
+  const response=await fetch('/w/'+scope.id+'/api/native-queue'+query,{method:request?'POST':'GET',headers:{'x-dsh-scope':scope.token,...(request?{'content-type':'application/json'}:{})},...(request?{body:JSON.stringify({clientId,request})}:{}),cache:'no-store',redirect:'manual'});
   if(response.status===401||response.type==='opaqueredirect')throw Error('请重新登录；消息接收结果待核对');const result=await response.json();if(!response.ok)throw Error(result.error||'Mac 队列暂不可用');return result;
  }
  async function resolveCommand(command){
   const result=await rawAPI(null,null,command.id);
   if(['accepted','rejected'].includes(result.state)){
-   await window.__BETTER_CODEX_NATIVE_CACHE__.recordCommand({...command,state:result.state}).catch(()=>{});
+   await window.__DSH_NATIVE_CACHE__.recordCommand({...command,state:result.state}).catch(()=>{});
    const waiting=inflightCommands.get(command.id);
    if(result.state==='accepted')waiting?.resolve(result.result);
    else waiting?.reject(Error(result.result?.error||'Mac 未接收这项队列操作'));
   }
   return result;
  }
- async function reconcile(threadId){const commands=await window.__BETTER_CODEX_NATIVE_CACHE__.pendingCommands(threadId);for(const command of commands){const result=await resolveCommand(command);if(!['accepted','rejected'].includes(result.state))throw Error('上一条排队操作的接收结果待核对，暂不重复提交');}}
+ async function reconcile(threadId){const commands=await window.__DSH_NATIVE_CACHE__.pendingCommands(threadId);for(const command of commands){const result=await resolveCommand(command);if(!['accepted','rejected'].includes(result.state))throw Error('上一条排队操作的接收结果待核对，暂不重复提交');}}
  async function api(request,threadId){
   if(!request)return rawAPI(null,threadId);
-  if(window.__BETTER_CODEX_NATIVE_ONLINE__===false)throw Error('Mac 暂未连接，消息尚未提交');
+  if(window.__DSH_NATIVE_ONLINE__===false)throw Error('Mac 暂未连接，消息尚未提交');
   const command={id:request.commandId,threadId:request.threadId,operation:request.operation,state:'pending'};
   // Persist identity before transmitting. Never turn a lost response into a
   // new automatic operation, including after the browser closes or reloads.
-  try{await window.__BETTER_CODEX_NATIVE_CACHE__.recordCommand(command);}catch{throw Error('这台设备暂时无法保存发送状态，消息尚未提交；草稿已保留');}
+  try{await window.__DSH_NATIVE_CACHE__.recordCommand(command);}catch{throw Error('这台设备暂时无法保存发送状态，消息尚未提交；草稿已保留');}
   const recovered=new Promise((resolve,reject)=>inflightCommands.set(command.id,{resolve,reject}));
-  try{const result=await Promise.race([rawAPI(request,threadId),recovered]);await window.__BETTER_CODEX_NATIVE_CACHE__.recordCommand({...command,state:'accepted'}).catch(()=>{});return result;}
-  catch(error){await window.__BETTER_CODEX_NATIVE_CACHE__.recordCommand({...command,state:'unknown'}).catch(()=>{});let status;try{status=await resolveCommand(command);}catch{}if(status?.state==='accepted')return status.result;if(status?.state==='rejected')throw error;throw Error('Mac 接收结果待核对，不会自动重发；请恢复连接后查看队列和会话');}finally{inflightCommands.delete(command.id);}
+  try{const result=await Promise.race([rawAPI(request,threadId),recovered]);await window.__DSH_NATIVE_CACHE__.recordCommand({...command,state:'accepted'}).catch(()=>{});return result;}
+  catch(error){await window.__DSH_NATIVE_CACHE__.recordCommand({...command,state:'unknown'}).catch(()=>{});let status;try{status=await resolveCommand(command);}catch{}if(status?.state==='accepted')return status.result;if(status?.state==='rejected')throw error;throw Error('Mac 接收结果待核对，不会自动重发；请恢复连接后查看队列和会话');}finally{inflightCommands.delete(command.id);}
  }
- window.__BETTER_CODEX_INSTALL_NATIVE_QUEUE__=client=>{
+ window.__DSH_INSTALL_NATIVE_QUEUE__=client=>{
   if(client.hostId!=='local'||installed.has(client))return;
-  const q=client.turnCoordinator;if(!q){setTimeout(()=>window.__BETTER_CODEX_INSTALL_NATIVE_QUEUE__(client),50);return;}
+  const q=client.turnCoordinator;if(!q){setTimeout(()=>window.__DSH_INSTALL_NATIVE_QUEUE__(client),50);return;}
   installed.add(client);let state={},revisions={},loaded=false,refreshing=null,writes=Promise.resolve(),sequence=0,cacheWrite=Promise.resolve();
   const applied=new Map(),reads=new Map(),mutating=new Set();
-  const feedback=error=>window.dispatchEvent(new CustomEvent('betterCodex:queue-error',{detail:{message:error?.message||'队列操作未完成，请稍后重试'}}));
-  const originalStorage=q.options.storage;window.__BETTER_CODEX_NATIVE_CACHE__?.meta('native-queue').then(cached=>{if(cached&&!loaded){state=cached.state||{};revisions=cached.revisions||{};loaded=true;publish();}}).catch(()=>{});
+  const feedback=error=>window.dispatchEvent(new CustomEvent('dsh:queue-error',{detail:{message:error?.message||'队列操作未完成，请稍后重试'}}));
+  const originalStorage=q.options.storage;window.__DSH_NATIVE_CACHE__?.meta('native-queue').then(cached=>{if(cached&&!loaded){state=cached.state||{};revisions=cached.revisions||{};loaded=true;publish();}}).catch(()=>{});
   function accept(result,ticket=++sequence,readScope=null){
    if(!result||result.authority!=='mac-native'||!result.state||!result.revisions)throw Error('队列结果尚未确认');
    for(const [id,messages]of Object.entries(result.state)){
@@ -45,7 +45,7 @@
    }
    loaded=true;
    const snapshot=structuredClone({state,revisions,authority:'mac-native'});
-   cacheWrite=cacheWrite.catch(()=>{}).then(()=>window.__BETTER_CODEX_NATIVE_CACHE__?.saveMeta('native-queue',snapshot));
+   cacheWrite=cacheWrite.catch(()=>{}).then(()=>window.__DSH_NATIVE_CACHE__?.saveMeta('native-queue',snapshot));
    cacheWrite.catch(()=>{});return state;
   }
   async function load(threadId){
@@ -72,22 +72,153 @@
   // Queue mutations go directly to Mac even when another page owns rendering.
   q.options.getStreamRole=()=>({role:'owner'});q.options.coordination=undefined;
   const sending=new Map(),host=q.options.submissionHost;
+  // A transport timeout is not a rejected Native command. The official
+  // RequestClient deliberately retains these promises for the original reply.
+  // Recover that reply by identity after an accepted stop or a reconnect; do
+  // not clear a submit lock or turn an unknown command into another write.
+  const submissionRequests=new Map(),controlRequests=new Map(),receiptReads=new Map(),receiptWaiting=new Set();
+  const requestClient=client.requestClient;
+  const commandMethods=new Set(['turn/start','turn/steer']);
+  const validId=value=>typeof value==='string'&&/^[0-9a-f-]{36}$/i.test(value);
+  function rememberSubmission(value){
+   const threadId=value.conversationId??value.params?.threadId,requestId=value.id??value.requestId,
+    clientUserMessageId=value.clientUserMessageId??value.params?.clientUserMessageId;
+   if(!commandMethods.has(value.method)||!validId(threadId)||!validId(clientUserMessageId)||typeof requestId!=='string'||!requestId)return;
+   let requests=submissionRequests.get(threadId);if(!requests){requests=new Map();submissionRequests.set(threadId,requests);}
+   requests.set(requestId,{threadId,requestId,clientUserMessageId,method:value.method});
+  }
+  function forgetSubmission(requestId){for(const [id,requests]of submissionRequests){requests.delete(requestId);if(!requests.size){submissionRequests.delete(id);receiptWaiting.delete(id);}}}
+  async function readSubmissionReceipt(command){
+   const params=new URLSearchParams(command),url='/w/'+scope.id+'/api/native-command-status?'+params;
+   const init={headers:{'x-dsh-scope':scope.token||''},cache:'no-store',redirect:'manual'};
+   const fetched=typeof window.__DSH_CONNECTION_JSON__==='function'?await window.__DSH_CONNECTION_JSON__(url,init):null;
+   const response=fetched?.response??await fetch(url,init);
+   if(!response.ok)throw Error('原消息接收结果尚未核实，草稿已保留');
+   const receipt=fetched?fetched.data:await response.json();
+   if(receipt?.requestId!==command.requestId||receipt.threadId!==command.threadId||receipt.clientUserMessageId!==command.clientUserMessageId||receipt.method!==command.method)throw Error('原消息回执身份不匹配，草稿已保留');
+   return receipt;
+  }
+  async function reconcileSubmission(id){
+   if(q.disposed)return false;
+   if(receiptReads.has(id))return receiptReads.get(id);
+   for(const pending of client.getConversation?.(id)?.unconfirmedTurnSubmissions||[])rememberSubmission({...pending,conversationId:id});
+   if(!submissionRequests.get(id)?.size)return false;
+   receiptWaiting.add(id);
+   const work=(async()=>{let settled=false;
+    for(const command of [...submissionRequests.get(id).values()]){
+     const receipt=await readSubmissionReceipt(command);
+     if(q.disposed)return settled;
+     if(!['accepted','rejected'].includes(receipt.state))continue;
+     if(receipt.state==='accepted'&&!validId(command.method==='turn/start'?receipt.result?.turn?.id:receipt.result?.turnId))throw Error('原消息回执尚未完整核实，草稿已保留');
+     // The original response may win the HTTP race. Only its still-pending
+     // request can be completed; an observation is never a second dispatch.
+     if(requestClient?.requestPromises?.has(command.requestId)){
+      if(receipt.state==='accepted')requestClient.onResult(command.requestId,receipt.result);
+      else requestClient.onError(command.requestId,Object.assign(Error(receipt.result?.error||'原消息未被接收'),{code:receipt.result?.code}));
+     }else{
+      // A retained history snapshot may outlive its RequestClient promise.
+      // Positive journal evidence retires only that exact unknown marker.
+      client.updateConversationState?.(id,conversation=>{
+       const remaining=conversation.unconfirmedTurnSubmissions?.filter(p=>!(p.requestId===command.requestId&&p.method===command.method&&p.clientUserMessageId===command.clientUserMessageId));
+       if(remaining?.length)conversation.unconfirmedTurnSubmissions=remaining;
+       else if(remaining)delete conversation.unconfirmedTurnSubmissions;
+      });
+     }
+     forgetSubmission(command.requestId);settled=true;
+     window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'reconciled',method:command.method,threadId:id,traceId:command.clientUserMessageId,reason:receipt.state==='accepted'?'accepted':'failed'});
+    }
+    // A recovered start receipt describes acceptance time. The turn may have
+    // been stopped or finished since then; retain the original receipt for
+    // promise settlement and separately observe the current Native head.
+    if(settled)await client.dshReadExecutionHead?.(id);
+    return settled;
+   })().finally(()=>{if(receiptReads.get(id)===work)receiptReads.delete(id);});
+   receiptReads.set(id,work);return work;
+  }
+  // Receipt lookup uses authenticated HTTP and can recover the command while
+  // the page's event/RPC WebSocket is still disconnected.
+  const reconcileVisibleSubmission=event=>{const id=event?.detail?.threadId||location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(id&&!(typeof navigator!=='undefined'&&navigator.onLine===false))reconcileSubmission(id).catch(()=>{});};
+  const stopReceiptListener=requestClient?.addRequestLifecycleListener?.(event=>{
+   if(q.disposed)return;
+   if(event.type==='started'){
+    rememberSubmission(event);
+    if(['turn/interrupt','thread/stop'].includes(event.method)&&event.params?.threadId)controlRequests.set(event.id,event.params.threadId);
+    return;
+   }
+   if(!['completed','failed','timed-out'].includes(event.type))return;
+   forgetSubmission(event.id);const id=controlRequests.get(event.id);controlRequests.delete(event.id);
+   if(id&&event.type==='completed')Promise.resolve().then(()=>reconcileSubmission(id)).catch(()=>{});
+  });
+  const receiptEvents=['dsh:execution-state','dsh:session-ready','dsh:submission-unknown','online','focus'];
+  for(const type of receiptEvents)addEventListener(type,reconcileVisibleSubmission);
   const activeTurn=host.getActiveTurnId.bind(host),finalAnswer=host.hasFinalAnswer.bind(host);
   host.getActiveTurnId=id=>{const head=sending.get(id);return head?.isCurrent()?head.activeTurnId:activeTurn(id);};
   host.hasFinalAnswer=id=>{const head=sending.get(id);return head?.isCurrent()&&head.activeTurnId!==activeTurn(id)?false:finalAnswer(id);};
+  client.dshSubmissionHead=id=>sending.get(id);
+  // Navigation still owns its original full hydration promise. Only an explicit
+  // send with a fresh, current Native head may use the *same* resume attempt's
+  // completed execution phase. A loaded thread is never an ownership grant.
+  const resumeConversation=client.resumeConversation?.bind(client),resumeSubmission=host.resume?.bind(host);
+  const submissionReady=id=>{
+   const head=sending.get(id),conversation=client.getConversation?.(id);
+   return !!(head?.loaded&&head.isCurrent()&&!head.activeFlags?.length&&conversation&&!conversation.unconfirmedTurnSubmissions?.length&&client.getStreamRole?.(id)?.role==='owner'&&!client.pendingThreadSettingsUpdates?.has(id)&&client.getThreadWorkspaceState?.(id)?.pendingRevision==null);
+  };
+  if(resumeConversation){
+   const submissionMethods=Object.create(Object.getPrototypeOf(client));Object.setPrototypeOf(client,submissionMethods);
+   Object.defineProperty(submissionMethods,'dshResumeForSubmission',{value:async function(params,options,fallback=resumeConversation){
+    const id=params.conversationId,head=sending.get(id),entry=client.inFlightConversationResumes?.get(id);
+    if(submissionReady(id)&&entry?.executionReady){
+     const owner=client.getStreamRole(id),result=await entry.executionReady;
+     if(result?.status!=='ready')return result;
+     if(sending.get(id)!==head||!submissionReady(id)||client.getStreamRole(id)!==owner)throw Error('发送准备期间会话状态已变化，消息尚未发送；草稿已保留');
+     return {status:'ready',activeTurnId:head.activeTurnId,threadSource:head.threadSource};
+    }
+    // Starting the original attempt is synchronous; its execution and history
+    // continuations have separate promises. This also covers the first send,
+    // when navigation has not already created a resume attempt.
+    const full=Promise.resolve(fallback(params,options));full.catch(()=>{});
+    const attempt=client.inFlightConversationResumes?.get(id);
+    const result=await(attempt?.executionReady??full);
+    if(result?.status!=='ready')return result;
+    if(head&&sending.get(id)===head){
+     await client.waitForPendingThreadSettingsUpdate?.(id);
+     const current=await client.dshReadExecutionHead(id);sending.set(id,current);
+     if(!current.isCurrent()||!submissionReady(id))throw Error('发送执行状态已变化，消息尚未发送；草稿已保留');
+     return {status:'ready',activeTurnId:current.activeTurnId,threadSource:current.threadSource};
+    }
+    return result;
+   }});
+   if(resumeSubmission)host.resume=async params=>{await client.waitForPendingThreadSettingsUpdate?.(params.conversationId);return client.dshResumeForSubmission(params);};
+  }
   const sendMessage=q.sendMessage.bind(q);
   const sendMessageWithPreflight=async(request,...args)=>{
    const id=request.conversationId;
-   if(sending.has(id))throw Error('这条消息正在提交，请等待接收结果');
+   if(sending.has(id)){
+    await reconcileSubmission(id);
+    // Let the original request's handlers release their own retained draft and
+    // in-flight guard. A still-live preparation cannot be stolen by this click.
+    if(sending.has(id))throw Error('这条消息正在提交，请等待接收结果');
+   }
    // Drafts without a Native conversation use the original creation path.
    if(!/^[0-9a-f-]{36}$/i.test(id||'')||!client.getConversation?.(id))return sendMessage(request,...args);
-   sending.set(id,{isCurrent:()=>false});
-   try{if(!client.betterCodexReadExecutionHead)throw Error('发送状态尚未就绪，草稿已保留');sending.set(id,await client.betterCodexReadExecutionHead(id));return await sendMessage(request,...args);}
+   // The explicit request owns its captured conversation, not the page that is
+   // visible after an asynchronous preparation. Browsing B must not cancel A.
+   // The client and its Native head still fence retirement, stop and reconnect.
+   const initial={isCurrent:()=>false};sending.set(id,initial);
+   try{
+    if(!client.dshReadExecutionHead)throw Error('发送状态尚未就绪，草稿已保留');
+    const resume=client.inFlightConversationResumes?.get(id);
+    if(resume?.executionReady){const ready=await resume.executionReady;if(ready?.status!=='ready')throw Error('会话尚未完成发送准备，草稿已保留');}
+    if(q.disposed||client.disposed)throw Error('发送客户端已变化，消息尚未发送；草稿已保留');
+    const head=await client.dshReadExecutionHead(id);
+    if(!head.isCurrent()||q.disposed||client.disposed)throw Error('发送准备期间会话或连接已变化，消息尚未发送；草稿已保留');
+    sending.set(id,head);return await sendMessage(request,...args);
+   }
    finally{sending.delete(id);}
   };
 
   async function preparedInput(id,message){
-   if(message.betterCodexNativeOnly)throw Error('请在原执行端编辑这条排队消息');
+   if(message.dshNativeOnly)throw Error('请在原执行端编辑这条排队消息');
    if(!q.execution?.prepare)throw Error('消息准备尚未就绪，请稍后重试');
    const prepared=await q.execution.prepare(id,message,'start');
    if(prepared.status!=='ready')throw Error(prepared.reason||'此消息尚不能加入 Mac 队列');
@@ -140,10 +271,16 @@
   // an explicit queue edit migrate the prepared input with a fresh command.
   const legacy=originalStorage.read?.();
   if(legacy?.value)for(const[id,messages]of Object.entries(legacy.value))if(messages?.length)state[id]=messages.map(m=>({...m,pausedReason:'旧网页队列尚未交给 Mac，请编辑后重新排队'}));
-  const timer=setInterval(()=>{if(q.disposed)clearInterval(timer);else if(document.visibilityState==='visible')refresh();},3000);
-  addEventListener('online',refresh);addEventListener('focus',refresh);addEventListener('betterCodex:native-route',refresh);
+  const timer=setInterval(()=>{if(q.disposed){clearInterval(timer);stopReceiptListener?.();client.dshDisposeSubmissionHead?.();for(const type of receiptEvents)removeEventListener(type,reconcileVisibleSubmission);submissionRequests.clear();controlRequests.clear();receiptWaiting.clear();}else if(document.visibilityState==='visible'){
+   refresh();
+   // Continue an unresolved receipt observation on the existing foreground
+   // refresh tick. A later accepted journal entry must not require a new click
+   // through the still-busy composer, and no command is dispatched here.
+   const id=location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(id&&receiptWaiting.has(id))reconcileVisibleSubmission();
+  }},3000);
+  addEventListener('online',refresh);addEventListener('focus',refresh);addEventListener('dsh:native-route',refresh);
   const refreshAfterActivity=event=>{const id=event.detail?.threadId||location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(id&&(q.pending.has(id)||mutating.has(id)||state[id]?.length||q.messages.get(id)?.messages?.length))refresh();};
-  addEventListener('betterCodex:history-updated',refreshAfterActivity);addEventListener('betterCodex:android-status',refreshAfterActivity);
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refresh();});refresh();
+  addEventListener('dsh:history-updated',refreshAfterActivity);addEventListener('dsh:android-status',refreshAfterActivity);
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){refresh();reconcileVisibleSubmission();}});refresh();
  };
 })();

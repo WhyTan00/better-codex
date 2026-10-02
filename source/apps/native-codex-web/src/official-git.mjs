@@ -1,8 +1,7 @@
-import {createRequire} from 'node:module';
+import {WebSocket as WS} from './runtime-dependencies.mjs';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {workspace,belongs,fail} from './registry.mjs';
-const require=createRequire('${BETTER_CODEX_HOME}/.better-codex/official-runtime-20260908/opencodex-pinned/package.json'),WS=require('ws');
 const CHANNEL='codex_desktop:worker:git:from-view',OUT='codex_desktop:worker:git:for-view';
 const READS=new Set(['availability','base-branch','current-branch','default-branch','review-summary','branch-diff-stats','config-value','stable-metadata','current-branch-snapshot','branch-exists','search-branches','nearest-ancestor-branch','branch-metadata','review-patch','commit-message-diff','index-info','submodule-paths','blame-file','synced-branch','synced-branch-state','untracked-paths','worktree-status','git-availability','watch-repo','unwatch-repo','invalidate-git-read-caches','subscribe-live-query','unsubscribe-live-query','recover-live-queries']);
 // Reuse the pinned official Git worker. No shell emulation and no forwarding

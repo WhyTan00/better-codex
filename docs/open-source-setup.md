@@ -1,91 +1,56 @@
-# Open-source setup
+# Portable Mac installation
 
-There are two ways to start. The demo is the only path that is intentionally
-zero-configuration. The `source/` tree is a sanitized integration reference:
-it shows the production call boundaries, but a real provider adapter, native
-host, and deployment policy still belong to the person adopting it.
+The supported path is a Mac running the official Codex application, a local Better Codex host, and optionally private Tailscale Serve. A CVM, DNS change, reverse-proxy account, or public ingress is not needed.
 
-## 1. See the workbench immediately
+## Install
 
-This path needs only Python:
+Prerequisites: macOS, the official desktop application with an existing login, enough disk space for local dependencies, and internet access to the first-party download and package hosts. Setup can bootstrap Node and Go into its own directory. It does not install a launch agent or require sudo.
 
-```bash
-git clone https://github.com/TonyandWei/better-codex.git
-cd better-codex
-python3 -m http.server 4173 --directory apps/demo
+Run `./install.sh --workspace "$HOME/Code"`, followed by `"$HOME/.better-codex/start"`. The double-click `Install.command` performs both steps. Keep the repository at its installed location: the generated launcher refers to this checkout.
+
+The generated `better-codex` command uses the installed Node runtime, so a global Node/npm installation is not required. For a custom installation home, use that directory's `better-codex` and `start` commands.
+
+The default listeners are loopback-only: entry 4173, desktop IPC host 4174, Native app server 4175, official front 4176, and sync relay 4177. `--port 42800` selects a different consecutive set on first installation. `--home /absolute/path` selects a different installation; with the shell installer set `BETTER_CODEX_HOME=/absolute/path` instead. The workspace directory must exist or be creatable.
+
+`--app /Applications/ChatGPT.app` selects the installed official app. `--native-url ws://127.0.0.1:PORT` attaches to an existing Native owner; that process is never stopped by Better Codex. Otherwise the host starts its own app server with the official CLI and your existing Codex home. Native owns account state and writer locking; Better Codex does not copy or modify authentication files. `--codex-home /absolute/path` is useful for an explicitly separate test account directory.
+
+## Tailscale
+
+Install Tailscale on the Mac and phone, sign both into your tailnet, and make its `tailscale` CLI available in PATH. Stop Better Codex before changing deployment access.
+
+```sh
+"$HOME/.better-codex/better-codex" tailscale --enable
+"$HOME/.better-codex/start"
 ```
 
-Visit <http://localhost:4173>. The demo has synthetic conversations and a
-mock Harness, so it is safe to run without an account.
+The command reads this Mac's Tailscale DNS name and login, checks existing Serve routes, writes a backup of deployment.json, and enables HTTPS Serve forwarding to the local entry. It never enables public Funnel. For an explicit allowlist use repeated `--user your-login@example.com`. `--tailscale-bin /absolute/path` selects a CLI. Without `--enable` it only prepares the deployment file and prints the Serve command.
 
-The source snapshot uses `${BETTER_CODEX_*}` placeholders and generic host
-package names. Review `source/README.md` before wiring it to a real client.
+The allowlist applies to the installation as a whole. Listed people must be trusted to operate its Codex account and allowed workspaces. Workspace scoping prevents accidental cross-workspace API access; it is not an OS sandbox or a separate tenant account. Plugins are trusted local code.
 
-## 2. Connect a real Harness
+If Tailscale asks to enable HTTPS in the admin console, complete that setup and rerun the command. Conflicting Serve routes or an existing Funnel configuration are left untouched. The Mac must be awake and the foreground host running for remote execution.
 
-Implement the adapter described in
-`packages/harness-contract/src/index.mjs`. At minimum it should provide:
+## Configuration and updates
 
-```js
-{
-  connect,
-  listThreads,
-  readThread,
-  send,
-  queue,
-  stop,
-  subscribe,
-  getCacheSnapshot,
-}
-```
+`~/.better-codex/deployment.json` is the only portable workspace/plugin registry. Stop the host, edit it, run `doctor`, and restart. Names are configurable. For compatibility the primary wire slot is `ai` and the optional secondary slot is `zyy`; these IDs do not select personal folders. Workspace roots cannot overlap. Set `readOnly: true` to block mutating workbench operations in a workspace.
 
-Keep the provider's authentication and transport inside the adapter. The
-shell should receive bounded thread summaries, message pages, explicit event
-versions, and connection state. It should never receive a provider token in a
-rendered component.
+Project bindings are optional children of a workspace root, for example `"projectBindings":[{"id":"website","name":"Website","root":"website"}]`. The project API derives its navigation from these bindings; project plugins remain the owners of content and writes.
 
-## 3. Add a plugin
+To update, stop the host, update this checkout, then run `"$HOME/.better-codex/better-codex" update`. Setup preserves existing roots, plugins, access policy and Native ownership. It writes `deployment.before-*.json` before replacing a configuration. A setup retry retains incomplete dependency staging directories for inspection; it does not replace a running installation. Old dependency versions remain available for rollback. Restore a previous deployment file only while stopped and with the matching source revision checked out.
 
-A plugin should declare:
+For a ZIP installation, keep a backup of the old source folder and place the new release's source at the same stable location before running `./install.sh` again. Keep your deployment and personal plugins outside the source folder. For a Git checkout, update the source with a normal fast-forward pull before running the update command.
 
-- an id and display name;
-- the workspace scopes it can read;
-- the adapter methods it needs;
-- whether it is read-only or can write project data;
-- a route and a compact loading state.
+`"$HOME/.better-codex/better-codex" doctor` validates config, local dependencies, pinned renderer files and plugins without sending a model turn. Local logs are under the installation's `state/` directory. Never post those logs, deployment files, downloads, sessions, or account directories publicly without reviewing their contents.
 
-Start with a read-only document plugin. Add writes only after defining a
-revision or version check, so a cached projection cannot overwrite newer
-source content.
+## Troubleshooting
 
-## 4. Optional Android/PWA clients
+- Port in use: keep the existing service; choose another base port on a separate first installation.
+- `host.lock` exists: determine whether its recorded PID still owns the running installation. Setup refuses a live owner and preserves a dead lock under a timestamped name. Do not remove a lock belonging to a live process.
+- Official app update breaks startup: keep the account and installed app intact; retain local logs and use a compatible Better Codex update. No global model, retry or routing settings are required.
+- Renderer checksum differs: retain the changed cache for inspection. Fetch verified dependencies again into a separate installation; do not disable integrity checks.
+- Phone cannot connect: confirm Tailscale identity, Serve status, allowed login, Mac wake state, and the foreground host. Local HTTP success alone does not prove tailnet or phone access.
 
-The source snapshot includes the Android and PWA integration patterns, but the
-provider endpoint, package signing, notification policy, and foreground
-service behavior are deployment decisions. Replace the sanitized defaults with
-your own values and review the operating-system rules for the version you
-target. Do not copy a personal production endpoint into a public release.
+The renderer pin and dependency hashes are in `dependencies.lock.json`. Official resources are downloaded from the original host and extracted locally; they are not included in this repository or its release archives.
 
-## 5. Run the public checks
+## Development tests
 
-```bash
-pnpm install
-pnpm test
-python3 scripts/scan-public-tree.py .
-```
-
-If you regenerate a source snapshot from a private workbench, use the
-allow-listed scrubber first:
-
-```bash
-python3 scripts/prepare-public-source.py \
-  --source /path/to/private-workbench \
-  --destination source
-python3 scripts/scan-public-tree.py source
-```
-
-Pass each private hostname, path, or product marker as a local-only
-`--replacement OLD=NEW` argument when needed; the scrubber intentionally has
-no workspace-specific names built into the public repository. The scrubber is
-a convenience and an audit trail. Human review is still required before a
-public push.
+Install only the test transport dependencies with `npm ci --prefix packages/host-cli --ignore-scripts`. Then run the Node tests and `go test ./...` from `source/apps/sync-gateway`. The Go-to-Node contract fixtures create an isolated temporary deployment and never connect to an account or start a model turn.

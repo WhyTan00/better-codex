@@ -51,23 +51,24 @@ type Snapshot struct {
 	ConfirmedAt string  `json:"confirmedAt"`
 }
 type Event struct {
-	CacheKey   string          `json:"cacheKey,omitempty"`
-	Revision   uint64          `json:"revision,omitempty"`
-	Generation string          `json:"generation,omitempty"`
-	Type       string          `json:"type"`
-	Snapshot   *Snapshot       `json:"snapshot,omitempty"`
-	Thread     *Thread         `json:"thread,omitempty"`
-	ThreadID   string          `json:"threadId,omitempty"`
-	TurnID     string          `json:"turnId,omitempty"`
-	ItemID     string          `json:"itemId,omitempty"`
-	Turn       *Turn           `json:"turn,omitempty"`
-	Item       *Item           `json:"item,omitempty"`
-	Delta      string          `json:"delta,omitempty"`
-	Status     *Status         `json:"status,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	Online     *bool           `json:"online,omitempty"`
-	Request    json.RawMessage `json:"request,omitempty"`
-	RequestID  json.RawMessage `json:"requestId,omitempty"`
+	CacheKey   string            `json:"cacheKey,omitempty"`
+	Revision   uint64            `json:"revision,omitempty"`
+	Generation string            `json:"generation,omitempty"`
+	Type       string            `json:"type"`
+	Snapshot   *Snapshot         `json:"snapshot,omitempty"`
+	Thread     *Thread           `json:"thread,omitempty"`
+	ThreadID   string            `json:"threadId,omitempty"`
+	TurnID     string            `json:"turnId,omitempty"`
+	ItemID     string            `json:"itemId,omitempty"`
+	Turn       *Turn             `json:"turn,omitempty"`
+	Item       *Item             `json:"item,omitempty"`
+	Delta      string            `json:"delta,omitempty"`
+	Status     *Status           `json:"status,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	Online     *bool             `json:"online,omitempty"`
+	Request    json.RawMessage   `json:"request,omitempty"`
+	RequestID  json.RawMessage   `json:"requestId,omitempty"`
+	Approvals  []json.RawMessage `json:"approvals,omitempty"`
 }
 type Stored struct {
 	Scope    string   `json:"scope"`
@@ -192,7 +193,11 @@ func pruneStore(dir string, budget int64) {
 	files := []file{}
 	var total int64
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		// Only snapshotFile's hash names belong to this disposable cache budget.
+		// Diagnostic journals and other durable state have their own retention.
+		name := strings.TrimSuffix(entry.Name(), ".json")
+		decoded, decodeErr := hex.DecodeString(name)
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || len(decoded) != sha256.Size || decodeErr != nil {
 			continue
 		}
 		info, err := entry.Info()

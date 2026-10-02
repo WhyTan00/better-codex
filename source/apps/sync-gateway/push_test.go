@@ -17,19 +17,19 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
-const pushThread = "00000000-0000-4000-8000-4ba7215b54d2"
+const pushThread = "11111111-1111-4111-a111-111111111111"
 const pushDevice = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func newPushTest(t *testing.T) *Gateway {
 	t.Helper()
-	g := NewGateway(t.TempDir(), "http://localhost:3080", []byte(strings.Repeat("s", 32)), false)
+	g := NewGateway(t.TempDir(), "https://example.invalid", []byte(strings.Repeat("s", 32)), false)
 	var e error
 	g.push, e = newPushService(g)
 	if e != nil {
 		t.Fatal(e)
 	}
 	g.agentEpoch = "test"
-	t.Cleanup(func() { g.durable.db.Close() })
+	t.Cleanup(func() { g.closeCaches() })
 	return g
 }
 func testSubscription(t *testing.T) webpush.Subscription {
@@ -43,7 +43,7 @@ func testSubscription(t *testing.T) webpush.Subscription {
 func pushRequest(g *Gateway, scope, op string, body any) *httptest.ResponseRecorder {
 	raw, _ := json.Marshal(body)
 	r := httptest.NewRequest("POST", "/sync/v1/w/"+scope+"/"+op, bytes.NewReader(raw))
-	r.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	r.Header.Set("X-DSH-Authenticated", "1")
 	r.Header.Set("Origin", g.origin)
 	w := httptest.NewRecorder()
 	g.Handler().ServeHTTP(w, r)
@@ -89,7 +89,7 @@ func TestPushOptInCompletionAndReplay(t *testing.T) {
 	if jobCount(t, g) != 1 {
 		t.Fatal("duplicate completion")
 	}
-	completeTest(t, g, "secondary", "other-scope", now)
+	completeTest(t, g, "zyy", "other-scope", now)
 	if jobCount(t, g) != 1 {
 		t.Fatal("cross-scope delivery")
 	}
@@ -97,7 +97,7 @@ func TestPushOptInCompletionAndReplay(t *testing.T) {
 	if jobCount(t, g) != 1 {
 		t.Fatal("historical delivery")
 	}
-	for _, event := range []Event{{Type: "status", Status: &Status{Type: "idle"}}, {Type: "turn", Turn: &Turn{ID: "interrupted", Status: "interrupted"}}, {Type: "snapshot", Snapshot: &Snapshot{Thread: Thread{ID: pushThread}, Turns: []Turn{{ID: "00000000-0000-4000-8000-f82fe242e2a8", Status: "completed"}}}}} {
+	for _, event := range []Event{{Type: "status", Status: &Status{Type: "idle"}}, {Type: "turn", Turn: &Turn{ID: "interrupted", Status: "interrupted"}}, {Type: "snapshot", Snapshot: &Snapshot{Thread: Thread{ID: pushThread}, Turns: []Turn{{ID: "22222222-2222-4222-a222-222222222222", Status: "completed"}}}}} {
 		if e := g.apply(frame{Epoch: "test", Seq: g.agentSeq + 1, Scope: "ai", ThreadID: pushThread, Event: event}); e != nil {
 			t.Fatal(e)
 		}
@@ -123,7 +123,7 @@ func TestPushAuthAndEndpointValidation(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatal("anonymous config")
 	}
-	r.Header.Set("X-BETTER_CODEX-Authenticated", "1")
+	r.Header.Set("X-DSH-Authenticated", "1")
 	r.Header.Set("Origin", "https://attacker.invalid")
 	w = httptest.NewRecorder()
 	g.Handler().ServeHTTP(w, r)
@@ -181,7 +181,7 @@ func TestPushEncryptedSendReceiptAndRestart(t *testing.T) {
 	if g.push.sendNext(context.Background()) {
 		t.Fatal("sent twice")
 	}
-	w = pushRequest(g, "secondary", "push-received", map[string]string{"jobId": id, "receipt": receipt})
+	w = pushRequest(g, "zyy", "push-received", map[string]string{"jobId": id, "receipt": receipt})
 	if w.Code != 404 {
 		t.Fatal("cross-scope receipt")
 	}
@@ -235,18 +235,18 @@ func TestPushReinstallDoesNotDuplicateEndpoint(t *testing.T) {
 func TestPushOwnerIsIndependentOfViewedWorkspace(t *testing.T) {
 	g := newPushTest(t)
 	subscribeTest(t, g, "ai")
-	w := pushRequest(g, "secondary", "push-status", map[string]any{"deviceKey": pushDevice})
+	w := pushRequest(g, "zyy", "push-status", map[string]any{"deviceKey": pushDevice})
 	var status map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &status)
 	if w.Code != 200 || status["recipient"] != "ai" || status["enabled"] != true {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	w = pushRequest(g, "secondary", "push-subscribe", map[string]any{"deviceKey": pushDevice, "recipient": "secondary", "subscription": testSubscription(t)})
+	w = pushRequest(g, "zyy", "push-subscribe", map[string]any{"deviceKey": pushDevice, "recipient": "zyy", "subscription": testSubscription(t)})
 	if w.Code != 409 {
 		t.Fatal("view silently changed recipient", w.Code)
 	}
 	now := float64(time.Now().UnixMilli()) / 1000
-	completeTest(t, g, "secondary", "foreign", now)
+	completeTest(t, g, "zyy", "foreign", now)
 	if jobCount(t, g) != 0 {
 		t.Fatal("foreign completion enqueued")
 	}
@@ -259,7 +259,7 @@ func TestPushChangingOwnerCancelsPendingAndRequiresFreshOptIn(t *testing.T) {
 	g := newPushTest(t)
 	subscribeTest(t, g, "ai")
 	completeTest(t, g, "ai", "queued", float64(time.Now().UnixMilli())/1000)
-	w := pushRequest(g, "ai", "push-device-owner", map[string]any{"deviceKey": pushDevice, "recipient": "secondary"})
+	w := pushRequest(g, "ai", "push-device-owner", map[string]any{"deviceKey": pushDevice, "recipient": "zyy"})
 	if w.Code != 200 {
 		t.Fatal(w.Code)
 	}
@@ -281,12 +281,12 @@ func TestPushChangingOwnerCancelsPendingAndRequiresFreshOptIn(t *testing.T) {
 	if w.Code != 409 {
 		t.Fatal("old tab re-enabled former owner")
 	}
-	completeTest(t, g, "secondary", "before-reopt", float64(time.Now().UnixMilli())/1000)
+	completeTest(t, g, "zyy", "before-reopt", float64(time.Now().UnixMilli())/1000)
 	if jobCount(t, g) != 1 {
 		t.Fatal("new owner opted in automatically")
 	}
-	subscribeTest(t, g, "secondary")
-	completeTest(t, g, "secondary", "after-reopt", float64(time.Now().UnixMilli())/1000)
+	subscribeTest(t, g, "zyy")
+	completeTest(t, g, "zyy", "after-reopt", float64(time.Now().UnixMilli())/1000)
 	if jobCount(t, g) != 2 {
 		t.Fatal("new owner missing")
 	}
@@ -294,7 +294,7 @@ func TestPushChangingOwnerCancelsPendingAndRequiresFreshOptIn(t *testing.T) {
 func TestPushSameEndpointCannotBelongToBothPeople(t *testing.T) {
 	g := newPushTest(t)
 	s := testSubscription(t)
-	for _, v := range []struct{ scope, key string }{{"ai", pushDevice}, {"secondary", strings.Repeat("b", 64)}} {
+	for _, v := range []struct{ scope, key string }{{"ai", pushDevice}, {"zyy", strings.Repeat("b", 64)}} {
 		pushRequest(g, v.scope, "push-device-owner", map[string]any{"deviceKey": v.key, "recipient": v.scope})
 		w := pushRequest(g, v.scope, "push-subscribe", map[string]any{"deviceKey": v.key, "recipient": v.scope, "subscription": s})
 		if w.Code != 200 {
@@ -323,7 +323,7 @@ func TestPushUnassignedLegacyDeviceDoesNotReceive(t *testing.T) {
 }
 func TestPushTwoDevicesKeepSeparateRecipientsAfterRestart(t *testing.T) {
 	g := newPushTest(t)
-	for _, v := range []struct{ scope, key string }{{"ai", pushDevice}, {"secondary", strings.Repeat("b", 64)}} {
+	for _, v := range []struct{ scope, key string }{{"ai", pushDevice}, {"zyy", strings.Repeat("b", 64)}} {
 		s := testSubscription(t)
 		s.Endpoint += "-" + v.scope
 		pushRequest(g, v.scope, "push-device-owner", map[string]any{"deviceKey": v.key, "recipient": v.scope})
@@ -339,8 +339,8 @@ func TestPushTwoDevicesKeepSeparateRecipientsAfterRestart(t *testing.T) {
 	}
 	now := float64(time.Now().UnixMilli()) / 1000
 	completeTest(t, g, "ai", "ai", now)
-	completeTest(t, g, "secondary", "secondary", now)
-	for _, scope := range []string{"ai", "secondary"} {
+	completeTest(t, g, "zyy", "zyy", now)
+	for _, scope := range []string{"ai", "zyy"} {
 		var n int
 		_ = g.durable.db.QueryRow("SELECT count(*) FROM push_jobs j JOIN push_device_owners o ON j.device_id=o.device_id AND j.scope=o.recipient WHERE j.scope=?", scope).Scan(&n)
 		if n != 1 {

@@ -1,101 +1,58 @@
-# Better Codex · whytan
+# Better Codex
 
-[English](README.md) · [中文说明](README.zh-CN.md)
+[中文](README.zh-CN.md) · [Installation](docs/open-source-setup.md) · [Plugins](docs/plugins.md)
 
-Better Codex is a public reference implementation of a native AI workbench:
-one execution owner underneath, local-first interaction on screen, and
-project-scoped plugins around the native conversation renderer.
+Run your Codex workbench on your Mac. Open the same conversations from a browser or phone through private Tailscale Serve. No cloud server is required.
 
-It is a community project by **whytan**. It is not an official OpenAI product,
-and it does not ship provider credentials or a provider connector.
+The Mac owns execution, approval and command receipts. The local relay carries live events and keeps rebuildable read caches. The web client uses the official conversation renderer, with workspace navigation and configurable project plugins.
 
-## What is here
+## Start on a Mac
 
-- `packages/harness-contract` — provider-neutral contracts for a native
-  Harness adapter, thread summaries, events, queue controls, and cache
-  snapshots.
-- `apps/demo` — a zero-login browser demo with a synthetic conversation,
-  local-first send, workspace switching, and project plugin cards.
-- `source/` — an allow-listed, sanitized reference snapshot of web, sync,
-  plugin, and Android integration boundaries.
-- `docs/media/` — static, public-safe captures for the workbench, quant
-  research, and video production views. Every value in these images is
-  synthetic or illustrative.
-- `video/` — the deterministic Remotion source project for the explainer.
-- [`video/out/better-codex-explainer.mp4`](video/out/better-codex-explainer.mp4)
-  — the rendered 32-second explainer.
-- [`video/out/better-codex-zh-vertical.mp4`](video/out/better-codex-zh-vertical.mp4)
-  — a caption-led 1080×1920 Chinese vertical cut for WeChat Channels and
-  Xiaohongshu, focused on cache/UX optimization and DSH compatibility.
+Install the official Codex desktop application and sign in. [Download the Mac installer source ZIP](https://github.com/WhyTan00/better-codex/releases/download/v0.2.0-beta.1/Better-Codex-v0.2.0-beta.1-mac.zip), unzip it to a stable location, and double-click `Install.command` to install and start. The first installation downloads dependencies and needs internet access.
 
-## Visual showcase
+Or use a terminal:
 
-These are static public visuals. They explain the product shape without
-exposing real sessions, holdings, symbols, file paths, credentials, endpoints,
-or production media.
-
-![Workbench overview](docs/media/workbench-overview.png)
-
-*Workbench overview — one native Harness with local-first state and scoped
-project plugins.*
-
-![Quant research demo](docs/media/quant-research-demo.png)
-
-*Quant Research — synthetic paper-only evidence, with live trading and broker
-actions disabled.*
-
-![Video production demo](docs/media/video-production-demo.png)
-
-*Video Production — a static Remotion storyboard and local render status.*
-
-See the bilingual visual notes in
-[docs/visual-showcase.md](docs/visual-showcase.md).
-
-The DSH reuse boundary is documented in
-[docs/dsh-compatibility.zh-CN.md](docs/dsh-compatibility.zh-CN.md): contracts and
-architecture can be reused, but private DSH plugins are not binary drop-ins.
-
-## Run the demo
-
-```bash
-pnpm install
-pnpm demo
+```sh
+git clone https://github.com/WhyTan00/better-codex.git
+cd better-codex
+./install.sh --workspace "$HOME/Code"
+"$HOME/.better-codex/start"
 ```
 
-Open <http://localhost:4173>. The demo uses an in-memory mock Harness. No
-network request or account is required.
+The installer prepares local dependencies and prints the URL. Open `http://127.0.0.1:4173/?workspace=ai`. Keep the host terminal open; Ctrl-C stops its children. Double-click `Install.command` to install and start using the defaults.
 
-For the complete setup guide, including how to replace the mock Harness and
-add a plugin, read [docs/open-source-setup.md](docs/open-source-setup.md).
+For a phone, install and sign in to Tailscale on both devices. Stop Better Codex, then:
 
-## Render the explainer
-
-The video uses deterministic React/Remotion scenes for the architecture,
-local-first state transitions, project adapters, and UI labels. This keeps the
-technical story readable and repeatable.
-
-```bash
-pnpm video:install
-pnpm video:typecheck
-pnpm video:render
-pnpm video:render:zh
+```sh
+"$HOME/.better-codex/better-codex" tailscale --enable
+"$HOME/.better-codex/start"
 ```
 
-The generated MP4s are written to `video/out/better-codex-explainer.mp4` and
-`video/out/better-codex-zh-vertical.mp4`. The Chinese cut and its shot list are
-described in [docs/video-script.zh-CN.md](docs/video-script.zh-CN.md).
+Open the printed HTTPS `ts.net` URL on the phone and add it to the home screen. Serve remains private to your tailnet; an explicit login allowlist also protects the entry. Existing Serve routes are checked before changes. [Detailed setup, custom ports and troubleshooting](docs/open-source-setup.md).
 
-## Public boundary
+## Configure your workspace
 
-The private implementation contains real sessions, runtime state, credentials,
-device release files, and protected service routes. Those are deliberately not
-copied here. See [docs/public-boundary.md](docs/public-boundary.md) before
-adding an adapter or a deployment example.
+Your installation lives in `~/.better-codex`; `deployment.json` controls workspace roots, display names, enabled plugins, local ports and access. The included `project-overview` plugin reads directory names from the workspace you select. It does not include the maintainer's project integrations.
 
-The quant and video captures in this README are intentionally synthetic public
-demos. They are not a claim that this repository can log into a broker, submit
-orders, access a private media library, or deploy a production renderer.
+Plugins can provide a small document or an embedded local page. An adapter reads the project's own data and owns any revision checks or writes. [Create a plugin](docs/plugins.md).
+
+## Scope of this release
+
+This is a macOS portable-host beta. Apple Silicon is the tested host; Intel support is included but not device-verified. The mobile delivery is a PWA; this release does not install an Android APK. Physical phone acceptance and a live Tailscale Serve exercise are tracked separately from local protocol tests. See [release validation](docs/portable-validation.md).
+
+The installer fetches pinned OpenCodex source and official renderer resources, verifies their checksums, and prepares them on your Mac. Official resources, accounts and credentials are not redistributed. This community project is not an official OpenAI product. Official desktop updates may require a compatibility update here.
+
+## Develop
+
+```sh
+node --test packages/host-cli/test/*.test.mjs packages/harness-contract/test/*.test.mjs
+(cd source/apps/sync-gateway && go test ./...)
+python3 scripts/scan-public-tree.py .
+"$HOME/.better-codex/better-codex" doctor
+```
+
+`source/` contains the maintained portable core, including the current resume-path and automatic-title fixes. `apps/demo`, `docs/media` and `video` remain illustrative material with synthetic data; they are not installation evidence. The earlier reference-only setup is superseded by the installation above.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Better Codex's own code is [MIT](LICENSE). The separately built OpenCodex integration and modifications are [AGPL-3.0-only](integrations/opencodex/LICENSE); its source, exact revision and patches remain available. Official OpenAI resources retain their original terms. See [third-party notices](THIRD_PARTY_NOTICES.md).

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "node": {
+    "version": "24.3.0",
+    "arm64": "fee91aa5febeda47ef9f6c0afd2f2bcd3dacb0e656c29de0b5274e0ea1ca3565",
+    "x64": "0c065ffa4e53b1a172ab9cd8ca08ae141b187aca8a07403c6856a7b8d0024804"
+  },
+  "go": {
+    "version": "1.25.6",
+    "arm64": "984521ae978a5377c7d782fd2dd953291840d7d3d0bd95781a1f32f16d94a006",
+    "x64": "e2b5b237f5c262931b8e280ac4b8363f156e19bfad5270c099998932819670b7"
+  },
+  "opencodex": {
+    "version": "2.1.0",
+    "commit": "f6fd79ccffe2b631db99556e862b008cba04f5ab",
+    "url": "https://codeload.github.com/RyensX/OpenCodex/tar.gz/f6fd79ccffe2b631db99556e862b008cba04f5ab",
+    "sha256": "a7cab3158a0bd411ca47022bf494cdeb17fee0c7343b55894bbb3cdc67cc23e0",
+    "staticAssetsSha256": "be562077d7fd10bd1c378671ddfd128d971b8ebe21ad8a8eb5cb20a1236440e3",
+    "macRunnerSha256": "0f4a1ede2cfc8005a350947f973d181b4607e735a10ca247e0b83fd55b6b3e3b"
+  },
+  "renderer": {
+    "version": "26.901.51231",
+    "build": "8109",
+    "url": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.901.51231.zip",
+    "sha256": "8ddc4e0f0e7c8024d64169f84cf54c544778d1d8bfea1ffd3c2b0d2e3ea85934",
+    "bytes": 594307681
+  }
+}

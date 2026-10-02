@@ -23,7 +23,7 @@ export class NativeQueue {
    const row=byId.get(item.clientUserMessageId);
    if(row&&['pending','unknown'].includes(row.state))this.db.prepare("UPDATE native_queue_ui SET state='queued',native_id=? WHERE workspace=? AND thread_id=? AND message_id=?").run(item.id,scope,threadId,row.message_id);
    const text=item.input.filter(i=>i.type==='text').map(i=>i.text).join('\n');
-   return row?JSON.parse(row.metadata):{id:item.clientUserMessageId,text,cwd:workspace(scope).root,createdAt:0,context:{prompt:text,addedFiles:[],imageAttachments:[],fileAttachments:[],commentAttachments:[]},betterCodexNativeOnly:true};
+   return row?JSON.parse(row.metadata):{id:item.clientUserMessageId,text,cwd:workspace(scope).root,createdAt:0,context:{prompt:text,addedFiles:[],imageAttachments:[],fileAttachments:[],commentAttachments:[]},dshNativeOnly:true};
   });
   for(const row of rows)if(row.state==='queued'&&!data.some(i=>i.id===row.native_id))this.db.prepare("UPDATE native_queue_ui SET state='consumed' WHERE workspace=? AND thread_id=? AND message_id=?").run(scope,threadId,row.message_id);
   return {threadId,messages,revision:hash([data,messages]),native:data};
@@ -47,8 +47,13 @@ export class NativeQueue {
      const desired=request.messages;
      if(!Array.isArray(desired)||desired.length>100||new Set(desired.map(m=>m?.id)).size!==desired.length)throw fail(400,'队列内容无效');
      // Validate everything before deleting or adding anything.
-     for(const message of desired){validateId(message.id);if(Buffer.byteLength(JSON.stringify(message))>10*1024*1024)throw fail(413,'排队消息过大');
+     for(const message of desired){
       const old=current.messages.find(m=>m.id===message.id);
+      // Native clientUserMessageId is opaque. Existing external producers may
+      // use non-UUID identities; retaining them must not block a sibling delete.
+      // New browser identities still use our original UUID contract.
+      if(!old)validateId(message.id);
+      if(Buffer.byteLength(JSON.stringify(message))>10*1024*1024)throw fail(413,'排队消息过大');
       if(!old||hash(old)!==hash(message)){const input=request.inputs?.[message.id];if(!Array.isArray(input)||!input.length)throw fail(400,'排队消息尚未准备完成');await this.boundary.validateInput(scope,input);}
       const prior=this.rows(scope,threadId).find(r=>r.message_id===message.id);
       if(!old&&prior&&['consumed','unknown','pending'].includes(prior.state))throw fail(409,'这条消息已经执行或结果待核对，不会重复加入');

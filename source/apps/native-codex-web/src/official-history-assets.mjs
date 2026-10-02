@@ -20,30 +20,30 @@ export function patchFollowUpControls(source,{legacy=false,previous=false,cacheD
  if(source.split(needle).length!==2)throw Error('Pinned native follow-up control contract changed');
  // Retain old immutable versions below. The current version uses the official
  // footer's existing follow-up slot, so permissions, model and queue share a row.
- let replacement='let st=ot,ct;ct=E&&r!==`cloud`&&nt==null?(0,D7.jsxs)(`label`,{className:`betterCodex-follow-up-choice`,children:[(0,D7.jsx)(`span`,{children:`发送方式`}),(0,D7.jsxs)(`select`,{"aria-label":`运行中消息的发送方式`,value:D?`queue`:`steer`,disabled:!d||O||j,onChange:e=>{aVe(U,$b.followUpQueueMode,e.currentTarget.value)},children:[(0,D7.jsx)(`option`,{value:`steer`,children:`引导当前任务`}),(0,D7.jsx)(`option`,{value:`queue`,children:`排队下一轮`})]})]}):null;let lt=null';
- if(modeSwitch&&!legacy&&!previous&&cacheDrafts&&retainedDrafts)replacement=replacement.replace('disabled:!d||O||j','disabled:!d').replace('aVe(U,$b.followUpQueueMode,e.currentTarget.value)','aVe(U,$b.followUpQueueMode,e.currentTarget.value).catch(e=>window.dispatchEvent(new CustomEvent(`betterCodex:queue-error`,{detail:{message:e?.message||`发送方式未保存，请恢复连接后重试`}})))');
+ let replacement='let st=ot,ct;ct=E&&r!==`cloud`&&nt==null?(0,D7.jsxs)(`label`,{className:`dsh-follow-up-choice`,children:[(0,D7.jsx)(`span`,{children:`发送方式`}),(0,D7.jsxs)(`select`,{"aria-label":`运行中消息的发送方式`,value:D?`queue`:`steer`,disabled:!d||O||j,onChange:e=>{aVe(U,$b.followUpQueueMode,e.currentTarget.value)},children:[(0,D7.jsx)(`option`,{value:`steer`,children:`引导当前任务`}),(0,D7.jsx)(`option`,{value:`queue`,children:`排队下一轮`})]})]}):null;let lt=null';
+ if(modeSwitch&&!legacy&&!previous&&cacheDrafts&&retainedDrafts)replacement=replacement.replace('disabled:!d||O||j','disabled:!d').replace('aVe(U,$b.followUpQueueMode,e.currentTarget.value)','aVe(U,$b.followUpQueueMode,e.currentTarget.value).catch(e=>window.dispatchEvent(new CustomEvent(`dsh:queue-error`,{detail:{message:e?.message||`发送方式未保存，请恢复连接后重试`}})))');
  if(legacy)return source.replaceAll('import.meta.url',`new URL('${upstreamAssetPrefix}${followUpClientAsset}',location.origin).href`).replace(needle,replacement.replace('let lt=null','rt=ct?(0,D7.jsxs)(D7.Fragment,{children:[ct,rt]}):rt;let lt=null'));
  if(!previous){let value=source.replaceAll('import.meta.url',`new URL('${upstreamAssetPrefix}${followUpClientAsset}',location.origin).href`).replace(needle,replacement.replace('let lt=null','let lt=ct'));if(cacheDrafts){const draft='initialDocument:It,onDocumentDispose:Lt,children:';if(value.split(draft).length!==2)throw Error('Native rich draft contract changed');value=value.replace(draft,retainedDrafts?'initialDocument:It,onDocumentChange:(e,t)=>{zfe(_e,e,t);sle(_e,_e.get(xS).length>0?{document:e,plainTextMode:t}:undefined)},onDocumentDispose:Lt,children:':'initialDocument:It,onDocumentChange:(e,t)=>zfe(_e,e,t),onDocumentDispose:Lt,children:');}return value;}
  const footer='let Ut;return t[219]!==Ht||t[220]!==Mt?(Ut=(0,D7.jsxs)(`div`,{className:`contents`,children:[Ht,Mt]}),t[219]=Ht,t[220]=Mt,t[221]=Ut):Ut=t[221],Ut';
  if(source.split(footer).length!==2)throw Error('Pinned native composer footer contract changed');
- const row='return (0,D7.jsxs)(`div`,{className:`contents`,children:[Ht,Mt,ct?(0,D7.jsx)(`div`,{className:`betterCodex-follow-up-row`,children:ct}):null]})';
+ const row='return (0,D7.jsxs)(`div`,{className:`contents`,children:[Ht,Mt,ct?(0,D7.jsx)(`div`,{className:`dsh-follow-up-row`,children:ct}):null]})';
  return source.replaceAll('import.meta.url',`new URL('${upstreamAssetPrefix}${followUpClientAsset}',location.origin).href`).replace(needle,replacement).replace(footer,row);
 }
 export function patchInitialHistoryBudget(source,{legacy=false,cacheView=true,menuLifecycle=true,scrollableMenus=true,compactFilePreview=false}={}){
  const needle='getConversationTurnItemLimit(e){return this.getConversation(e),1/0}';
  if(source.split(needle).length!==2)throw Error('Pinned official history contract changed');
- const hook='getHostId(){return this.hostId}canUsePermissionSelection';if(source.includes(hook)){if(source.split(hook).length!==2)throw Error('Native client registration contract changed');source=source.replace(hook,'getHostId(){globalThis.__BETTER_CODEX_REGISTER_NATIVE_CLIENT__?.(this);return this.hostId}canUsePermissionSelection');}
+ const hook='getHostId(){return this.hostId}canUsePermissionSelection';if(source.includes(hook)){if(source.split(hook).length!==2)throw Error('Native client registration contract changed');source=source.replace(hook,'getHostId(){globalThis.__DSH_REGISTER_NATIVE_CLIENT__?.(this);return this.hostId}canUsePermissionSelection');}
  const appHost='async function fCa(){pCa=uCa(cCa),CX=await pCa.services';
- if(source.includes(appHost)){if(source.split(appHost).length!==2)throw Error('Native AppHost recovery contract changed');source=source.replace(appHost,'globalThis.__BETTER_CODEX_RECREATE_APP_HOST__=async()=>{await fCa();};'+appHost);}
- if(!legacy){const bootstrap='CX=await pCa.services';if(source.split(bootstrap).length!==2)throw Error('Native local AppHost contract changed');source=source.replace(bootstrap,'CX=globalThis.__BETTER_CODEX_LOCAL_APP_HOST__?await globalThis.__BETTER_CODEX_LOCAL_APP_HOST__(pCa.services):await pCa.services');}
- if(!legacy&&cacheView){const view='r.imageAttachments!==n.imageAttachments&&e.set(Mto,r.imageAttachments),e.set(Nto,r))';if(source.split(view).length!==2)throw Error('Native composer view contract changed');source=source.replace(view,'r.imageAttachments!==n.imageAttachments&&e.set(Mto,r.imageAttachments),e.set(Nto,r),globalThis.__BETTER_CODEX_CACHE_COMPOSER_VIEW__?.(mK(e.value),r,restore=>E0(e,state=>Object.assign(state,restore))))');}
+ if(source.includes(appHost)){if(source.split(appHost).length!==2)throw Error('Native AppHost recovery contract changed');source=source.replace(appHost,'globalThis.__DSH_RECREATE_APP_HOST__=async()=>{await fCa();};'+appHost);}
+ if(!legacy){const bootstrap='CX=await pCa.services';if(source.split(bootstrap).length!==2)throw Error('Native local AppHost contract changed');source=source.replace(bootstrap,'CX=globalThis.__DSH_LOCAL_APP_HOST__?await globalThis.__DSH_LOCAL_APP_HOST__(pCa.services):await pCa.services');}
+ if(!legacy&&cacheView){const view='r.imageAttachments!==n.imageAttachments&&e.set(Mto,r.imageAttachments),e.set(Nto,r))';if(source.split(view).length!==2)throw Error('Native composer view contract changed');source=source.replace(view,'r.imageAttachments!==n.imageAttachments&&e.set(Mto,r.imageAttachments),e.set(Nto,r),globalThis.__DSH_CACHE_COMPOSER_VIEW__?.(mK(e.value),r,restore=>E0(e,state=>Object.assign(state,restore))))');}
  if(!legacy&&cacheView&&menuLifecycle){
   const patches=[
-   ['awaitBeforeOpen:m,onBeforeOpen:h}=e,g=a===void 0?`contextmenu`:a','awaitBeforeOpen:m,onBeforeOpen:h}=e,betterCodexMenu=globalThis.__BETTER_CODEX_USE_NATIVE_MENU__?.(vq,l),g=a===void 0?`contextmenu`:a'],
-   ['(0,yq.jsx)(lq,{open:u,onCloseAutoFocus:V,triggerButton:ne,align:s,contentWidth:c??`menu`,onOpenChange:r,children:','(0,yq.jsx)(lq,{key:betterCodexMenu?.key,open:u,onCloseAutoFocus:V,triggerButton:ne,align:s,contentWidth:c??`menu`,onOpenChange:betterCodexMenu?betterCodexMenu.change(r):r,children:'],
-   [':be=t[83],be}function t8i',':be=t[83],betterCodexMenu?vq.cloneElement(be,{key:betterCodexMenu.key,onOpenChange:betterCodexMenu.change(de)}):be}function t8i']
+   ['awaitBeforeOpen:m,onBeforeOpen:h}=e,g=a===void 0?`contextmenu`:a','awaitBeforeOpen:m,onBeforeOpen:h}=e,dshMenu=globalThis.__DSH_USE_NATIVE_MENU__?.(vq,l),g=a===void 0?`contextmenu`:a'],
+   ['(0,yq.jsx)(lq,{open:u,onCloseAutoFocus:V,triggerButton:ne,align:s,contentWidth:c??`menu`,onOpenChange:r,children:','(0,yq.jsx)(lq,{key:dshMenu?.key,open:u,onCloseAutoFocus:V,triggerButton:ne,align:s,contentWidth:c??`menu`,onOpenChange:dshMenu?dshMenu.change(r):r,children:'],
+   [':be=t[83],be}function t8i',':be=t[83],dshMenu?vq.cloneElement(be,{key:dshMenu.key,onOpenChange:dshMenu.change(de)}):be}function t8i']
   ];
-  for(const [from,to]of patches){if(source.split(from).length!==2)throw Error('Pinned native menu lifecycle contract changed');source=source.replace(from,scrollableMenus?to.replace('key:betterCodexMenu?.key,open:u','key:betterCodexMenu?.key,modal:betterCodexMenu?.modal,open:u').replace('key:betterCodexMenu.key,onOpenChange','key:betterCodexMenu.key,modal:betterCodexMenu.modal,onOpenChange'):to);}
+  for(const [from,to]of patches){if(source.split(from).length!==2)throw Error('Pinned native menu lifecycle contract changed');source=source.replace(from,scrollableMenus?to.replace('key:dshMenu?.key,open:u','key:dshMenu?.key,modal:dshMenu?.modal,open:u').replace('key:dshMenu.key,onOpenChange','key:dshMenu.key,modal:dshMenu.modal,onOpenChange'):to);}
  }
  if(compactFilePreview){
   const patches=[
@@ -53,7 +53,7 @@ export function patchInitialHistoryBudget(source,{legacy=false,cacheView=true,me
   ];
   for(const [from,to]of patches){if(source.split(from).length!==2)throw Error('Pinned file preview default contract changed');source=source.replace(from,to);}
  }
- return source.replaceAll('import.meta.url',`new URL('${upstreamAssetPrefix}${historyClientAsset}',location.origin).href`).replace(needle,'getConversationTurnItemLimit(e){return this.getConversation(e),globalThis.__BETTER_CODEX_HISTORY_POLICY__?.initialTurnItems??48}');
+ return source.replaceAll('import.meta.url',`new URL('${upstreamAssetPrefix}${historyClientAsset}',location.origin).href`).replace(needle,'getConversationTurnItemLimit(e){return this.getConversation(e),globalThis.__DSH_HISTORY_POLICY__?.initialTurnItems??48}');
 }
 
 // Preload URLs are fetched directly, before module import-map resolution.

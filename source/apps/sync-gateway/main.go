@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,7 +38,7 @@ var buildVersion = "development"
 var idPattern = regexp.MustCompile(`^[0-9a-fA-F-]{36}$`)
 
 func validID(id string) bool           { return idPattern.MatchString(id) }
-func validScope(s string) bool         { return s == "ai" || s == "secondary" }
+func validScope(s string) bool         { return s == "ai" || s == "zyy" }
 func nonce() string                    { b := make([]byte, 16); _, _ = rand.Read(b); return hex.EncodeToString(b) }
 func topicKey(scope, id string) string { return scope + ":" + id }
 
@@ -82,61 +83,109 @@ func (a *agent) send(v any) error {
 	return a.conn.WriteJSON(v)
 }
 
+func (a *agent) sendReadRequest(ctx context.Context, request map[string]any) error {
+	// Read callers may leave while an unrelated bridge write owns the socket.
+	// Do not retain a canceled waiter behind that writer's ten-second deadline.
+	for !a.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
+	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		request["readDeadlineMs"] = time.Until(deadline).Milliseconds()
+	}
+	writeDeadline := time.Now().Add(10 * time.Second)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(writeDeadline) {
+		writeDeadline = deadline
+	}
+	_ = a.conn.SetWriteDeadline(writeDeadline)
+	return a.conn.WriteJSON(request)
+}
+
+// Cancellation never waits behind a blocked bridge write. The remaining read
+// budget is the fallback if this best-effort control message cannot be sent.
+func (a *agent) cancelRead(id, scope, reason string) {
+	if !a.mu.TryLock() {
+		return
+	}
+	go func() {
+		defer a.mu.Unlock()
+		_ = a.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_ = a.conn.WriteJSON(map[string]any{"type": "cancel-read", "id": id, "scope": scope, "reason": reason})
+	}()
+}
+
 type reply struct {
-	Result json.RawMessage `json:"result"`
-	Error  string          `json:"error"`
-	Status int             `json:"status"`
+	Result       json.RawMessage `json:"result"`
+	Error        string          `json:"error"`
+	Status       int             `json:"status"`
+	FailureStage string          `json:"failureStage,omitempty"`
 }
 type frame struct {
-	Type      string          `json:"type"`
-	ID        string          `json:"id"`
-	Epoch     string          `json:"epoch"`
-	Seq       uint64          `json:"seq"`
-	BaseSeq   uint64          `json:"baseSeq"`
-	Scope     string          `json:"scope"`
-	ThreadID  string          `json:"threadId"`
-	Event     Event           `json:"event"`
-	Data      json.RawMessage `json:"data"`
-	Result    json.RawMessage `json:"result"`
-	Error     string          `json:"error"`
-	Status    int             `json:"status"`
-	MessageID string          `json:"messageId"`
-	Index     int             `json:"index"`
-	Count     int             `json:"count"`
-	Payload   string          `json:"payload"`
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	Epoch        string          `json:"epoch"`
+	Seq          uint64          `json:"seq"`
+	BaseSeq      uint64          `json:"baseSeq"`
+	Scope        string          `json:"scope"`
+	ThreadID     string          `json:"threadId"`
+	Event        Event           `json:"event"`
+	Data         json.RawMessage `json:"data"`
+	Result       json.RawMessage `json:"result"`
+	Error        string          `json:"error"`
+	Status       int             `json:"status"`
+	FailureStage string          `json:"failureStage,omitempty"`
+	MessageID    string          `json:"messageId"`
+	ReadID       string          `json:"readId,omitempty"`
+	Index        int             `json:"index"`
+	Count        int             `json:"count"`
+	Payload      string          `json:"payload"`
 }
 type assembly struct {
-	parts [][]byte
-	size  int
-	next  int
-	at    time.Time
+	parts  [][]byte
+	size   int
+	next   int
+	at     time.Time
+	readID string
+	scope  string
 }
 type Gateway struct {
-	push         *PushService
-	durable      *DurableStore
-	staging      map[string]*Topic
-	stagedEvents []Envelope
-	storeID      string
-	history      *HistoryStore
-	persistMu    sync.Mutex
-	mu           sync.Mutex
-	epoch        string
-	agentEpoch   string
-	agentSeq     uint64
-	bridge       *agent
-	nativeOnline bool
-	topics       map[string]*Topic
-	pending      map[string]chan reply
-	uiEvents     map[string][]map[string]any
-	refreshing   map[string]bool
-	dir          string
-	secret       []byte
-	origin       string
-	local        bool
+	push          *PushService
+	durable       *DurableStore
+	replica       *cacheReplica
+	activeCache   atomic.Pointer[DurableStore]
+	frameProofs   map[uint64]string
+	staging       map[string]*Topic
+	stagedEvents  []Envelope
+	storeID       string
+	history       *HistoryStore
+	persistMu     sync.Mutex
+	mu            sync.Mutex
+	controlMu     sync.Mutex // bridge and pending replies never wait for topic persistence
+	agentHandlers sync.WaitGroup
+	epoch         string
+	agentEpoch    string
+	agentSeq      uint64
+	bridge        *agent
+	nativeOnline  bool
+	topics        map[string]*Topic
+	pending       map[string]*pendingCall
+	uiEvents      map[string][]map[string]any
+	refreshing    map[string]bool
+	dir           string
+	secret        []byte
+	origin        string
+	local         bool
 }
 
 func NewGateway(dir, origin string, secret []byte, local bool) *Gateway {
-	g := &Gateway{epoch: nonce(), topics: map[string]*Topic{}, pending: map[string]chan reply{}, uiEvents: map[string][]map[string]any{}, refreshing: map[string]bool{}, dir: dir, secret: secret, origin: origin, local: local}
+	g := &Gateway{epoch: nonce(), frameProofs: map[uint64]string{}, topics: map[string]*Topic{}, pending: map[string]*pendingCall{}, uiEvents: map[string][]map[string]any{}, refreshing: map[string]bool{}, dir: dir, secret: secret, origin: origin, local: local}
 	g.history = &HistoryStore{dir: filepath.Join(dir, "history")}
 	_ = os.MkdirAll(dir, 0700)
 	idFile := filepath.Join(dir, ".cache-id")
@@ -154,7 +203,7 @@ func NewGateway(dir, origin string, secret []byte, local bool) *Gateway {
 		t.Snapshot = &snapshot
 		g.topicLocked(s.Scope, "").List[snapshot.Thread.ID] = snapshot.Thread
 	}
-	for _, scope := range []string{"ai", "secondary"} {
+	for _, scope := range []string{"ai", "zyy"} {
 		data, err := os.ReadFile(filepath.Join(dir, "catalog-"+scope+".json"))
 		if err == nil {
 			var list []Thread
@@ -167,7 +216,7 @@ func NewGateway(dir, origin string, secret []byte, local bool) *Gateway {
 			}
 		}
 	}
-	for _, scope := range []string{"ai", "secondary"} {
+	for _, scope := range []string{"ai", "zyy"} {
 		data, err := os.ReadFile(filepath.Join(dir, "pins-"+scope+".json"))
 		if err == nil {
 			var ids []string
@@ -183,25 +232,25 @@ func NewGateway(dir, origin string, secret []byte, local bool) *Gateway {
 
 	var durableErr error
 	g.durable, durableErr = openDurable(dir)
+	if durableErr == nil {
+		durableErr = g.initializeCache()
+	}
 	if durableErr != nil {
-		panic(fmt.Errorf("durable read model unavailable: %w", durableErr))
-	}
-	if saved := g.durable.meta("serverEpoch"); saved != "" {
-		g.epoch = saved
-	} else if e := g.durable.setMeta("serverEpoch", g.epoch); e != nil {
-		panic(e)
-	}
-	g.agentEpoch = g.durable.meta("adapterEpoch")
-	g.agentSeq, _ = strconv.ParseUint(g.durable.meta("adapterSeq"), 10, 64)
-	if g.durable.meta("initialized") == "" {
-		if e := g.durable.seed(g.topics); e != nil {
-			panic(e)
+		if g.durable != nil {
+			_ = g.durable.close()
 		}
-	} else {
-		g.topics = map[string]*Topic{}
-	}
-	if e := g.durable.restore(g); e != nil {
-		panic(e)
+		g.durable, durableErr = openMemoryCache()
+		if durableErr != nil {
+			panic(fmt.Errorf("memory relay unavailable: %w", durableErr))
+		}
+		// A cache that cannot attest its cursor is rebuilt from Mac, not from
+		// shadow files written before a failed old transaction.
+		g.epoch, g.storeID, g.agentEpoch, g.agentSeq = nonce(), nonce(), "", 0
+		g.topics, g.frameProofs = map[string]*Topic{}, map[uint64]string{}
+		if err := g.initializeCache(); err != nil {
+			panic(err)
+		}
+		log.Print(`{"event":"optional_cache","state":"memory","reason":"startup_storage_unavailable"}`)
 	}
 	return g
 }
@@ -224,8 +273,12 @@ func (g *Gateway) topicLocked(scope, id string) *Topic {
 }
 func (g *Gateway) publishLocked(scope, id string, e Event) {
 	t := g.topicLocked(scope, id)
+	if g.replica != nil && g.staging == nil {
+		t = cloneTopic(t)
+		g.topics[topicKey(scope, id)] = t
+	}
 	var prior *Topic
-	if g.staging == nil && g.durable != nil {
+	if g.staging == nil && g.cacheStore() != nil && g.replica == nil {
 		prior = cloneTopic(t)
 	}
 	t.Seq++
@@ -245,11 +298,13 @@ func (g *Gateway) publishLocked(scope, id string, e Event) {
 		g.stagedEvents = append(g.stagedEvents, envelope)
 		return
 	}
-	if g.staging == nil && g.durable != nil {
-		if err := g.durable.saveTopic(topicKey(scope, id), t); err != nil {
-			g.topics[topicKey(scope, id)] = prior
-			log.Printf("topic persistence failed: %v", err)
-			return
+	if g.staging == nil && g.cacheStore() != nil && g.replica == nil {
+		if err := g.cacheStore().saveTopic(topicKey(scope, id), t); err != nil {
+			if !cacheStorageFailure(err) || g.useMemoryCacheLocked(err) != nil || g.cacheStore().saveTopic(topicKey(scope, id), t) != nil {
+				g.topics[topicKey(scope, id)] = prior
+				log.Print("topic cache unavailable")
+				return
+			}
 		}
 	}
 	g.deliverLocked(envelope)
@@ -269,24 +324,30 @@ func (g *Gateway) deliverLocked(envelope Envelope) {
 	}
 }
 func (g *Gateway) apply(f frame) error {
-	g.persistMu.Lock()
-	defer g.persistMu.Unlock()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if f.Epoch != g.agentEpoch {
-		return errors.New("adapter epoch mismatch")
-	}
-	if f.Seq <= g.agentSeq {
-		if g.durable != nil {
-			return g.durable.checkDuplicate(f)
-		}
+	return g.applyFromBridge(f, nil, time.Now())
+}
+func (g *Gateway) applyFromBridge(f frame, source *agent, queuedAt time.Time) error {
+	return g.applyBatchFromBridge([]queuedPublication{{frame: f, at: queuedAt}}, source)
+}
+func (g *Gateway) applyBatchFromBridge(jobs []queuedPublication, source *agent) (err error) {
+	if len(jobs) == 0 {
 		return nil
 	}
-	if f.Seq != g.agentSeq+1 {
-		return errors.New("adapter sequence gap")
+	first, last := jobs[0].frame, jobs[len(jobs)-1].frame
+	metrics := &publicationMetrics{QueueMs: time.Since(jobs[0].at).Milliseconds(), BatchFrames: len(jobs), FirstSequence: first.Seq}
+	started := time.Now()
+	defer func() { metrics.CachePersistence = g.cachePersistence(); metrics.log(last, time.Since(started), err) }()
+	g.persistMu.Lock()
+	metrics.PersistLockMs = time.Since(started).Milliseconds()
+	defer g.persistMu.Unlock()
+	stateStarted := time.Now()
+	g.mu.Lock()
+	metrics.StateLockMs = time.Since(stateStarted).Milliseconds()
+	defer g.mu.Unlock()
+	if source != nil && !g.isCurrentBridge(source) {
+		return errors.New("bridge replaced")
 	}
 	committed := false
-	oldOnline := g.nativeOnline
 	g.staging = map[string]*Topic{}
 	g.stagedEvents = nil
 	defer func() {
@@ -298,13 +359,85 @@ func (g *Gateway) apply(f frame) error {
 					g.topics[key] = old
 				}
 			}
-			g.nativeOnline = oldOnline
 		}
 		g.staging = nil
 		g.stagedEvents = nil
 	}()
+	frames := make([]frame, 0, len(jobs))
+	sequence := g.agentSeq
+	for _, job := range jobs {
+		f := job.frame
+		if f.Epoch != g.agentEpoch {
+			return errors.New("adapter epoch mismatch")
+		}
+		if f.Seq <= g.agentSeq {
+			if got := g.frameProofs[f.Seq]; got != "" {
+				if got != frameHash(f) {
+					return errors.New("duplicate identity has different content")
+				}
+			} else if e := g.cacheStore().checkDuplicate(f); e != nil {
+				if cacheStorageFailure(e) {
+					return errors.New("adapter sequence gap: duplicate identity unavailable")
+				}
+				return e
+			}
+			continue
+		}
+		if f.Seq != sequence+1 {
+			return errors.New("adapter sequence gap")
+		}
+		if e := g.stagePublication(f); e != nil {
+			return e
+		}
+		frames = append(frames, f)
+		sequence = f.Seq
+	}
+	if len(frames) == 0 {
+		committed = true
+		return nil
+	}
+	changed := map[string]*Topic{}
+	for key := range g.staging {
+		changed[key] = g.topics[key]
+	}
+	metrics.ProjectionMs = time.Since(stateStarted).Milliseconds() - metrics.StateLockMs
+	if g.cacheStore() != nil {
+		if e := g.cacheStore().commitBatch(frames, changed, metrics); e != nil {
+			if !cacheStorageFailure(e) || g.useMemoryCacheLocked(e) != nil {
+				return fmt.Errorf("cache commit: %w", e)
+			}
+			if e = g.cacheStore().commitBatch(frames, changed, metrics); e != nil {
+				return fmt.Errorf("memory cache commit: %w", e)
+			}
+		}
+	}
+	g.agentSeq = sequence
+	g.rememberFrameProofs(frames)
+	committed = true
+	for _, f := range frames {
+		if f.Event.Type == "host" {
+			g.controlMu.Lock()
+			g.nativeOnline = f.Event.Online != nil && *f.Event.Online
+			g.controlMu.Unlock()
+		}
+	}
+	if g.push != nil && g.cachePersistence() == "disk" {
+		g.push.signal()
+	}
+	for _, envelope := range g.stagedEvents {
+		g.deliverLocked(envelope)
+	}
+	if g.replica != nil {
+		g.replica.accepted.Store(&replicaCursor{g.agentEpoch, sequence})
+		g.mirrorBatch(frames, changed)
+		g.mirrorPush(frames, changed)
+	}
+	return nil
+}
+
+// Caller holds the topic lock and one staging/rollback set for the entire batch.
+func (g *Gateway) stagePublication(f frame) error {
 	if f.Event.Type == "host" {
-		g.nativeOnline = f.Event.Online != nil && *f.Event.Online
 		for key := range g.topics {
 			p := strings.SplitN(key, ":", 2)
 			g.publishLocked(p[0], p[1], f.Event)
@@ -340,8 +473,10 @@ func (g *Gateway) apply(f frame) error {
 					t.List[thread.ID] = thread
 				}
 			}
-			if err := atomicJSON(filepath.Join(g.dir, "pins-"+f.Scope+".json"), t.PinnedIDs); err != nil {
-				return err
+			if g.replica == nil {
+				if err := atomicJSON(filepath.Join(g.dir, "pins-"+f.Scope+".json"), t.PinnedIDs); err != nil {
+					return err
+				}
 			}
 			g.publishLocked(f.Scope, "", Event{Type: "catalogChanged"})
 		} else if f.Event.Type == "catalogComplete" {
@@ -367,7 +502,7 @@ func (g *Gateway) apply(f frame) error {
 			if json.Unmarshal(f.Data, &page) != nil || page.Thread.ID != f.ThreadID {
 				return errors.New("invalid history page")
 			}
-			if err := g.history.save(f.Scope, page, false, page.NextCursor == nil); err != nil {
+			if err := g.optionalHistorySave(f.Scope, page, false, page.NextCursor == nil); err != nil {
 				return err
 			}
 		} else if f.Event.Type == "catalog" || f.Event.Type == "catalogPage" {
@@ -408,6 +543,32 @@ func (g *Gateway) apply(f frame) error {
 			g.publishLocked(f.Scope, "", f.Event)
 		} else {
 			t := g.topicLocked(f.Scope, f.ThreadID)
+			if f.Event.Type == "approvals" {
+				// Reconcile a source snapshot after paused projection production.
+				// Existing clients see the existing resolved/approval events only.
+				wanted := map[string]json.RawMessage{}
+				for _, raw := range f.Event.Approvals {
+					var request struct {
+						ID       json.RawMessage `json:"id"`
+						ThreadID string          `json:"threadId"`
+					}
+					if json.Unmarshal(raw, &request) != nil || len(request.ID) == 0 || request.ThreadID != f.ThreadID {
+						return errors.New("invalid approval snapshot")
+					}
+					wanted[string(request.ID)] = raw
+				}
+				for id := range t.Approvals {
+					if _, exists := wanted[id]; !exists {
+						g.publishLocked(f.Scope, f.ThreadID, Event{Type: "approvalResolved", RequestID: json.RawMessage(id)})
+					}
+				}
+				t.Approvals = wanted
+				t.Dirty = true
+				for _, raw := range wanted {
+					g.publishLocked(f.Scope, f.ThreadID, Event{Type: "approval", Request: raw})
+				}
+				return nil
+			}
 			if f.Event.Type == "approval" {
 				var request struct {
 					ID json.RawMessage `json:"id"`
@@ -422,73 +583,120 @@ func (g *Gateway) apply(f frame) error {
 			if t.Snapshot == nil {
 				t.Snapshot = &Snapshot{Thread: Thread{ID: f.ThreadID}, Turns: []Turn{}}
 			}
-			applyEvent(t.Snapshot, f.Event)
+			event := f.Event
+			if g.replica != nil {
+				event = cloneSourceEvent(event)
+			}
+			applyEvent(t.Snapshot, event)
 			if f.Event.Type == "snapshot" {
-				if err := saveSnapshot(g.dir, f.Scope, *t.Snapshot); err != nil {
-					return err
+				if g.cachePersistence() == "disk" && g.replica == nil {
+					if err := saveSnapshot(g.dir, f.Scope, *t.Snapshot); err != nil {
+						if !cacheStorageFailure(err) {
+							return err
+						}
+						if err = g.useMemoryCacheLocked(err); err != nil {
+							return err
+						}
+					}
 				}
-				if err := g.history.save(f.Scope, *t.Snapshot, true, t.Snapshot.NextCursor == nil); err != nil {
+				if err := g.optionalHistorySave(f.Scope, *t.Snapshot, true, t.Snapshot.NextCursor == nil); err != nil {
 					return err
 				}
 			}
 			t.Dirty = true
 			g.topicLocked(f.Scope, "").List[f.ThreadID] = t.Snapshot.Thread
 			g.publishLocked(f.Scope, f.ThreadID, f.Event)
+			// Android subscribes to the workspace feed independently of the visible
+			// conversation. Persist its text stream in this same source transaction.
+			// Use the workspace cursor; retain the actual conversation in the event.
+			switch f.Event.Type {
+			case "snapshot", "turn", "item", "delta":
+				background := f.Event
+				background.ThreadID = f.ThreadID
+				g.publishLocked(f.Scope, "", background)
+			}
 		}
 	}
 
-	changed := map[string]*Topic{}
-	for key := range g.staging {
-		changed[key] = g.topics[key]
-	}
-	if g.durable != nil {
-		if e := g.durable.commit(f, changed); e != nil {
-			return fmt.Errorf("durable commit: %w", e)
-		}
-	}
-	g.agentSeq = f.Seq
-	committed = true
-	if g.push != nil {
-		g.push.signal()
-	}
-	for _, envelope := range g.stagedEvents {
-		g.deliverLocked(envelope)
-	}
 	return nil
 }
+func contextFailureClass(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
+	return "unknown"
+}
 func (g *Gateway) call(ctx context.Context, scope, op string, body any) (json.RawMessage, error) {
-	g.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	id := nonce()
+	if t, _ := ctx.Value(nativeReadTraceKey{}).(*nativeReadTrace); t != nil && t.bridgeID != "" {
+		id = t.bridgeID
+	}
+	trace := nativeReadTraceFrom(ctx, id)
+	trace.event("dispatch", "bridge_dispatch", nil)
+	lockStarted := time.Now()
+	g.controlMu.Lock()
+	lockMs := time.Since(lockStarted).Milliseconds()
 	a := g.bridge
 	if a == nil || !g.nativeOnline {
-		g.mu.Unlock()
+		g.controlMu.Unlock()
+		trace.event("failed", "bridge_dispatch", map[string]any{"failureClass": "connection"})
 		return nil, errors.New("Mac 暂未连接")
 	}
 	if len(g.pending) >= 128 {
-		g.mu.Unlock()
+		g.controlMu.Unlock()
+		trace.event("failed", "bridge_dispatch", map[string]any{"failureClass": "capacity"})
 		return nil, errors.New("请求较多，请稍后重试")
 	}
-	id := nonce()
 	channel := make(chan reply, 1)
-	g.pending[id] = channel
-	g.mu.Unlock()
-	defer func() { g.mu.Lock(); delete(g.pending, id); g.mu.Unlock() }()
-	if err := a.send(map[string]any{"type": "request", "id": id, "scope": scope, "op": op, "body": body}); err != nil {
+	g.pending[id] = &pendingCall{reply: channel, trace: trace, source: a, op: op, scope: scope}
+	pendingRequests := len(g.pending)
+	g.controlMu.Unlock()
+	defer func() { g.controlMu.Lock(); delete(g.pending, id); g.controlMu.Unlock() }()
+	request := map[string]any{"type": "request", "id": id, "scope": scope, "op": op, "body": body}
+	if trace != nil && diagnosticUUID.MatchString(trace.traceID) {
+		request["traceId"] = trace.traceID
+	}
+	var sendErr error
+	if op == "native-read" {
+		sendErr = a.sendReadRequest(ctx, request)
+	} else {
+		sendErr = a.send(request)
+	}
+	if err := sendErr; err != nil {
+		failureClass := "connection"
+		if ctx.Err() != nil {
+			failureClass = contextFailureClass(ctx.Err())
+		}
+		trace.event("failed", "bridge_dispatch", map[string]any{"failureClass": failureClass})
 		return nil, errors.New("连接中断；发送结果需核对")
 	}
+	trace.event("pending", "bridge_reply", map[string]any{"pendingRequests": pendingRequests, "controlLockMs": lockMs})
 	select {
 	case value := <-channel:
 		if value.Error != "" {
+			trace.event("failed", "bridge_reply", map[string]any{"failureClass": "adapter", "failureStage": safeReadFailureStage(value.FailureStage), "statusCode": value.Status})
 			return nil, errors.New(value.Error)
 		}
+		trace.event("received", "bridge_reply", nil)
 		return value.Result, nil
 	case <-ctx.Done():
+		trace.event("failed", "bridge_reply", map[string]any{"failureClass": contextFailureClass(ctx.Err())})
+		if op == "native-read" {
+			a.cancelRead(id, scope, contextFailureClass(ctx.Err()))
+		}
 		return nil, errors.New("确认尚未收到，请核对请求状态")
 	}
 }
 func (g *Gateway) refresh(scope, id string) {
 	key := topicKey(scope, id)
 	g.mu.Lock()
-	if g.refreshing[key] || g.bridge == nil {
+	if g.refreshing[key] || !g.hasBridge() {
 		g.mu.Unlock()
 		return
 	}
@@ -506,6 +714,12 @@ func (g *Gateway) refresh(scope, id string) {
 	}()
 }
 func (g *Gateway) flush() {
+	if g.replica != nil {
+		return
+	}
+	if g.cachePersistence() == "memory" {
+		return
+	}
 	g.persistMu.Lock()
 	defer g.persistMu.Unlock()
 	g.mu.Lock()
@@ -521,7 +735,7 @@ func (g *Gateway) flush() {
 		t.Dirty = false
 	}
 	catalogs := map[string][]Thread{}
-	for _, scope := range []string{"ai", "secondary"} {
+	for _, scope := range []string{"ai", "zyy"} {
 		for _, thread := range g.topicLocked(scope, "").List {
 			catalogs[scope] = append(catalogs[scope], thread)
 		}
@@ -537,8 +751,10 @@ func (g *Gateway) flush() {
 	pruneStore(g.dir, 64<<20)
 }
 func (g *Gateway) serveAgent(w http.ResponseWriter, r *http.Request) {
+	diagnosticID, started := r.Header.Get("X-DSH-Diagnostic-ID"), time.Now()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if len(token) != len(g.secret) || subtle.ConstantTimeCompare([]byte(token), g.secret) != 1 {
+		logConnection("cloud-bridge", "rejected", diagnosticID, "", "authentication", nil, started)
 		http.Error(w, "unauthorized", 401)
 		return
 	}
@@ -551,48 +767,71 @@ func (g *Gateway) serveAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	g.agentHandlers.Add(1)
+	defer g.agentHandlers.Done()
+	logConnection("cloud-bridge", "open", diagnosticID, "", "upgrade", nil, started)
+	defer logConnection("cloud-bridge", "closed", diagnosticID, "", "handler_exit", nil, started)
 	defer conn.Close()
 	conn.SetReadLimit(2 << 20)
 	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(45 * time.Second)) })
 	a := &agent{conn: conn, id: nonce()}
 	g.mu.Lock()
+	g.controlMu.Lock()
 	previous := g.bridge
 	g.bridge = a
+	g.controlMu.Unlock()
 	resumeEpoch, ack := g.agentEpoch, g.agentSeq
 	g.mu.Unlock()
 	if previous != nil {
+		logConnection("cloud-bridge", "replaced", diagnosticID, "", "new_bridge", nil, started)
 		_ = previous.conn.Close()
+		g.failBridgeCalls(previous)
 	}
 	defer func() {
-		g.mu.Lock()
+		g.controlMu.Lock()
+		disconnected := g.bridge == a
 		if g.bridge == a {
 			g.bridge = nil
 			g.nativeOnline = false
-			for key := range g.topics {
-				p := strings.SplitN(key, ":", 2)
-				online := false
-				g.publishLocked(p[0], p[1], Event{Type: "host", Online: &online})
-			}
 			for _, c := range g.pending {
+				if c.source != a {
+					continue
+				}
 				select {
-				case c <- reply{Error: "Mac 连接中断；请求结果待核对"}:
+				case c.reply <- reply{Error: "Mac 连接中断；请求结果待核对"}:
 				default:
 				}
 			}
 		}
-		g.mu.Unlock()
+		g.controlMu.Unlock()
+		if disconnected {
+			g.mu.Lock()
+			if !g.hasBridge() {
+				for key := range g.topics {
+					p := strings.SplitN(key, ":", 2)
+					online := false
+					g.publishLocked(p[0], p[1], Event{Type: "host", Online: &online})
+				}
+			}
+			g.mu.Unlock()
+		}
 	}()
-	_ = a.send(map[string]any{"type": "hello", "serverEpoch": g.epoch, "adapterEpoch": resumeEpoch, "ack": ack, "protocol": 2, "storeID": g.storeID})
+	cacheID, persistence := g.cacheIdentity()
+	_ = a.send(map[string]any{"type": "hello", "serverEpoch": g.epoch, "adapterEpoch": resumeEpoch, "ack": ack, "protocol": 2, "storeID": cacheID, "projectionRecoveryVersion": 1, "cachePersistence": persistence})
 	done := make(chan struct{})
-	defer close(done)
+	publications := newPublicationQueue()
+	workerStopped := make(chan struct{})
+	go g.consumePublications(a, publications, done, workerStopped)
+	defer func() { conn.Close(); g.failBridgeCalls(a); close(done); <-workerStopped }()
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) != nil {
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					logConnection("cloud-bridge", "failed", diagnosticID, "", "ping_failed", err, started)
 					conn.Close()
 					return
 				}
@@ -605,15 +844,23 @@ func (g *Gateway) serveAgent(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
+			logConnection("cloud-bridge", "failed", diagnosticID, "", "read_failed", err, started)
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 		var f frame
 		if json.Unmarshal(raw, &f) != nil {
+			logConnection("cloud-bridge", "rejected", diagnosticID, "", "invalid_json", nil, started)
 			return
 		}
+		if f.Type == "cancel-read-chunks" {
+			if v := chunks[f.MessageID]; v != nil && v.readID != "" && v.readID == f.ReadID && v.scope == f.Scope {
+				delete(chunks, f.MessageID)
+			}
+			continue
+		}
 		if f.Type == "chunk" {
-			if f.Count < 1 || f.Count > 1536 || f.Index < 0 || f.Index >= f.Count || len(f.MessageID) > 80 {
+			if f.Count < 1 || f.Count > 1536 || f.Index < 0 || f.Index >= f.Count || len(f.MessageID) > 80 || len(f.ReadID) > 100 {
 				return
 			}
 			part, err := base64.StdEncoding.DecodeString(f.Payload)
@@ -621,19 +868,22 @@ func (g *Gateway) serveAgent(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for k, v := range chunks {
-				if time.Since(v.at) > 30*time.Second {
+				if time.Since(v.at) > 30*time.Second || v.readID != "" && !g.currentRead(a, v.readID, v.scope) {
 					delete(chunks, k)
 				}
+			}
+			if f.ReadID != "" && !g.currentRead(a, f.ReadID, f.Scope) {
+				continue
 			}
 			v := chunks[f.MessageID]
 			if v == nil {
 				if len(chunks) >= 8 || f.Index != 0 {
 					return
 				}
-				v = &assembly{parts: make([][]byte, f.Count), at: time.Now()}
+				v = &assembly{parts: make([][]byte, f.Count), at: time.Now(), readID: f.ReadID, scope: f.Scope}
 				chunks[f.MessageID] = v
 			}
-			if v.next != f.Index || len(v.parts) != f.Count {
+			if v.next != f.Index || len(v.parts) != f.Count || v.readID != f.ReadID || v.scope != f.Scope {
 				return
 			}
 			v.parts[f.Index] = part
@@ -654,56 +904,23 @@ func (g *Gateway) serveAgent(w http.ResponseWriter, r *http.Request) {
 			if json.Unmarshal(raw, &f) != nil {
 				return
 			}
+			if v.readID != "" && (f.Type != "reply" || f.ID != v.readID) {
+				return
+			}
 		}
 		switch f.Type {
-		case "reset":
-			g.mu.Lock()
-			if err := g.durable.reset(f.Epoch, f.BaseSeq); err != nil {
-				g.mu.Unlock()
+		case "reset", "publish":
+			if !publications.offer(f, len(raw)) {
+				logConnection("cloud-bridge", "closed", diagnosticID, "", "publication_backpressure", nil, started)
 				return
 			}
-			g.agentEpoch = f.Epoch
-			g.agentSeq = f.BaseSeq
-			g.nativeOnline = true
-			g.mu.Unlock()
-			_ = a.send(map[string]any{"type": "ack", "epoch": f.Epoch, "seq": f.BaseSeq})
-			g.mu.Lock()
-			subscriptions := []string{}
-			for key, topic := range g.topics {
-				if len(topic.Subscribers) > 0 {
-					subscriptions = append(subscriptions, key)
-				}
-			}
-			g.mu.Unlock()
-			for _, key := range subscriptions {
-				parts := strings.SplitN(key, ":", 2)
-				g.refresh(parts[0], parts[1])
-			}
-		case "publish":
-			if err := g.apply(f); err != nil {
-				if strings.Contains(err.Error(), "sequence gap") || strings.Contains(err.Error(), "epoch mismatch") {
-					_ = a.send(map[string]any{"type": "resync", "reason": "sequence_gap"})
-					continue
-				}
-				log.Printf("sync commit rejected: %v", err)
-				return
-			}
-			_ = a.send(map[string]any{"type": "ack", "epoch": f.Epoch, "seq": f.Seq})
 		case "reply":
-			g.mu.Lock()
-			ch := g.pending[f.ID]
-			g.mu.Unlock()
-			if ch != nil {
-				select {
-				case ch <- reply{Result: f.Result, Error: f.Error, Status: f.Status}:
-				default:
-				}
-			}
+			g.receiveReply(a, f, publications)
 		}
 	}
 }
 func (g *Gateway) browserAllowed(r *http.Request) bool {
-	if !g.local && r.Header.Get("X-BETTER_CODEX-Authenticated") != "1" {
+	if !g.local && r.Header.Get("X-DSH-Authenticated") != "1" {
 		return false
 	}
 	// Authentication remains mandatory. Installed-PWA/SSO document navigation
@@ -728,11 +945,32 @@ func (g *Gateway) serveEvents(w http.ResponseWriter, r *http.Request, scope, id 
 		http.Error(w, "invalid origin", 403)
 		return
 	}
+	diagnosticID, started := r.URL.Query().Get("dshDiag"), time.Now()
+	// A fixed diagnostic hint distinguishes the native background connection
+	// from WebView/browser listeners; it never participates in authentication.
+	clientKind := "unknown"
+	ua := r.UserAgent()
+	if strings.HasPrefix(ua, "okhttp/") {
+		clientKind = "android-native"
+	} else if strings.Contains(ua, "DSHAndroid/") {
+		clientKind = "android-webview"
+	} else if strings.Contains(ua, "Chrome/") {
+		clientKind = "browser"
+	}
+	eventLog := func(stage, reason string, failure error) {
+		event := connectionEvent("cloud-events", stage, diagnosticID, scope, reason, failure, started)
+		event["clientKind"] = clientKind
+		raw, _ := json.Marshal(event)
+		log.Print(string(raw))
+	}
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
+	eventLog("open", "upgrade", nil)
+	defer eventLog("closed", "handler_exit", nil)
 	b := &browser{conn: conn, send: make(chan any, 1024), done: make(chan struct{})}
 	defer b.close()
 	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
@@ -753,25 +991,47 @@ func (g *Gateway) serveEvents(w http.ResponseWriter, r *http.Request, scope, id 
 			}
 		}
 	}
-	online := g.bridge != nil && g.nativeOnline
-	b.send <- map[string]any{"type": "hello", "epoch": g.epoch, "online": online}
+	online := g.nativeOnlineNow()
+	b.send <- map[string]any{"type": "hello", "epoch": g.epoch, "online": online, "syncPolicyVersion": 1}
 	g.mu.Unlock()
 	defer func() { g.mu.Lock(); delete(t.Subscribers, b); g.mu.Unlock() }()
 	g.refresh(scope, id)
 	conn.SetReadLimit(2048)
-	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
-	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(45 * time.Second)) })
+	// One heartbeat owner. Only this read-only subscriber can opt into quiet
+	// keepalive; the Mac replication bridge and command transport are unchanged.
+	policyChanges := make(chan eventHeartbeatPolicy, 1)
+	readBudget := 45 * time.Second // reader goroutine, including pong callback
+	_ = conn.SetReadDeadline(time.Now().Add(readBudget))
+	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(readBudget)) })
 	go func() {
 		defer b.close()
 		for {
 			var value struct {
 				Type string `json:"type"`
 				Seq  uint64 `json:"seq"`
+				Mode string `json:"mode"`
 			}
-			if conn.ReadJSON(&value) != nil {
+			if err := conn.ReadJSON(&value); err != nil {
+				eventLog("failed", "read_failed", err)
 				return
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+			if value.Type == "syncPolicy" {
+				policy, ok := subscriberHeartbeat(value.Mode)
+				if !ok {
+					return
+				}
+				readBudget = 3 * policy.interval
+				// Latest desired mode replaces an unconsumed old mode. This is
+				// not a command queue and never carries execution requests.
+				select {
+				case <-policyChanges:
+				default:
+				}
+				policyChanges <- policy
+				_ = conn.SetReadDeadline(time.Now().Add(readBudget))
+				continue
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(readBudget))
 			if value.Type != "ack" && value.Type != "ping" {
 				return
 			}
@@ -779,15 +1039,31 @@ func (g *Gateway) serveEvents(w http.ResponseWriter, r *http.Request, scope, id 
 	}()
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	adaptiveKeepalive := false
 	for {
 		select {
+		case policy := <-policyChanges:
+			adaptiveKeepalive = true
+			ticker.Reset(policy.interval)
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.WriteJSON(map[string]any{"type": "syncPolicy", "mode": policy.mode, "heartbeatMs": policy.interval.Milliseconds()}); err != nil {
+				return
+			}
 		case value := <-b.send:
 			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if conn.WriteJSON(value) != nil {
+			if err := conn.WriteJSON(value); err != nil {
+				eventLog("failed", "write_failed", err)
 				return
 			}
 		case <-ticker.C:
-			if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) != nil {
+			if adaptiveKeepalive {
+				// One application heartbeat is observable by the mobile client.
+				// Its ping reply extends the same reader deadline; no second pinger.
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if conn.WriteJSON(map[string]any{"type": "heartbeat"}) != nil {
+					return
+				}
+			} else if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) != nil {
 				return
 			}
 		case <-b.done:
@@ -808,10 +1084,10 @@ func (g *Gateway) Handler() http.Handler {
 		w.Header().Set("Accept-CH", "Sec-CH-Prefers-Color-Scheme")
 		if r.URL.Path == "/__sync_health" {
 			g.mu.Lock()
-			online := g.bridge != nil && g.nativeOnline
+			online := g.nativeOnlineNow()
 			count := len(g.topics)
 			g.mu.Unlock()
-			writeJSON(w, 200, map[string]any{"service": "betterCodex-sync-gateway", "online": online, "topics": count, "build": buildVersion, "notifications": g.push != nil})
+			writeJSON(w, 200, map[string]any{"service": "dsh-sync-gateway", "online": online, "topics": count, "build": buildVersion, "notifications": g.push != nil && g.push.notificationAvailable(), "cache": g.cacheStatus()})
 			return
 		}
 		if r.URL.Path == "/_sync-agent" {
@@ -857,9 +1133,9 @@ func (g *Gateway) Handler() http.Handler {
 			return
 		}
 		for url, file := range map[string]string{
-			"/official-patched-v1002/assets/app-initial-cadb12d4a15e.js": "${BETTER_CODEX_RUNTIME}/native-assets/v1002/app-initial-cadb12d4a15e.js",
-			"/official-patched-v1004/assets/app-initial-cadb12d4a15e.js": "${BETTER_CODEX_RUNTIME}/native-assets/v1004/app-initial-cadb12d4a15e.js",
-			"/official-patched-v1004/assets/app-primary-6cd7b8b3f5e3.js": "${BETTER_CODEX_RUNTIME}/native-assets/v1004/app-primary-6cd7b8b3f5e3.js",
+			"/official-patched-v1002/assets/app-initial-cadb12d4a15e.js": "/opt/dsh-sync/native-assets/v1002/app-initial-cadb12d4a15e.js",
+			"/official-patched-v1004/assets/app-initial-cadb12d4a15e.js": "/opt/dsh-sync/native-assets/v1004/app-initial-cadb12d4a15e.js",
+			"/official-patched-v1004/assets/app-primary-6cd7b8b3f5e3.js": "/opt/dsh-sync/native-assets/v1004/app-primary-6cd7b8b3f5e3.js",
 		} {
 			if r.URL.Path != url {
 				continue
@@ -885,7 +1161,7 @@ func (g *Gateway) Handler() http.Handler {
 				color := "#ffffff"
 				mode := r.URL.Query().Get("theme")
 				if mode == "" {
-					if c, err := r.Cookie("betterCodex-theme"); err == nil {
+					if c, err := r.Cookie("dsh-theme"); err == nil {
 						mode = c.Value
 					} else if strings.Contains(r.Header.Get("Sec-CH-Prefers-Color-Scheme"), "dark") {
 						mode = "dark"
@@ -971,15 +1247,21 @@ func (g *Gateway) Handler() http.Handler {
 			return
 		}
 		if op == "native-bootstrap" && r.Method == "GET" {
-			g.serveNativeBootstrap(w, r, scope)
+			traceNativeHTTP(w, r, scope, "native_bootstrap", "GET", func(w http.ResponseWriter) {
+				g.serveNativeBootstrap(w, r, scope)
+			})
 			return
 		}
 		if op == "native-catalog" && r.Method == "GET" {
-			g.serveNativeCatalog(w, r, scope)
+			traceNativeHTTP(w, r, scope, "native_catalog", "GET", func(w http.ResponseWriter) {
+				g.serveNativeCatalog(w, r, scope)
+			})
 			return
 		}
 		if op == "native-read" && r.Method == "POST" {
-			g.serveNativeRead(w, r, scope)
+			traceNativeHTTP(w, r, scope, "native_read", "POST", func(w http.ResponseWriter) {
+				g.serveNativeRead(w, r, scope)
+			})
 			return
 		}
 		if op == "performance" {
@@ -996,7 +1278,9 @@ func (g *Gateway) Handler() http.Handler {
 		}
 
 		if op == "thread" && r.Method == "GET" && id != "" {
-			g.serveSnapshot(w, r, scope, id)
+			traceNativeHTTP(w, r, scope, "native_read", "thread/read", func(w http.ResponseWriter) {
+				g.serveSnapshot(w, r, scope, id)
+			})
 			return
 		}
 
@@ -1067,7 +1351,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:18985", "")
 	dir := flag.String("state-dir", "", "")
 	keyFile := flag.String("key-file", "", "")
-	origin := flag.String("origin", "http://localhost:3080", "")
+	origin := flag.String("origin", "", "Required public origin")
 	local := flag.Bool("local-development", false, "")
 	flag.Parse()
 	host, _, err := net.SplitHostPort(*listen)
@@ -1094,10 +1378,15 @@ func main() {
 	}
 	abs, _ := filepath.Abs(*dir)
 	g := NewGateway(abs, *origin, key, *local)
+	if err := g.enableRealtimeCache(); err != nil {
+		log.Fatal("live read replica unavailable")
+	}
+	defer g.closeCaches()
 	defer g.flush()
 	server := &http.Server{Addr: *listen, Handler: g.Handler(), ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 32 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go g.runHistoryRetention(ctx)
 	g.push, err = newPushService(g)
 	if err != nil {
 		log.Print("notification service unavailable")
@@ -1123,7 +1412,7 @@ func main() {
 		defer cancel()
 		_ = server.Shutdown(c)
 	}()
-	fmt.Printf("{\"service\":\"betterCodex-sync-gateway\",\"listen\":%q}\n", *listen)
+	fmt.Printf("{\"service\":\"dsh-sync-gateway\",\"listen\":%q}\n", *listen)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("gateway stopped")
 	}

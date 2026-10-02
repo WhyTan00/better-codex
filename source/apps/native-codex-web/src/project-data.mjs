@@ -1,16 +1,18 @@
-// Thin product adapter: domain interpretation remains in the owning project.
-import {projectCatalog,projectDetails} from '${BETTER_CODEX_WORKSPACE}/agent/runtime/lib/projects.mjs';
+// Private domains remain adapters; portable navigation comes from the selected
+// installation's project bindings, without a second project database.
+import path from 'node:path';
+import {portableConfig} from './runtime-profile.mjs';
+import {workspace,belongs,fail} from './registry.mjs';
+const privateAdapter=portableConfig?null:await import('./private-project-data.mjs');
 export async function projectData(scope,id){
- if(!id)return projectCatalog(scope);
- const project=await projectDetails(scope,id);
- if(scope==='ai'&&id==='invest'){const {execute}=await import('${BETTER_CODEX_WORKSPACE}/Invest/adapters/workbench-portfolio.mjs');project.data=await execute();}
- if(scope==='ai'&&id==='comfyui-video'){const {materialDeskSummary}=await import('${BETTER_CODEX_WORKSPACE}/VideoWorkbench/adapters/workbench-material-desk.mjs');project.data={materialDesk:await materialDeskSummary()};}
- if(scope==='secondary'&&id==='secondary-project'){const {secondarySummary}=await import('${BETTER_CODEX_SECONDARY_WORKSPACE}/SecondaryProject/adapters/workbench.mjs');project.data=await secondarySummary();}
- return project;
+ if(privateAdapter)return privateAdapter.projectData(scope,id);
+ const ws=workspace(scope),projects=[];
+ for(const binding of ws.projectBindings){const root=path.resolve(ws.root,binding.root);if(await belongs(root,ws))projects.push({id:binding.id,name:binding.name,root,lifecycle:'active',surfaces:[]});}
+ if(!id)return {schema:'agent-project-catalog.v1',scope,generatedAt:new Date().toISOString(),status:'ok',sources:[],projects};
+ const project=projects.find(project=>project.id===id);if(!project)throw fail(404,'Project is not available in this workspace');
+ return {...project,scope,navigation:[],actions:[],stateCounts:{},sources:[],boundaries:{readOnly:true,projectOwnsFacts:true}};
 }
-
 export async function projectMaterialFeedback(scope,id,payload){
- if(scope!=='ai'||id!=='comfyui-video')throw Object.assign(new Error('此项目没有素材台反馈接口'),{code:404});
- const {submitMaterialFeedback}=await import('${BETTER_CODEX_WORKSPACE}/VideoWorkbench/adapters/workbench-material-desk.mjs');
- return submitMaterialFeedback(payload);
+ if(privateAdapter)return privateAdapter.projectMaterialFeedback(scope,id,payload);
+ throw fail(404,'Project action is not configured');
 }

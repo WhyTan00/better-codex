@@ -1,4 +1,4 @@
-module better-codex.local/better-codex-sync-gateway
+module github.com/TonyandWei/better-codex/sync-gateway
 
 go 1.25.0
 

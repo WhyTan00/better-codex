@@ -1,8 +1,7 @@
 // Read-only desktop metadata through the existing OpenCodex IPC bridge.
 // No token/auth-file access, model calls, host restarts, or arbitrary IPC forwarding.
-import {createRequire} from 'node:module';
+import {WebSocket as WS} from './runtime-dependencies.mjs';
 import {randomUUID} from 'node:crypto';
-const require=createRequire('${BETTER_CODEX_HOME}/.better-codex/official-runtime-20260908/opencodex-pinned/package.json'),WS=require('ws');
 const ALLOWED=new Set(['account-info','os-info','list-pinned-threads','codex-command-keymap-state']);
 export class OfficialDesktopMetadata{
  constructor(upstream){this.upstream=upstream;this.cache=new Map();this.pending=new Map();}
