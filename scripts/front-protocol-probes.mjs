@@ -7,7 +7,7 @@ const require=createRequire(deployment.dependencyPackage),hostRequire=createRequ
 const {RpcSession,RpcTarget}=await import(require.resolve('capnweb'));
 const WS=require('ws'),codec=hostRequire(deployment.native.codecPath);
 export const PROBE_CONTRACT='front-protocol-v1';
-export async function verifyFrontProtocols({base,threadId,request=fetch,socketHeaders={},report={checks:[]}}){
+export async function verifyFrontProtocols({base,threadId,request=fetch,socketHeaders={},socketOptions={},report={checks:[]}}){
  const sockets=new Set();let clientSeq=0,serverSeq=0;
  const transmit=(socket,message)=>socket.send(JSON.stringify({...message,dshClientSeq:++clientSeq}));
  const check=(name,ok,details={})=>{report.checks.push({name,ok:!!ok,...details});if(!ok)throw Error('Check failed: '+name);};
@@ -29,7 +29,7 @@ export async function verifyFrontProtocols({base,threadId,request=fetch,socketHe
   const optional=await http('/w/ai/api/request',{method:'POST',headers,body:JSON.stringify({request:{method:'plugin/list'}})});check('optional capability unavailable instead of authentication error',optional.status===501,{status:optional.status});await optional.body?.cancel();
   const clientId='acceptance-'+randomUUID();
   async function open(resumeId){
-   const socket=new WS(base.replace(/^http/,'ws')+'/w/ai/ws?scopeToken='+binding.token,{headers:{origin:base,...socketHeaders}});sockets.add(socket);socket.on('error',()=>{});socket.on('message',raw=>{const m=JSON.parse(raw);if(Number.isSafeInteger(m.dshPageSeq)&&m.dshPageSeq>serverSeq){serverSeq=m.dshPageSeq;socket.send(JSON.stringify({type:'dsh:ack',seq:serverSeq}));}});
+   const socket=new WS(base.replace(/^http/,'ws')+'/w/ai/ws?scopeToken='+binding.token,{...socketOptions,headers:{origin:base,...socketHeaders}});sockets.add(socket);socket.on('error',()=>{});socket.on('message',raw=>{const m=JSON.parse(raw);if(Number.isSafeInteger(m.dshPageSeq)&&m.dshPageSeq>serverSeq){serverSeq=m.dshPageSeq;socket.send(JSON.stringify({type:'dsh:ack',seq:serverSeq}));}});
    await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{socket.terminate();reject(failure('connect',Error('protocol connection deadline')));},15000);socket.once('open',()=>{clearTimeout(timer);resolve();});socket.once('error',error=>{clearTimeout(timer);failure('connect',error);reject(Error('protocol connection failed'));});});
    const pending=wait(socket,m=>m.type==='hello-ack'||m.type==='dsh:resume-unavailable');socket.send(JSON.stringify({type:'hello',clientId,dshClientId:clientId,dshProtocol:'dsh-page-resume-v1',dshAck:serverSeq,...(resumeId?{dshResumeId:resumeId}:{})}));
    const hello=await pending;check('page handshake',hello.type==='hello-ack');return {socket,hello};
@@ -67,7 +67,7 @@ export async function verifyFrontProtocols({base,threadId,request=fetch,socketHe
     // A peer may disconnect before hello while another browser exposes only
     // a partial service set. Cleanup must not terminate the shared front.
     phase('partial-view-peer-connect');
-    const peer=new WS(base.replace(/^http/,'ws')+'/w/ai/ws?scopeToken='+binding.token,{headers:{origin:base,...socketHeaders}});sockets.add(peer);peer.on('error',()=>{});
+    const peer=new WS(base.replace(/^http/,'ws')+'/w/ai/ws?scopeToken='+binding.token,{...socketOptions,headers:{origin:base,...socketHeaders}});sockets.add(peer);peer.on('error',()=>{});
     await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{peer.terminate();reject(failure('peer-connect',Error('peer connection deadline')));},15000);peer.once('open',()=>{clearTimeout(timer);resolve();});peer.once('error',error=>{clearTimeout(timer);failure('peer-connect',error);reject(Error('peer connection failed'));});});
     phase('partial-view-peer-close');
     await close(peer);

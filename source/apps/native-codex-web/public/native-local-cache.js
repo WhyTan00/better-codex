@@ -436,12 +436,20 @@
  }
  async function prepareSidebarBootstrap(config){
   const [pins,locked]=await Promise.all([meta(ipcReadKey('list-pinned-threads',{})).catch(()=>null),meta('auth-locked').catch(()=>true)]);
-  if(locked||!Array.isArray(pins?.threadIds)||!config?.initialSidebarBootstrap)return config;
-  const entries=await readEntries(pins.threadIds.map(threadId=>({hostId:'local',threadId}))),initial=config.initialSidebarBootstrap;
-  const pinSet=new Set(pins.threadIds),byId=new Map((initial.catalogEntries||[]).filter(entry=>!pinSet.has(entry.threadId)).map(entry=>[entry.hostId+':'+entry.threadId,entry]));
+  if(locked||!config?.initialSidebarBootstrap)return config;
+  // The boot configuration is a point-in-time snapshot. Project changes read
+  // during the previous visit are newer and must join pins in the FIRST render.
+  const initial=config.initialSidebarBootstrap,globals=new Map((initial.globalStateEntries||[]).map(entry=>[entry.key,entry.value]));
+  const keys=['local-projects','selected-project','project-order','electron-saved-workspace-roots','electron-workspace-root-labels'];
+  const saved=await Promise.all(keys.map(key=>meta(ipcReadKey('get-global-state',{key})).catch(()=>undefined)));
+  for(let i=0;i<keys.length;i++)if(saved[i]&&Object.hasOwn(saved[i],'value'))globals.set(keys[i],saved[i].value);
+  const ids=Array.isArray(pins?.threadIds)?pins.threadIds:null,entries=ids?await readEntries(ids.map(threadId=>({hostId:'local',threadId}))):[];
+  const pinSet=new Set(ids||[]),byId=new Map((initial.catalogEntries||[]).filter(entry=>!pinSet.has(entry.threadId)).map(entry=>[entry.hostId+':'+entry.threadId,entry]));
   for(const entry of entries)byId.set(entry.hostId+':'+entry.threadId,entry);
-  return {...config,initialSidebarBootstrap:{...initial,catalogEntries:[...byId.values()],
-   globalStateEntries:[...(initial.globalStateEntries||[]).filter(entry=>entry.key!=='pinned-thread-ids'),{key:'pinned-thread-ids',value:pins.threadIds.slice()}]}};
+  if(ids)globals.set('pinned-thread-ids',ids.slice());
+  const roots=globals.get('electron-saved-workspace-roots'),labels=globals.get('electron-workspace-root-labels');
+  const workspaceRootOptions=Array.isArray(roots)?{...initial.workspaceRootOptions,roots:roots.slice(),canonicalPathByRoot:Object.fromEntries(roots.map(root=>[root,root])),...(labels&&typeof labels==='object'?{labels}:{} )}:initial.workspaceRootOptions;
+  return {...config,...(Array.isArray(roots)?{workspaceRoots:roots.slice()}:{}),initialSidebarBootstrap:{...initial,workspaceRootOptions,catalogEntries:[...byId.values()],globalStateEntries:[...globals].map(([key,value])=>({key,value}))}};
  }
  const validated=new Map(),foregroundFreshReads=new Set(),nativeActivity=new Map(),nativeEventEpoch=new Map();let lastForeground=Date.now();
  const validNativeRecord=(record,key)=>!!record&&record.scope===scope.id&&record.key===key&&!record.deleted&&typeof record.sourceGeneration==='string'&&record.sourceGeneration.length>0&&typeof record.generation==='string'&&record.generation.length>0&&Number.isSafeInteger(record.revision)&&record.revision>=1&&record.payload&&typeof record.payload==='object';

@@ -4,6 +4,7 @@ import path from 'node:path';
 import {readFile,writeFile,copyFile,rename,stat} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
+import {cvm} from './portable/cvm.mjs';
 import {setup,exists,digest,capture,run,requireStopped} from './portable/setup.mjs';
 import {readDeploymentConfig} from '../source/apps/native-codex-web/src/deployment-config.mjs';
 import {PortablePlugins} from '../source/apps/native-codex-web/src/portable-plugins.mjs';
@@ -14,7 +15,7 @@ export function argumentsFor(argv){
   const key=argv[i];if(!key.startsWith('--'))throw Error('Unexpected argument: '+key);
   const name=key.slice(2);
   if(['enable','help'].includes(name)){options[name]=true;continue;}
-  if(!['home','workspace','label','port','app','native-url','codex-home','cache-dir','go','user','url','tailscale-bin'].includes(name)||!argv[i+1]||argv[i+1].startsWith('--'))throw Error('Unknown option or missing value: '+key);
+  if(!['home','workspace','label','port','app','native-url','codex-home','cache-dir','go','user','url','tailscale-bin','ssh-host','password-hash-file','remote-port'].includes(name)||!argv[i+1]||argv[i+1].startsWith('--'))throw Error('Unknown option or missing value: '+key);
   const value=argv[++i];if(name==='user')(options.user??=[]).push(value);else if(Object.hasOwn(options,name))throw Error('Duplicate option: '+key);else options[name]=value;
  }
  return options;
@@ -65,13 +66,16 @@ export async function tailscale(home,options){
  await rename(proposed,file);
  console.log(JSON.stringify({configured:true,serveEnabled:!!options.enable,url:origin,allowedUsers:users,serveCommand:options.enable?null:[bin,'serve','--bg','--https=443','http://127.0.0.1:'+config.port],next:'Run start, then open the URL on a device signed in to Tailscale.'},null,2));
 }
-const help=`Better Codex — local Mac host + private Tailscale access
+const help=`Better Codex — Mac host with Tailscale or CVM access
 
   setup [--workspace /path] [--port 4173] [--app /Applications/ChatGPT.app]
   start                         Keep this terminal open; Ctrl-C stops owned children
   doctor                        Verify installation without sending a model turn
   tailscale --enable            Configure private Serve and allow your tailnet login
   tailscale --user me@example.com [--user colleague@example.com] [--enable]
+  cvm --url https://codex.example.com --user owner --ssh-host my-cvm
+      --password-hash-file /private/path/password.hash [--remote-port 24173]
+                                Prepare authenticated CVM ingress and SSH tunnel
   update                        Rebuild from this checkout; stop the host first
 
 All commands accept --home /path (default ~/.better-codex).
@@ -84,6 +88,7 @@ export async function main(argv=process.argv.slice(2)){
  if(command==='setup'||command==='update')return setup(options);
  if(command==='doctor'){if(!(await doctor(home)).ok)process.exitCode=1;return;}
  if(command==='tailscale')return tailscale(home,options);
+ if(command==='cvm')return cvm(home,options);
  if(command==='start'){
   const file=path.join(home,'deployment.json'),config=readDeploymentConfig(file);process.env.WORKBENCH_CONFIG=file;
   const {startPortableHost}=await import('../source/apps/native-codex-web/src/portable-host.mjs');const host=await startPortableHost(config);return host.wait();

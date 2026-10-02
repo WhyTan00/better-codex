@@ -54,7 +54,7 @@ async function body(req){let s='',size=0;for await(const b of req){size+=b.lengt
 const statusOf=e=>typeof e.code==='number'&&e.code>=400&&e.code<=599?e.code:({ENOENT:404,EACCES:403,EPERM:403,ELOOP:403,EISDIR:400,ENOTDIR:400}[e.code]||500);
 function errorShape(e){return {code:e.rpcCode||-32000,message:e.code?e.message:'官方桥接暂不可用',data:{status:statusOf(e)}};}
 export async function createOfficialFront({port=3084,upstream=runtimeProfile.upstream,native=new SharedNative({reconnect:true,preserveProcessIdentity:false}),stateDir=PRIVATE+'/front-state',publicOrigin=null,historyUpgradeWaitMs=10000}={}){
- if(publicOrigin){const u=new URL(publicOrigin);if(u.protocol!=='http:'||!['localhost','127.0.0.1'].includes(u.hostname))throw fail(400,'开发候选仅允许回环入口');publicOrigin=u.origin;}
+ if(publicOrigin){const u=new URL(publicOrigin);if(portableConfig){if(publicOrigin!==portableConfig.origin)throw fail(400,'入口必须匹配部署配置');}else if(u.protocol!=='http:'||!['localhost','127.0.0.1'].includes(u.hostname))throw fail(400,'开发候选仅允许回环入口');publicOrigin=u.origin;}
  await mkdir(stateDir,{recursive:true,mode:0o700});const connectionLog=new ConnectionDiagnostics({file:path.join(stateDir,'connections.jsonl')});connectionLog.event({component:'front',stage:'boot',processId:process.pid});native.on('connection-diagnostic',entry=>connectionLog.event(entry));
  const historyReads=[],historyUpgrades=[];let historyUpgrade;
  const historyUpgradeBeforeResume=async target=>{

@@ -9,6 +9,14 @@ Host: macOS Apple Silicon, Node 24.3.0, official desktop 26.928.20755 build 1224
 - The exported Go suite includes its real Node producer fixtures. Cache-unavailable, source-page delivery, live events and replay contracts run from the public tree.
 - An update while the host is running is rejected and leaves the deployment unchanged. Stopping the supervisor closes only its owned children. The installed official application's code signature remains valid.
 
+## CVM and client continuity follow-up
+
+The complete portable host also passes 43 read-only protocol/resource checks through a real Caddy HTTPS proxy using isolated ports and an empty Native account directory. This covers actual Native directory access, AppHost, WebSocket reconnect, renderer resources, local relay and plugins; no model turn was sent. An initial full-host failure exposed a loopback-only front-origin guard; it now accepts exactly the validated portable deployment origin while retaining the private development guard.
+
+The CVM profile generates a private Caddy configuration, a loopback reverse-SSH command and Mac proxy authentication settings. Tests cover rejected forged identities, same-origin enforcement, principal-scoped plugin capabilities and credential stripping. The real Caddy HTTPS integration test passes authenticated reads and WebSocket streams; it does not change system trust or a live cloud service.
+
+The renderer patches also bind late send/create callbacks to their original conversation and prepare cached projects/pins before the first sidebar. Final private PWA/Android bundles passed the targeted old-failure and adjacent-success cases, including 14 actual Android WebView cases. This is function-level WebView evidence, not full logged-in phone UI acceptance. The portable source carries the same patches; its generated renderer also passes 14 focused send/cache/startup checks. Import maps now normalize every official resource prefix to one module identity. A real Android WebView fixture reproduced the previous duplicate-module initialization failure with frozen renderer bytes, then passed with the normalized map.
+
 ## Recorded compatibility limits
 
 For official desktop 26.928.20755 build 12246, OpenCodex reports unsupported optional optimization locators for hidden macOS push registration, pet prewarm, pet restoration, and worktree-shell caching. The portable front implements its own required worktree metadata and notification interfaces, which are exercised by the protocol probe. Its readiness policy accepts only those exact points on that exact build, with the observed cold-start diagnostic `Expected 1 candidates but found 0` or cached-start diagnostic `Cached locator did not resolve`, while still requiring the Native connection, official IPC, bundle and all required host hooks. Missing required IPC, an unknown diagnostic or another degraded app build remains a startup failure. Upstream's degraded report is retained.
@@ -19,6 +27,7 @@ The generated development runner uses contained framework/helper copies and loca
 
 - Physical phone/PWA rendering and natural background/resume behavior.
 - A real Tailscale Serve session between devices; identity and routing decisions have local contract coverage only.
+- Real CVM DNS/certificate issuance, a sustained external reverse SSH tunnel and phone HTTP Basic login.
 - Intel Mac startup.
 - A signed-in model execution through the clean portable installation; the protocol test deliberately uses no account credentials or paid model request.
 

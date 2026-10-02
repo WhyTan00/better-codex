@@ -5,7 +5,7 @@
  const node=(tag,text)=>{const value=document.createElement(tag);if(text!=null)value.textContent=String(text);return value;};
  async function api(route,options={}){
   if(!capability){const response=await request('/api/context',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspace:scope.id}),cache:'no-store'});if(!response.ok)throw Error('请重新连接工作台');capability=(await response.json()).token;}
-  const response=await request('/api/w/'+scope.id+'/plugins'+route,{...options,headers:{...options.headers,authorization:'Bearer '+capability},cache:'no-store'});
+  const response=await request('/api/w/'+scope.id+'/plugins'+route,{...options,headers:{...options.headers,'x-better-codex-capability':capability},cache:'no-store'});
   if(response.status===401)capability=null;const result=await response.json();if(!response.ok)throw Error(result.error||'插件暂不可用');return result;
  }
  async function list(){if(!definitions){definitions=(await api('')).data;window.dispatchEvent(new CustomEvent('dsh:plugin-definitions',{detail:definitions}));}return definitions;}

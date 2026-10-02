@@ -39,7 +39,8 @@
  const waitForAndroidCache=()=>{const pending=window.__DSH_ANDROID_CACHE_READY__;if(!pending||typeof pending.then!=='function')return Promise.resolve(null);return Promise.race([Promise.resolve(pending),new Promise(resolve=>setTimeout(()=>resolve(null),1200))]).catch(()=>null);};
  // Credentials authorize control; the optional bootstrap only refreshes a read cache.
  // Both initial boot and reconnect share the scope layer's single in-flight renewal.
- let configured=false,authenticated=false,authBlocked=false,cache;
+ let configured=false,authenticated=false,authBlocked=false,cache,firstPaintObserver=null;
+ const finishCachedPaint=()=>{window.__DSH_CACHE_FIRST_PAINT__=false;firstPaintObserver?.disconnect();firstPaintObserver=null;};
  const controlReady=()=>{if(!configured||!authenticated||authBlocked||window.__DSH_ACCEPT_SESSION_READY__?.()!==true)return;window.__DSH_NATIVE_ONLINE__=true;cache.saveMeta('auth-locked',false).catch(()=>{});window.dispatchEvent(new Event('dsh:session-ready'));if(window.__DSH_EXECUTION_CONNECTED__!==true)window.__DSH_RECONNECT_TRANSPORT__?.();};
  async function freshSession(){const ok=await window.__DSH_RENEW_SCOPE__();if(!ok)throw Error('Mac 暂未连接');return true;}
  async function freshBootstrap(){const {response,data}=await window.__DSH_CONNECTION_JSON__('/w/'+id+'/api/native-bootstrap',{headers:{'x-dsh-scope':window.__DSH_SCOPE__.token},cache:'no-store',redirect:'manual'},30000);if(!response.ok||!data)throw Error('启动配置暂不可用');if(!authBlocked){const copy=structuredClone(data);if(copy.gatewayWsUrl){const u=new URL(copy.gatewayWsUrl);u.search='';copy.gatewayWsUrl=u.href;}cache.saveMeta('bootstrap',copy).catch(()=>{});}return data;}
@@ -61,6 +62,7 @@
   session.then(ok=>{if(!ok&&!authenticated&&!authBlocked&&window.__DSH_EXECUTION_CONNECTED__!==true)window.dispatchEvent(new CustomEvent('dsh:connection-state',{detail:{state:'offline-cache'}}));});
   let recovering=false;const recover=()=>{if(recovering||authBlocked||window.__DSH_EXECUTION_CONNECTED__===true)return;recovering=true;freshSession().catch(()=>{}).finally(()=>{recovering=false;});};addEventListener('online',recover);addEventListener('focus',recover);setInterval(recover,15000);
   if(cached&&home)await window.__DSH_STARTUP_PREVIEW__?.show();
+  if(cached&&home){window.__DSH_CACHE_FIRST_PAINT__=true;firstPaintObserver=new MutationObserver(()=>{if(document.querySelector('#root #app-shell-sidebar'))finishCachedPaint();});firstPaintObserver.observe(document.getElementById('root'),{subtree:true,childList:true});}
   await Promise.all([script(release.runtime),script(release.pwa)]);await script(release.entry,true);
- })().catch(error=>{window.__DSH_CLIENT_LOG__?.reportError('boot_error',error);window.__DSH_STARTUP_PREVIEW__?.hide();const root=document.getElementById('root');if(root){root.replaceChildren();const p=document.createElement('p');p.className='dsh-cache-boot-error';p.textContent=error.message;root.append(p);const a=document.createElement('a');a.href=location.pathname+location.search;a.textContent='重新连接';root.append(a);}});
+ })().catch(error=>{finishCachedPaint();window.__DSH_CLIENT_LOG__?.reportError('boot_error',error);window.__DSH_STARTUP_PREVIEW__?.hide();const root=document.getElementById('root');if(root){root.replaceChildren();const p=document.createElement('p');p.className='dsh-cache-boot-error';p.textContent=error.message;root.append(p);const a=document.createElement('a');a.href=location.pathname+location.search;a.textContent='重新连接';root.append(a);}});
 })();

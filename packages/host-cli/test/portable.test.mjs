@@ -93,3 +93,35 @@ test('portable readiness only accepts known optional optimizer diagnostics on th
  bad.checks.officialAppServer=true;bad.compatibility.abnormalPoints[0].id='static.required.rpc';assert.equal(gatewayTransportReady(bad,{portable:true}),false);
  bad.compatibility=v.compatibility;bad.officialBundle.version='future';assert.equal(gatewayTransportReady(bad,{portable:true}),false);
 });
+
+test('CVM preparation produces private credentials and a loopback tunnel without contacting the cloud',async t=>{
+ const f=await fixture(t),{cvm,cvmCaddyfile}=await import('../../../scripts/portable/cvm.mjs');
+ const hash='$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG',hashFile=path.join(f.root,'password.hash');await writeFile(hashFile,hash,{mode:0o600});
+ assert.throws(()=>cvmCaddyfile({origin:'http://codex.example.com',user:'owner',passwordHash:hash,proxyKey:'a'.repeat(64),remotePort:24173}),/HTTPS/);
+ const value=await cvm(f.root,{url:'https://codex.example.com',user:['owner'],'ssh-host':'owner@my-cvm','password-hash-file':hashFile});
+ assert.equal(value.cloudModified,false);assert.equal((await readFile(value.backup,'utf8')).includes('"mode":"loopback"'),true);
+ const c=readDeploymentConfig(path.join(f.root,'deployment.json'));assert.equal(c.access.mode,'cvm-proxy');
+ const {stat}=await import('node:fs/promises');assert.equal((await stat(c.access.proxyKeyFile)).mode&0o777,0o600);
+ const caddy=await readFile(path.join(value.bundle,'Caddyfile'),'utf8');assert(caddy.includes('basic_auth'));assert(caddy.includes('header_up -Authorization'));
+ const tunnel=await readFile(value.tunnel,'utf8');assert(tunnel.includes('127.0.0.1:24173:127.0.0.1:4173'));assert(!tunnel.includes('StrictHostKeyChecking=no'));
+ const before=await readFile(c.file,'utf8');await assert.rejects(cvm(f.root,{url:c.origin,user:['owner'],'ssh-host':'-oProxyCommand=bad','password-hash-file':hashFile}),/SSH/);assert.equal(await readFile(c.file,'utf8'),before);
+});
+
+test('CVM entry requires proxy proof, scopes capability identity, strips credentials and proxies WebSockets',async t=>{
+ const f=await fixture(t),key='a'.repeat(64),keyFile=path.join(f.root,'proxy.key');await writeFile(keyFile,key,{mode:0o600});
+ const front=http.createServer((req,res)=>res.end(JSON.stringify(req.headers)));front.on('upgrade',(_req,socket)=>{socket.end('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');});
+ await new Promise(resolve=>front.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>front.close(resolve)));
+ const config={...f.config,origin:'https://codex.example.com',access:{mode:'cvm-proxy',users:['owner','other'],proxyKeyFile:keyFile},frontPort:front.address().port};
+ const entry=await createPortableEntry(config);await new Promise(resolve=>entry.server.listen(0,'127.0.0.1',resolve));t.after(()=>entry.close());
+ const request=(url,options={})=>new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:entry.server.address().port,path:url,method:options.method||'GET',headers:{host:'codex.example.com',origin:config.origin,'x-better-codex-proxy':key,'x-better-codex-user':'owner',...options.headers}},res=>{let body='';res.on('data',data=>body+=data);res.on('end',()=>resolve({status:res.statusCode,value:JSON.parse(body)}));});req.on('error',reject);req.end(options.body);});
+ assert.equal((await request('/',{headers:{'x-better-codex-proxy':'wrong'}})).status,401);
+ assert.equal((await request('/',{headers:{'x-better-codex-user':'outsider'}})).status,401);
+ assert.equal((await request('/',{headers:{origin:'https://attacker.example'}})).status,403);
+ const context=await request('/api/context',{method:'POST',body:JSON.stringify({workspace:'ai'})});assert.equal(context.status,200);
+ const auth={'x-better-codex-capability':context.value.token,authorization:'Basic fixture'};
+ assert.equal((await request('/api/w/ai/plugins',{headers:auth})).status,200);
+ assert.equal((await request('/api/w/ai/plugins',{headers:{...auth,'x-better-codex-user':'other'}})).status,401);
+ assert.equal((await request('/api/w/zyy/plugins',{headers:auth})).status,401);
+ const proxy=await request('/w/ai/api/request',{headers:auth});assert.equal(proxy.value.authorization,undefined);assert.equal(proxy.value['x-better-codex-proxy'],undefined);assert.equal(proxy.value['x-better-codex-capability'],undefined);
+ const status=await new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port:entry.server.address().port,path:'/w/ai/ws',headers:{host:'codex.example.com',origin:config.origin,'x-better-codex-proxy':key,'x-better-codex-user':'owner',connection:'Upgrade',upgrade:'websocket'}},res=>{res.resume();resolve(res.statusCode)});req.on('upgrade',(res,socket)=>{socket.destroy();resolve(res.statusCode)});req.on('error',reject);req.end();});assert.equal(status,101);
+});

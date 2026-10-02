@@ -28,8 +28,8 @@ export function readDeploymentConfig(filename){
  if(raw.schema!=='workbench.deployment.v1')throw Error('Unsupported deployment schema');
  const entryPort=port(raw.port,4173,'entry'),frontPort=port(raw.frontPort,3084,'front'),relayPort=port(raw.relayPort,18985,'relay');
  if(new Set([entryPort,frontPort,relayPort]).size!==3)throw Error('Entry, front and relay ports must differ');
- fields(raw.access??{mode:'loopback'},['mode','users'],'access');
- const mode=raw.access?.mode??'loopback';if(!['loopback','tailscale-serve'].includes(mode))throw Error('Unsupported access mode');
+ fields(raw.access??{mode:'loopback'},['mode','users','proxyKeyFile'],'access');
+ const mode=raw.access?.mode??'loopback';if(!['loopback','tailscale-serve','cvm-proxy'].includes(mode))throw Error('Unsupported access mode');
  let publicURL;try{publicURL=new URL(raw.origin??'http://127.0.0.1:'+entryPort);}catch{throw Error('Invalid public origin');}
  if(publicURL.username||publicURL.password||publicURL.search||publicURL.hash||publicURL.pathname!=='/')throw Error('Public origin cannot contain credentials, a path or query');
  const users=raw.access?.users??[];
@@ -37,7 +37,11 @@ export function readDeploymentConfig(filename){
  if(mode==='loopback'){
   loopbackURL(publicURL.href,'Public origin');
   if(Number(publicURL.port||80)!==entryPort||users.length)throw Error('Loopback origin must use the entry port and no tailnet identity policy');
- }else if(publicURL.protocol!=='https:'||!publicURL.hostname.endsWith('.ts.net')||!users.length)throw Error('Tailscale Serve requires an HTTPS ts.net origin and explicit allowed users');
+ }else if(mode==='tailscale-serve'){
+  if(publicURL.protocol!=='https:'||!publicURL.hostname.endsWith('.ts.net')||!users.length)throw Error('Tailscale Serve requires an HTTPS ts.net origin and explicit allowed users');
+ }else if(publicURL.protocol!=='https:'||!publicURL.hostname.includes('.')||!users.length||users.some(user=>!/^[-a-zA-Z0-9_@.]{1,128}$/.test(user)))throw Error('CVM requires an HTTPS domain and explicit allowed users');
+ const proxyKeyFile=mode==='cvm-proxy'?localPath(raw.access.proxyKeyFile,base,'CVM proxy key file'):null;
+ if(mode!=='cvm-proxy'&&raw.access?.proxyKeyFile)throw Error('Proxy credentials require CVM mode');
  fields(raw.native,['rpcUrl','webOrigin','hostPackage','codecPath','codexHome','appPath','binary','managed','rendererManifest','rendererManifestSha256'],'native');
  const rpcUrl=text(raw.native.rpcUrl,'native RPC URL');
  if(rpcUrl.startsWith('unix://')){if(!path.isAbsolute(rpcUrl.slice(7))||rpcUrl.includes('\0'))throw Error('Invalid native Unix socket');}
@@ -82,7 +86,7 @@ export function readDeploymentConfig(filename){
  if(!Array.isArray(plugins)||plugins.length>64||plugins.some(value=>typeof value!=='string'))throw Error('Plugins must be local manifest paths');
  return freezeConfig({
   schema:raw.schema,file,base,portable:true,stateDir,origin:publicURL.origin,port:entryPort,frontPort,relayPort,
-  relayBinary:localPath(raw.relayBinary,base,'relay binary'),access:{mode,users:[...users]},workspaces,
+  relayBinary:localPath(raw.relayBinary,base,'relay binary'),access:{mode,users:[...users],...(proxyKeyFile?{proxyKeyFile}:{})},workspaces,
   plugins:plugins.map(value=>localPath(value,base,'plugin manifest')),
   dependencyPackage:raw.dependencyPackage?localPath(raw.dependencyPackage,base,'dependency package'):fileURLToPath(new URL('../package.json',import.meta.url)),
   native:{rpcUrl,webOrigin,hostPackage,rendererManifest:raw.native.rendererManifest?localPath(raw.native.rendererManifest,base,'renderer manifest'):null,rendererManifestSha256:raw.native.rendererManifestSha256??null,managed:raw.native.managed===true,appPath:raw.native.appPath?localPath(raw.native.appPath,base,'Desktop application'):null,binary:raw.native.binary?localPath(raw.native.binary,base,'Native binary'):null,codecPath:raw.native.codecPath?localPath(raw.native.codecPath,base,'codec path'):path.join(path.dirname(hostPackage),'web-shell/codex-app-host-message-codec.js'),codexHome},

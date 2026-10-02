@@ -2,13 +2,13 @@
 
 [中文](README.zh-CN.md) · [Installation](docs/open-source-setup.md) · [Plugins](docs/plugins.md)
 
-Run your Codex workbench on your Mac. Open the same conversations from a browser or phone through private Tailscale Serve. No cloud server is required.
+Run your Codex workbench on your Mac. Open the same conversations from a browser or phone through private Tailscale Serve or an authenticated CVM HTTPS domain.
 
 The Mac owns execution, approval and command receipts. The local relay carries live events and keeps rebuildable read caches. The web client uses the official conversation renderer, with workspace navigation and configurable project plugins.
 
 ## Start on a Mac
 
-Install the official Codex desktop application and sign in. [Download the Mac installer source ZIP](https://github.com/WhyTan00/better-codex/releases/download/v0.2.0-beta.1/Better-Codex-v0.2.0-beta.1-mac.zip), unzip it to a stable location, and double-click `Install.command` to install and start. The first installation downloads dependencies and needs internet access.
+Install the official Codex desktop application and sign in. [Download the Mac installer source ZIP](https://github.com/WhyTan00/better-codex/releases/download/v0.2.0-beta.2/Better-Codex-v0.2.0-beta.2-mac.zip), unzip it to a stable location, and double-click `Install.command` to install and start. The first installation downloads dependencies and needs internet access.
 
 Or use a terminal:
 
@@ -29,6 +29,8 @@ For a phone, install and sign in to Tailscale on both devices. Stop Better Codex
 ```
 
 Open the printed HTTPS `ts.net` URL on the phone and add it to the home screen. Serve remains private to your tailnet; an explicit login allowlist also protects the entry. Existing Serve routes are checked before changes. [Detailed setup, custom ports and troubleshooting](docs/open-source-setup.md).
+
+For the CVM route, `better-codex cvm` prepares an authenticated Caddy site and reverse SSH tunnel to your Mac. The phone does not need Tailscale. [CVM deployment instructions](docs/cvm-deployment.md).
 
 ## Configure your workspace
 
@@ -51,7 +53,7 @@ python3 scripts/scan-public-tree.py .
 "$HOME/.better-codex/better-codex" doctor
 ```
 
-`source/` contains the maintained portable core, including the current resume-path and automatic-title fixes. `apps/demo`, `docs/media` and `video` remain illustrative material with synthetic data; they are not installation evidence. The earlier reference-only setup is superseded by the installation above.
+`source/` contains the maintained portable core, including resume-path, automatic-title, cached-startup, send-completion ownership and module-identity fixes. `apps/demo`, `docs/media` and `video` remain illustrative material with synthetic data; they are not installation evidence. The earlier reference-only setup is superseded by the installation above.
 
 ## License
 

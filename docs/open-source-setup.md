@@ -54,3 +54,7 @@ The renderer pin and dependency hashes are in `dependencies.lock.json`. Official
 ## Development tests
 
 Install only the test transport dependencies with `npm ci --prefix packages/host-cli --ignore-scripts`. Then run the Node tests and `go test ./...` from `source/apps/sync-gateway`. The Go-to-Node contract fixtures create an isolated temporary deployment and never connect to an account or start a model turn.
+
+## CVM alternative
+
+Use `better-codex cvm` instead of Tailscale Serve for an authenticated HTTPS domain and reverse SSH tunnel. Follow [CVM deployment](cvm-deployment.md); the generated private bundle is not published or installed remotely by the CLI.
