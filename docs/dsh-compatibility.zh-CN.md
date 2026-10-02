@@ -11,7 +11,7 @@ Better Codex 与 DSH 在“原生执行 owner + 工作台外壳 + 项目级插�
 
 | 层级 | 判断 | 需要做什么 |
 | --- | --- | --- |
-| Harness / adapter 契约 | 可复用思路 | 保留连接状态、事件版本、队列和 writer ownership；按目标宿主重写 transport adapter |
+| Native front / observer / relay | 已复用为可安装核心 | 配置本机 endpoint、工作区与依赖位置；保留连接状态、事件版本、Journal 和 writer ownership |
 | 简单只读插件 | 可适配 | 重绑 package metadata、模块导入、slot / route、schema 和项目数据来源，再跑 mock Harness 与视觉验证 |
 | 量化、持仓、日程插件 | 不能直接复用 | 必须接入各自的权威事实来源、workspace scope、时间/版本信息与安全门；公开示例只能使用合成或只读投影 |
 | Native Codex、session archive、fallback bridge | 不可直接搬运 | 这些能力绑定特定宿主、客户端 runtime、会话生命周期或私有 provider 边界，应重新设计 adapter |
@@ -32,16 +32,15 @@ DSH 插件一般不只包含一个 React 组件。它还可能依赖：
 
 ## 公开仓库里的对应证据
 
-公开 `source/` 只保留经过脱敏的参考实现：
+从 0.2 beta 起，公开 `source/` 提供可安装的 Mac/PWA 核心，私人部署映射仍在公开边界之外：
 
 - [`source/apps/native-codex-web/src/native-read-cache.mjs`](../source/apps/native-codex-web/src/native-read-cache.mjs) 展示了有界读缓存、generation、revision、失效标记和原生读取边界。
-- [`source/apps/native-codex-web/src/sync-projection.mjs`](../source/apps/native-codex-web/src/sync-projection.mjs) 只输出公开展示投影，过滤凭据、系统消息和原始工具参数/输出。
-- [`source/plugins/native-harness/index.mjs`](../source/plugins/native-harness/index.mjs) 展示了由插件注册 HTTP 边界、持有原生 adapter，而不是创建第二个执行 host。
-- [`source/plugins/workbench-shell/index.mjs`](../source/plugins/workbench-shell/index.mjs) 展示了 shell 如何注册 PWA、导航和项目域 surface；它不等于某个 DSH 私有插件的运行时。
-- [`source/apps/native-codex-web/src/registry.mjs`](../source/apps/native-codex-web/src/registry.mjs) 展示了 workspace、路径归属和插件 allow-list 的公开占位实现。
+- [`source/apps/native-codex-web/src/official-boundary.mjs`](../source/apps/native-codex-web/src/official-boundary.mjs) 在 Native 前校验 workspace、操作与 writer 归属。
+- [`source/apps/native-codex-web/src/portable-entry.mjs`](../source/apps/native-codex-web/src/portable-entry.mjs) 校验本机或 Tailscale 身份、Origin 和插件 capability。
+- [`source/apps/native-codex-web/src/portable-plugins.mjs`](../source/apps/native-codex-web/src/portable-plugins.mjs) 承载项目 adapter 和本地 UI，不创建第二份业务可写事实。
+- [`source/apps/native-codex-web/src/deployment-config.mjs`](../source/apps/native-codex-web/src/deployment-config.mjs) 与 [`插件文档`](plugins.md) 定义配置、根归属与插件边界。
 
-这些文件证明的是公开设计边界，不证明任何真实 provider、DSH 私有 host 或生产
-数据已经接入。
+本地安装、冷启动和协议验证已完成，详见 [验证范围](portable-validation.md)。这不表示任何私人业务数据已经接入；真实手机、TailScale 实网及登录后模型执行仍有验收缺口。
 
 ## 迁移一个只读插件的最小清单
 
