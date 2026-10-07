@@ -24,7 +24,7 @@ import {patchImageAttachments} from '../source/apps/native-codex-web/src/officia
 import {nativeUIRelease} from '../source/apps/native-codex-web/src/native-ui-release.mjs';
 import {historyAssetPrefix, followUpAssetPrefix, historyClientAsset, followUpClientAsset,
   patchInitialHistoryBudget, patchFollowUpControls, filePreviewClientAsset, patchFilePreviewChrome} from '../source/apps/native-codex-web/src/official-history-assets.mjs';
-import {pruneSupersededAndroidModules} from './android-ui-resource-closure.mjs';
+import {pruneSupersededAndroidModules,uiModuleDependencies,assertUiDependencyClosure} from './android-ui-resource-closure.mjs';
 import {validateAndroidUiRelease} from './validate-android-ui.mjs';
 
 // Parse real ESM imports/exports, including minified named imports. The Node
@@ -150,7 +150,7 @@ for(let i=0;i<queue.length;){
       const source=bytes.toString();
       const dependencies=[];
       if(/\.(?:js|mjs)$/.test(url)){
-        dependencies.push(...new vm.SourceTextModule(source,{identifier:url}).dependencySpecifiers);
+        dependencies.push(...uiModuleDependencies(source,url).map(edge=>edge.specifier));
       }
       if(url.endsWith('.css'))for(const m of source.matchAll(/url\(\s*["']?([^\s"')]+)["']?\s*\)/g))dependencies.push(m[1]);
       for(const dependency of dependencies){const target=canonical(dependency,url);if(target&&!queue.includes(target))queue.push(target);}
@@ -159,6 +159,7 @@ for(let i=0;i<queue.length;){
   if(queue.length>600)throw Error('Startup dependency graph unexpectedly large');
 }
 const closure=pruneSupersededAndroidModules({files,shell:ui.manifest.shell,roots:ui.manifest.startupAssets});files=closure.files;
+const requiredStartupClosure=assertUiDependencyClosure({files,shell:ui.manifest.shell});
 const total=[...files.values()].reduce((n,v)=>n+v.length,0);
 if(total>100*1024*1024)throw Error('Startup bundle exceeds 100 MiB');
 await mkdir(destination,{recursive:true,mode:0o700});
@@ -175,4 +176,4 @@ await writeFile(path.join(destination,'ui-release.json'),JSON.stringify(manifest
 await writeFile(path.join(destination,'source-release.json'),JSON.stringify(ui.manifest,null,2)+'\n',{mode:0o600});
 // 在生成器结束处复用 APK 解析合同，防止只替换 URL 或漏拷贝文件的清单进入发布链。
 const validation=await validateAndroidUiRelease({manifestPath:path.join(destination,'ui-release.json'),filesRoot:path.join(destination,'files')});
-console.log(JSON.stringify({destination,version:manifest.version,files:files.size,bytes:total,manifestSha256:digest(Buffer.from(JSON.stringify(manifest,null,2)+'\n')),contract:validation,resourceClosure:closure.report}));
+console.log(JSON.stringify({destination,version:manifest.version,files:files.size,bytes:total,manifestSha256:digest(Buffer.from(JSON.stringify(manifest,null,2)+'\n')),contract:validation,resourceClosure:{...closure.report,...requiredStartupClosure}}));

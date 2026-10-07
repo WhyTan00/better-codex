@@ -1,6 +1,12 @@
-# Validation · v0.2.0-beta.5
+# Validation · v0.2.0-beta.6
 
-Beta.5 corrects a real SDK argument contract: `getLoadedConversationHistoryTurns` accepts `conversation.turnHistory.history`, not the conversation object. The old cache reproduces `TypeError(flatMap)` with the actual SDK reader. The corrected public cache persists and restores observed process items across documents. An empty local-body adoption can retain a newer live metadata head; a live body, cancellation or stale normal snapshot still prevents replacement.
+Beta.6 collects static ESM/CSS dependencies plus the specifically required literal work-mode-access-splash startup branch and its static access-splash dependency. The generator refuses a missing required dynamic/static target. Optional routes remain demand-loaded; this is not all-route/all-dynamic offline closure, and the 600-file/100MiB limits remain unchanged.
+
+Four focused checks pass. The actual prior 192-file public bundle is rejected for its missing work-mode-access-splash target; the new declared bundle has 194 resources and 443 required edges. Only two small modules (1938 and 1806 bytes) are added, each with SHA/bytes equal to the locally acquired pinned source; initial and scope SDK bytes remain beta.5's values. Core has 231 passes and three SDK-required skips; actual generated-module checks239 pass with no skips.
+
+The private maintenance owner reports canonical UI-only deployment983097bedb07daf1, normal app update adoption,13 formal resource hashes, unchanged APK72/SDK1167/cache code, and two local process turns totaling17 items still present after forced restart. In real 35-second offline comparisons, the old192 bundle produced a specific dynamic-import/ChatGPT error page; the new194 bundle produced no new instance of that import failure but still waited for connection and did not show a complete conversation. This demonstrates a missing startup-branch repair, not full offline first-screen or startup-speed acceptance. Connection waiting, physical-phone behavior and natural long-send latency remain unresolved.
+
+Beta.5 previously fixed a real SDK argument contract: `getLoadedConversationHistoryTurns` accepts `conversation.turnHistory.history`, not the conversation object. The old cache reproduces `TypeError(flatMap)` with the actual SDK reader. The corrected public cache persists and restores observed process items across documents. An empty local-body adoption can retain a newer live metadata head; a live body, cancellation or stale normal snapshot still prevents replacement.
 
 Public candidate acceptance separately records 16 no-SDK contract checks with three actual-SDK cases explicitly skipped, 19 direct checks against the locally acquired private SDK, and 239 checks against the exact public-generated initial/scope/import-map modules with no skips. Full core is 227 passed plus those three SDK-required skips. Providing a bad SDK path fails instead of silently using a contract fixture.
 

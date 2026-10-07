@@ -179,6 +179,7 @@
     "apps/native-codex-web/test/binary-attachment-upload.test.mjs": "3faf99f6924c9540017dd5ec2300dc0a534c40fae2690f655b4071fd8494a4e9",
     "apps/native-codex-web/test/send-target-preparation.test.mjs": "56eb2221b598760e6edfb40f9c73571ea7bd1a3b3b414c899bf87df498669740",
     "apps/native-codex-web/test/generated-image-ownership.test.mjs": "7cf2f99b582c12c275a58b9ddbdda5a268eb1b56cc10dc8362378012225ab65a",
+    "apps/native-codex-web/test/android-startup-resource-closure.test.mjs": "d4556339fd556d31447e06ae270e238f27a9132a9b9395fb84461f0dd71dd60f",
     "apps/native-codex-web/test/send-completion-navigation.test.mjs": "de7f8e39cda840e1de6c5bf584130af6ba941e277b4d68fbb8f6fd977f7508fa",
     "apps/native-codex-web/test/submission-attempt-config.test.mjs": "1c83147f7f00c2070c6b7709718dfc4bd2250ea107571158c11a19930440be63",
     "apps/native-codex-web/test/persistent-prewarm.test.mjs": "d08c9b9b2e11fb3dd049d95afc38f33d9a035449775dab351e994ba70d0321a5",

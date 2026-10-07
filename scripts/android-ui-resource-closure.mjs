@@ -10,6 +10,24 @@ export function resolveUiModule(specifier,parent,imports){
  for(const key of Object.keys(imports).filter(k=>k.endsWith('/')).sort((a,b)=>b.length-a.length))if(url.pathname.startsWith(key))return imports[key]+url.pathname.slice(key.length);
  return url.pathname;
 }
+export function uiModuleDependencies(body,url,{includeAllDynamic=false}={}){
+ if(typeof vm.SourceTextModule!=='function')throw Error('Resource closure requires --experimental-vm-modules');
+ const source=String(body),dependencies=new vm.SourceTextModule(source,{identifier:url}).dependencySpecifiers.map(specifier=>({kind:'static',specifier}));
+ for(const match of source.matchAll(/\bimport\(\s*(["'`])([^"'`$]+)\1\s*\)/g))if(includeAllDynamic||/(?:^|\/)work-mode-access-splash-[a-f0-9]+\.js$/.test(match[2]))dependencies.push({kind:'dynamic',specifier:match[2]});
+ const vite=source.match(/const __vite__mapDeps=.*?m\.f=\[(.*?)\]\)\)\)/s)?.[1];
+ for(const match of includeAllDynamic?vite?.matchAll(/["']([^"']+)["']/g)||[]:[])dependencies.push({kind:'vite-preload',specifier:match[1].startsWith('.')||match[1].startsWith('/')?match[1]:'./'+match[1]});
+ return dependencies;
+}
+// Prove static dependencies and the required offline startup branch. Other
+// optional UI modules remain demand-loaded; this is not a claim of all-route closure.
+export function assertUiDependencyClosure({files,shell}){
+ const raw=String(files.get(shell)).match(/<script type="importmap"[^>]*>(.*?)<\/script>/s)?.[1];if(!raw)throw Error('Missing final shell import map');const imports=JSON.parse(raw).imports;let checked=0;
+ for(const[url,bytes]of files)if(/\.(?:m?js)$/.test(url))for(const edge of uiModuleDependencies(bytes,url)){
+  const target=resolveUiModule(edge.specifier,url,imports);if(!target)continue;checked++;
+  if(!files.has(target))throw Error('Missing '+edge.kind+' dependency: '+url+' -> '+target);
+ }
+ return{checked,files:files.size};
+}
 export function pruneSupersededAndroidModules({files,shell,roots=[]}){
  if(typeof vm.SourceTextModule!=='function')throw Error('Resource closure requires --experimental-vm-modules');
  const html=String(files.get(shell)),raw=html.match(/<script type="importmap"[^>]*>(.*?)<\/script>/s)?.[1];
