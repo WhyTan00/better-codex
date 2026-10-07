@@ -143,7 +143,14 @@
  const visibleProcessIdentities=new Map(),pendingProcessCapture=new Set(),visibleProcessBodies=new Map(),visibleProcessWrites=new Map(),visibleProcessTimers=new Map(),visibleProcessEpochs=new Map();
  const visibleProcessKey=(id,turnId)=>'visible-process-v1:'+id+':'+turnId;
  const visibleProcessItem=item=>item&&typeof item.id==='string'&&item.type!=='userMessage'&&!window.__DSH_FINAL_IDENTITY__?.(item);
- function processTurns(client,id){const conversation=client.getConversation?.(id);return conversation?(client.getLoadedConversationHistoryTurns?.(conversation)??conversation.turns??[]):[];}
+ function processTurns(client,id){
+  const conversation=client.getConversation?.(id);if(!conversation)return [];
+  const history=conversation.turnHistory?.kind==='canonical'?conversation.turnHistory.history:null;
+  const loaded=history?(client.getLoadedConversationHistoryTurns?.(history)??history.islands?.flatMap(island=>island.entries.map(entry=>history.entitiesByKey[entry.value]))??[]):[];
+  const turns=new Map(loaded.filter(Boolean).map(turn=>[turn.turnId,turn]));
+  for(const turn of conversation.turns||[]){const prior=turns.get(turn.turnId);if(!prior){turns.set(turn.turnId,turn);continue;}const items=new Map((prior.items||[]).map(item=>[item.id,item]));for(const item of turn.items||[])items.set(item.id,item);turns.set(turn.turnId,{...prior,...turn,items:[...items.values()]});}
+  return [...turns.values()];
+ }
  function captureVisibleProcesses(client,id,flush=false){
   if(nativeClient!==client||client.disposed||memoryMeta.get('auth-locked')||internalDirectoryThreads.has(id))return;
   const witness=confirmedUserHeads.get(id)??visibleProcessIdentities.get(id),sourceGeneration=witness?.sourceGeneration??memoryMeta.get('catalog-generation');if(!sourceGeneration){pendingProcessCapture.add(id);return;}
@@ -1669,6 +1676,19 @@
   window.dispatchEvent(new CustomEvent('dsh:history-adopted',{detail:{threadId:id,turnId:final.turnId}}));return final;
  };
  function scheduleCommitted(){committedPending=true;if(committedTimer)return;committedTimer=setTimeout(()=>{committedTimer=null;refreshCommitted().catch(()=>{});},300);}
+ // Connection replay may advance metadata before any history body exists.
+ // Allow that one local paint, then retain the normal live-content fence.
+ function hasVisibleHistory(client,id){return processTurns(client,id).some(turn=>Array.isArray(turn.items)&&turn.items.length>0);}
+ function localHistoryGuard(id,snapshot,baseGuard,eventEpoch){
+  const client=nativeClient,rewriteEpoch=recoveryEpoch.get(id)||0;let acceptedEpoch=eventEpoch;
+  snapshot.initialLocalPaint=!snapshot.verifiedNative&&!snapshot.savedArchive&&!hasVisibleHistory(client,id);
+  return ()=>{
+   if(nativeClient!==client||client.disposed||!baseGuard()||(recoveryEpoch.get(id)||0)!==rewriteEpoch)return false;
+   const epoch=nativeEventEpoch.get(id)||0;
+   if(snapshot.initialLocalPaint&&!snapshot.applied&&!hasVisibleHistory(client,id)){acceptedEpoch=epoch;return true;}
+   return epoch===acceptedEpoch&&(snapshot.initialLocalPaint&&snapshot.applied||snapshot.verifiedNative||snapshot.completesVisibleTurn||(nativeActivity.get(id)||0)<=snapshot.confirmedAt);
+  };
+ }
  async function refreshCommitted(freshSnapshot){
   if(!androidReader||!nativeClient||document.visibilityState!=='visible'||window.__DSH_NATIVE_SIDEBAR__?.isList)return;
   const id=location.pathname.split('/')[2];if(!/^[0-9a-f-]{36}$/i.test(id||''))return;if(freshSnapshot&&freshSnapshot.response?.thread?.id!==id)return;
@@ -1683,7 +1703,7 @@
    window.__DSH_CLIENT_LOG__?.event('history_read',{threadId:id,turnId:snapshot.page.data[0]?.id,revision:snapshot.revision,cacheReady:!!finalFromSnapshot(snapshot),reason:'cache_import',source:snapshot.verifiedNative?'native':'indexeddb'});
    snapshot.completesVisibleTurn=completesVisibleTurn(id,snapshot);
    const fresh=!!snapshot.verifiedNative,epoch=snapshot.eventEpoch??(nativeEventEpoch.get(id)||0);
-   const guard=()=>visibleAdoptionEpoch===adoptionEpoch&&historyViewEpoch===viewEpoch&&location.pathname==='/local/'+id&&document.visibilityState==='visible'&&!window.__DSH_NATIVE_SIDEBAR__?.isList&&(nativeEventEpoch.get(id)||0)===epoch&&(fresh||snapshot.completesVisibleTurn||(nativeActivity.get(id)||0)<=snapshot.confirmedAt)&&(snapshot.savedArchive?!knownRunning.has(id)&&!nativeActivity.has(id)&&!nativeClient.getConversation?.(id)?.turns?.some(turn=>turn.status==='inProgress'):(!snapshot.sourceGeneration||!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===snapshot.sourceGeneration));
+   const guard=localHistoryGuard(id,snapshot,()=>visibleAdoptionEpoch===adoptionEpoch&&historyViewEpoch===viewEpoch&&location.pathname==='/local/'+id&&document.visibilityState==='visible'&&!window.__DSH_NATIVE_SIDEBAR__?.isList&&(snapshot.savedArchive?!knownRunning.has(id)&&!nativeActivity.has(id)&&!nativeClient.getConversation?.(id)?.turns?.some(turn=>turn.status==='inProgress'):(!snapshot.sourceGeneration||!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===snapshot.sourceGeneration)),epoch);
    if(!guard()){window.__DSH_CLIENT_LOG__?.event('history_rejected',{threadId:id,revision:snapshot.revision,reason:'live_event_superseded'});return;}
    if(committedApplied.get(id)===snapshot.stamp&&nativeClient.getConversation?.(id)?.turnsPagination){window.__DSH_NAVIGATION__?.completedContentReady?.(id,finalFromSnapshot(snapshot));return;}
    const started=Date.now();snapshot.applied=false;

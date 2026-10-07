@@ -74,3 +74,15 @@ test('actual cached-hydration wrapper reads durable processes before painting a 
 test('a rewrite while first-paint processes are being read cannot restore the previous display',async()=>{
  const first=fixture();first.ctx.captureVisibleProcesses(first.client,id,true);await flush();const reopened=fixture(first.disk);reopened.snapshot.page={data:[{id:'turn'}]};const prepared=await reopened.ctx.prepareVisibleProcesses(id,reopened.snapshot);reopened.ctx.forgetVisibleProcesses(id);reopened.turn.items=structuredClone([user,final]);await reopened.ctx.restoreVisibleProcesses(reopened.client,id,reopened.snapshot,()=>true,prepared);assert.equal(reopened.turn.items.length,2);
 });
+
+test((process.env.DSH_INITIAL_SDK||process.env.DSH_PROCESS_INITIAL_SDK?'actual SDK':'contract fixture')+' canonical-history reader persists the displayed process before and after a new document',async()=>{
+ const sdkPath=process.env.DSH_INITIAL_SDK||process.env.DSH_PROCESS_INITIAL_SDK;const sdk=sdkPath?await readFile(sdkPath,'utf8'):'function $2t(e){return e.islands.flatMap(t=>t.entries.map(t=>e.entitiesByKey[t.value]))}function CS(e){};getLoadedConversationHistoryTurns(e){let t=this.loadedTurnsByHistory.get(e);if(t!=null)return t;let n=$2t(e);return this.loadedTurnsByHistory.set(e,n),n}getConversationTurnHistoryTimeline(';
+ const a=sdk.indexOf('function $2t('),b=sdk.indexOf('function CS(',a),c=sdk.indexOf('getLoadedConversationHistoryTurns(e){'),d=sdk.indexOf('getConversationTurnHistoryTimeline(',c);assert(a>=0&&b>a&&c>=0&&d>c);
+ const getter=vm.runInNewContext(sdk.slice(a,b)+';({'+sdk.slice(c,d)+'}).getLoadedConversationHistoryTurns');
+ const first=fixture(),history={islands:[{entries:[{value:'turn'}]}],entitiesByKey:{turn:first.turn}},conversation={turnHistory:{kind:'canonical',history},turns:[]};
+ first.client.loadedTurnsByHistory=new WeakMap();first.client.getLoadedConversationHistoryTurns=getter;first.client.getConversation=()=>conversation;
+ first.ctx.captureVisibleProcesses(first.client,id,true);await flush();assert.equal(first.disk.size,1,'actual SDK accepts a history object, not a conversation');
+ const reopened=fixture(first.disk);reopened.turn.items=structuredClone([user,final]);const nextHistory={islands:[{entries:[{value:'turn'}]}],entitiesByKey:{turn:reopened.turn}};
+ reopened.client.loadedTurnsByHistory=new WeakMap();reopened.client.getLoadedConversationHistoryTurns=getter;reopened.client.getConversation=()=>({turnHistory:{kind:'canonical',history:nextHistory},turns:[]});
+ await reopened.ctx.restoreVisibleProcesses(reopened.client,id,reopened.snapshot);assert.deepEqual(reopened.turn.items.map(item=>item.id),['user','reasoning','tool','final']);
+});
