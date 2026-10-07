@@ -9,3 +9,11 @@ video/out/*
 video/.remotion/
 coverage/
 __pycache__/
+
+source/apps/android-client/.gradle/
+source/apps/android-client/local.properties
+source/apps/android-client/app/src/main/assets/ui/
+*.jks
+*.keystore
+.env
+release-artifacts/

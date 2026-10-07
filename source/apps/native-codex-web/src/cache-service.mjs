@@ -1,10 +1,11 @@
 import {Worker} from 'node:worker_threads';
 import {randomUUID} from 'node:crypto';
-import {nativeReadKey,normalizeReadParams,nativeCacheReads,catalogEntry} from './native-read-cache.mjs';
+import {nativeReadKey,normalizeReadParams,nativeCacheReads,catalogEntry,internalThread} from './native-read-cache.mjs';
 import {workspace,validateId,fail} from './registry.mjs';
 import {checkReadInterest,withReadInterest,MAX_SOURCE_PAYLOAD_BYTES} from './native-read-delivery.mjs';
 import {MemoryOutbox} from './memory-outbox.mjs';
 import {CacheView} from './cache-view.mjs';
+import {reconcileCatalogStatus} from './native-catalog-status.mjs';
 
 export const CACHE_SERVICE_BUDGET={lookupMs:50,maxPendingBytes:64*1024*1024,maxPendingCalls:256};
 const observedMethods=new Set(['thread/started','thread/name/updated','thread/status/changed','thread/archived','thread/unarchived','thread/reverted','turn/started','turn/completed']);
@@ -13,14 +14,15 @@ const workerReads=new Set(['thread/read','thread/turns/list','thread/items/list'
 
 export class CacheService {
  constructor({dir,boundary,budget,WorkerClass=Worker}){
-  Object.assign(this,{dir,boundary});this.pending=new Map();this.pendingBytes=0;this.metadata=new Map();this.memo=new Map();this.versions=new Map();this.invalidations=new Map();this.catalogSessions=new Map();this.directLoads=new Map();this.usedHeads=new Map();this.warmHeads=new Set();this.noted=new WeakSet();this.sourceGeneration='source:'+randomUUID();this.sourceRevision=0;this.nextId=0;this.healthy=true;
+  Object.assign(this,{dir,boundary});this.pending=new Map();this.pendingBytes=0;this.metadata=new Map();this.memo=new Map();this.versions=new Map();this.invalidations=new Map();this.catalogSessions=new Map();this.catalogRetirements=new Map();this.directLoads=new Map();this.usedHeads=new Map();this.warmHeads=new Set();this.noted=new WeakSet();this.sourceGeneration='source:'+randomUUID();this.sourceRevision=0;this.nextId=0;this.healthy=true;
   this.worker=new WorkerClass(new URL('./cache-thread.mjs',import.meta.url),{workerData:{dir,budget}});
   this.initialized=new Promise(resolve=>this.initialize=resolve);
   this.worker.on('message',m=>this.message(m));this.worker.on('error',()=>this.fail());this.worker.on('exit',()=>{if(!this.closed)this.fail();});
  }
  static async create(options){const service=new CacheService(options);await service.initialized;service.outbox=new MemoryOutbox(service,service.outboxState);service.view??=new CacheView({epoch:service.outbox.epoch,nativeGeneration:service.nativeGeneration||service.generation});service.generation=service.sourceGeneration=service.view.generation;return service;}
  message(m){
-  if(m.type==='ready'){this.nativeGeneration=m.generation;this.view=new CacheView({epoch:m.outbox.epoch,nativeGeneration:m.generation,state:m.viewState,versions:m.versions});this.generation=this.sourceGeneration=this.view.generation;this.metadata=new Map(Object.entries(m.meta));for(const r of m.bootstrap)this.memo.set(JSON.stringify([r.scope,r.key]),this.project(r));this.outboxState=m.outbox;this.setMeta('cloud-record-cursor',0);this.initialize();return;}
+  if(m.type==='changed'){this.onRecordsChanged?.();return;}
+  if(m.type==='ready'){for(const r of m.catalogRetirements||[])this.catalogRetirements.set(JSON.stringify([r.scope,r.key]),r);this.nativeGeneration=m.generation;this.view=new CacheView({epoch:m.outbox.epoch,nativeGeneration:m.generation,state:m.viewState,versions:m.versions});this.generation=this.sourceGeneration=this.view.generation;this.metadata=new Map(Object.entries(m.meta));for(const r of m.bootstrap)this.memo.set(JSON.stringify([r.scope,r.key]),this.project(r));this.outboxState=m.outbox;this.setMeta('cloud-record-cursor',0);this.initialize();return;}
   if(m.type==='startup-failed'){this.fail();return;}
   if(m.type==='slow'){this.onSlowTransaction?.(m.fields);return;}
   if(m.type==='boundary'){Promise.resolve().then(()=>{if(!['call','checked'].includes(m.method)||m.method==='call'&&!workerReads.has(m.args?.[1]?.method))throw fail(403,'工作线程只能读取原生来源');return this.boundary[m.method](...m.args);}).then(result=>{if(!this.closed)this.worker.postMessage({type:'boundary-reply',id:m.id,result});},e=>{if(!this.closed)this.worker.postMessage({type:'boundary-reply',id:m.id,error:{code:e.code,message:e.code?e.message:'原生读取未完成'}});});return;}
@@ -42,7 +44,7 @@ export class CacheService {
  catalog(...args){return this.rpc('cache.catalog',args);}
  async get(scope,key){const identity=JSON.stringify([scope,key]),raw=await this.bounded(this.rpc('cache.get',[scope,key]),this.memo.get(identity)||null),r=raw?this.project(raw):null;if(r){this.memo.delete(identity);this.memo.set(identity,r);while(this.memo.size>128)this.memo.delete(this.memo.keys().next().value);}return r;}
  rememberThread(scope,t){this.background('cache.rememberThread',[scope,t]);}
- noteEvent(m){if(this.noted.has(m))return;this.noted.add(m);const id=m.params?.threadId||m.params?.thread?.id;if(id&&observedMethods.has(m.method))this.view?.invalidate(id);if(id&&m.method==='thread/reverted')this.view?.rewritten(id);if(id&&invalidatingMethods.has(m.method)){this.versions.delete(id);this.versions.set(id,randomUUID());while(this.versions.size>4096)this.versions.delete(this.versions.keys().next().value);}}
+ noteEvent(m){if(this.noted.has(m))return;this.noted.add(m);const id=m.params?.threadId||m.params?.thread?.id;if(id&&observedMethods.has(m.method))this.view?.invalidate(id);if(id&&m.method==='thread/reverted')this.view?.rewritten(id);if(id&&observedMethods.has(m.method)){this.versions.delete(id);this.versions.set(id,randomUUID());while(this.versions.size>4096)this.versions.delete(this.versions.keys().next().value);}}
  observe(m){
   if(!observedMethods.has(m.method)&&!m.method.startsWith('thread/section/'))return;
   const id=m.params?.threadId||m.params?.thread?.id;if(!id)return;
@@ -71,25 +73,54 @@ export class CacheService {
    const payload={method,params,result},bytes=Buffer.byteLength(JSON.stringify(payload));if(bytes>MAX_SOURCE_PAYLOAD_BYTES)throw fail(413,'这段历史过大，请使用原生分页读取');
    const record={...this.view.project({scope,key,kind:'history',threadId:params.threadId,payload,bytes,confirmedAt:new Date().toISOString(),deleted:false},{sourceOnly:true}),source:'native',sourceOnly:true};
    onReadStage?.('native_read','received',{recordRevision:record.revision,responseBytes:bytes});
+   if(result.thread?.id===params.threadId&&result.thread.status)this.rememberThread(scope,result.thread);
    this.background('cache.rememberRead',[scope,method,params,result]);return record;
   })().finally(()=>this.directLoads.delete(loadKey));this.directLoads.set(loadKey,work);}
   return withReadInterest(work,signal);
+ }
+ async retirementSnapshot(scope){
+  const work=this.rpc('cache.catalogSnapshot',[scope]).then(snapshot=>{
+   if(snapshot)for(const r of snapshot.records||[]){const key=JSON.stringify([r.scope,r.key]);if(r.deleted)this.catalogRetirements.set(key,r);else this.catalogRetirements.delete(key);}
+   return snapshot;
+  });
+  // A busy optional mirror must not erase known retirement metadata. Only
+  // catalog tombstones are seeded at startup; Native still fences revivals.
+  return this.bounded(work,{records:[...this.catalogRetirements.values()].filter(r=>r.scope===scope)});
  }
  async snapshotCatalog(scope,{after=0,generation,fresh=false}={}){
   workspace(scope);
   let session=this.catalogSessions.get(scope);
   if(!fresh&&this.healthy&&!this.invalidations.size&&(!generation||generation===this.generation)&&(!session||!after)){
-   const cached=await this.bounded(this.rpc('cache.catalogSnapshot',[scope]));if(cached?.status?.payload?.complete){const records=cached.records.map(r=>this.project(r)).filter(Boolean).sort((a,b)=>a.revision-b.revision);session={generation:this.generation,records,cached:true,done:true,status:this.project(cached.status)};this.catalogSessions.set(scope,session);}
+   const cached=await this.retirementSnapshot(scope);if(cached?.status?.payload?.complete){
+    const alive=cached.records.filter(r=>!r.deleted&&r.payload?.nativeThread&&!internalThread(r.payload.nativeThread)),witnesses=new Map(alive.map(r=>[r.threadId,this.versions.get(r.threadId)]));
+    const threads=await reconcileCatalogStatus(this.boundary,scope,alive.map(r=>r.payload.nativeThread),{previous:id=>this.view.current(scope,'thread:'+id)?.payload?.nativeThread});
+    const corrected=new Map(threads.map(t=>[t.id,t]));
+    const records=cached.records.filter(r=>(r.deleted||!internalThread(r.payload?.nativeThread))&&(!witnesses.has(r.threadId)||witnesses.get(r.threadId)===this.versions.get(r.threadId))).map(r=>{
+     const thread=corrected.get(r.threadId);if(!thread||JSON.stringify(thread.status)===JSON.stringify(r.payload.nativeThread.status))return this.project(r);
+     this.rememberThread(scope,thread);const payload={...r.payload,nativeThread:thread};
+     return this.view.project({...r,payload,bytes:Buffer.byteLength(JSON.stringify(payload)),confirmedAt:new Date().toISOString()},{sourceOnly:true});
+    }).filter(Boolean).sort((a,b)=>a.revision-b.revision);
+    session={generation:this.generation,records,cached:true,done:true,status:this.project(cached.status)};this.catalogSessions.set(scope,session);
+   }
   }
   if(session?.cached&&!fresh&&(!generation||generation===session.generation)){const records=session.records.filter(r=>r.revision>after).slice(0,200);return {generation:session.generation,records,cursor:records.at(-1)?.revision??after,hasMore:session.records.some(r=>r.revision>(records.at(-1)?.revision??after)),status:session.status};}
-  if(fresh||!session||generation&&generation!==session.generation){session={generation:this.generation,offset:0,nextCursor:null,records:[],done:false};this.catalogSessions.set(scope,session);after=0;}
+  if(fresh||!session||generation&&generation!==session.generation){
+   // A fresh Native list omits retired rows. Carry the durable catalog-only
+   // tombstones after the live scan, or a phone keeps selecting these ghosts
+   // forever. Keep body archives intact and fence concurrent Native events.
+   const cached=await this.retirementSnapshot(scope);
+   session={generation:this.generation,offset:0,nextCursor:null,records:[],done:false,nativeDone:false,seenIds:new Set(),retirements:(cached?.records||[]).filter(r=>r.deleted).map(record=>({record,witness:this.versions.get(record.threadId)}))};this.catalogSessions.set(scope,session);after=0;
+  }
   if(after<session.offset&&session.records.some(r=>r.revision>after))return this.catalogResult(scope,session,after);
   if(after!==session.offset&&!(!after&&!session.offset))throw fail(409,'目录版本已更新，请重新读取');
-  const records=[];let bytes=0;do{
+  const records=[];let bytes=0;if(!session.nativeDone)do{
    const page=await this.boundary.call(scope,{method:'thread/list',params:{limit:50,sortKey:'updated_at',...(session.nextCursor?{cursor:session.nextCursor}:{})}});
-   for(const thread of page.data){const payload=catalogEntry(thread),size=Buffer.byteLength(JSON.stringify(payload));bytes+=size;if(bytes>8*1024*1024)throw fail(413,'目录分页超过容量');const record=this.view.project({scope,key:'thread:'+thread.id,kind:'catalog',threadId:thread.id,payload,bytes:size,confirmedAt:new Date().toISOString(),deleted:false},{sourceOnly:true,force:true});records.push(record);session.offset=record.revision;this.rememberThread(scope,thread);}
-   if(page.nextCursor&&page.nextCursor===session.nextCursor)throw fail(503,'原生目录游标重复');session.nextCursor=page.nextCursor;session.done=!page.nextCursor;
-  }while(!session.done&&records.length<=150);
+   const visible=page.data.filter(t=>!internalThread(t)),witnesses=new Map(visible.map(t=>[t.id,this.versions.get(t.id)])),threads=await reconcileCatalogStatus(this.boundary,scope,visible,{previous:id=>this.view.current(scope,'thread:'+id)?.payload?.nativeThread});
+   for(const thread of threads){session.seenIds.add(thread.id);if(witnesses.get(thread.id)!==this.versions.get(thread.id))continue;const payload=catalogEntry(thread),size=Buffer.byteLength(JSON.stringify(payload));bytes+=size;if(bytes>8*1024*1024)throw fail(413,'目录分页超过容量');const record=this.view.project({scope,key:'thread:'+thread.id,kind:'catalog',threadId:thread.id,payload,bytes:size,confirmedAt:new Date().toISOString(),deleted:false},{sourceOnly:true,force:true});records.push(record);session.offset=record.revision;this.rememberThread(scope,thread);}
+   if(page.nextCursor&&page.nextCursor===session.nextCursor)throw fail(503,'原生目录游标重复');session.nextCursor=page.nextCursor;session.nativeDone=!page.nextCursor;
+  }while(!session.nativeDone&&records.length<=150);
+  if(session.nativeDone)while(session.retirements.length&&records.length<200){const {record,witness}=session.retirements.shift();if(session.seenIds.has(record.threadId)||witness!==this.versions.get(record.threadId))continue;const retired=this.view.project(record,{sourceOnly:true,force:true});records.push(retired);session.offset=retired.revision;}
+  session.done=session.nativeDone&&!session.retirements.length;
   session.records=records;return this.catalogResult(scope,session,after);
  }
  catalogResult(scope,session,after){const records=session.records.filter(r=>r.revision>after);return {generation:session.generation,records,cursor:records.at(-1)?.revision??after,hasMore:!session.done,status:{scope,key:'catalog-status',kind:'catalog-status',threadId:'',sourceGeneration:session.generation,generation:session.generation,revision:this.view.sequence+1,payload:{complete:session.done,confirmedAt:new Date().toISOString()}}};}

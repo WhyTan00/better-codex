@@ -1,0 +1,118 @@
+plugins {
+    id "com.android.application"
+}
+
+// Official renderer bytes are supplied by the adopter, never tracked or shipped.
+def configuredOrigin = providers.gradleProperty("workbenchOrigin").getOrElse("https://workbench.example.test")
+def authOrigin = providers.gradleProperty("workbenchAuthOrigin").getOrElse(configuredOrigin)
+[configuredOrigin, authOrigin].each { value ->
+    def uri = new URI(value)
+    if (uri.scheme != "https" || !uri.host || uri.port != -1 || uri.rawUserInfo || uri.rawQuery || uri.rawFragment || uri.path)
+        throw new GradleException("Use a bare HTTPS origin on port 443")
+}
+def quoted = { value -> groovy.json.JsonOutput.toJson(value) }
+def generatedBridge = layout.buildDirectory.dir("generated/bridge-assets")
+tasks.register("syncAndroidNativeAdapter") {
+    inputs.file(rootProject.file("../native-codex-web/public/android-native-adapter.js"))
+    inputs.dir("src/main/asset-templates")
+    inputs.property("workbenchOrigin", configuredOrigin)
+    outputs.dir(generatedBridge)
+    doLast {
+        def directory = generatedBridge.get().asFile; directory.mkdirs()
+        [rootProject.file("../native-codex-web/public/android-native-adapter.js"), file("src/main/asset-templates/android-startup.js")].each { source ->
+            if (source.text.count("__BETTER_CODEX_ORIGIN__") != 1) throw new GradleException("Origin template changed")
+            new File(directory, source.name).text = source.text.replace("__BETTER_CODEX_ORIGIN__", configuredOrigin)
+        }
+    }
+}
+tasks.register("syncDiagnosticContract") {
+    def source = rootProject.file("../native-codex-web/public/client-diagnostics.js")
+    inputs.file(source); outputs.file(generatedBridge.map { it.file("client-diagnostics-contract.json") })
+    doLast {
+        def match = (source.text =~ /const contract=(\{.*\}),TTL=/)
+        if (!match.find()) throw new GradleException("Diagnostic contract missing")
+        def target = generatedBridge.get().file("client-diagnostics-contract.json").asFile; target.parentFile.mkdirs()
+        target.text = groovy.json.JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(match.group(1)))
+    }
+}
+tasks.register("bundleAndroidUi", Copy) {
+    def directory = providers.gradleProperty("androidUiDir")
+    if (directory.isPresent()) { from(directory.get()) { include "ui-release.json", "files/**" }; into layout.buildDirectory.dir("generated/ui-assets/ui") }
+}
+tasks.named("preBuild").configure { dependsOn("syncAndroidNativeAdapter", "syncDiagnosticContract", "bundleAndroidUi") }
+
+android {
+    namespace "top.whytan.dsh"
+    compileSdk 36
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    defaultConfig {
+        applicationId "org.bettercodex.android"
+        minSdk 26
+        targetSdk 36
+        versionCode 203
+        versionName "0.2.0-beta.3"
+        buildConfigField "String", "WORKBENCH_ORIGIN", quoted(configuredOrigin)
+        buildConfigField "String", "WORKBENCH_AUTH_ORIGIN", quoted(authOrigin)
+    }
+
+    sourceSets { main.assets.srcDirs += [generatedBridge, layout.buildDirectory.dir("generated/ui-assets")] }
+
+    buildTypes {
+        debug {
+            // The release line is the installable target; never enable WebView
+            // debugging from application code, including debug variants.
+            debuggable false
+            minifyEnabled false
+        }
+        release {
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests.includeAndroidResources = true
+        unitTests.all {
+            jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED',
+                '--add-opens=java.base/java.util=ALL-UNNAMED',
+                '--add-opens=java.base/java.io=ALL-UNNAMED',
+                '--add-opens=java.base/java.net=ALL-UNNAMED',
+                '--add-opens=java.base/java.security=ALL-UNNAMED',
+                '--add-opens=java.base/java.text=ALL-UNNAMED',
+                '--add-opens=java.base/jdk.internal.access=ALL-UNNAMED'
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += ["META-INF/DEPENDENCIES", "META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt"]
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.core:core:1.17.0"
+    implementation "androidx.webkit:webkit:1.17.0"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.17'
+}
+
+// Test defaults are isolated; installable releases require explicit configuration.
+tasks.matching { it.name == "preReleaseBuild" }.configureEach { doFirst {
+    if (!providers.gradleProperty("workbenchOrigin").isPresent() || !providers.gradleProperty("androidUiDir").isPresent())
+        throw new GradleException("Release requires -PworkbenchOrigin and -PandroidUiDir")
+    if (!new File(providers.gradleProperty("androidUiDir").get(), "ui-release.json").isFile())
+        throw new GradleException("Generate and validate the Android UI package first")
+} }

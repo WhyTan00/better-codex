@@ -90,17 +90,24 @@ export function scopeRuntimeAssets(source){
     const localPreview = w.__DSH_ANDROID_UPLOAD__?.begin(files, {awaitHandoff:params?.dshComposerAttachment === true});
     try {
       await localPreview?.presented();
-      const serialized = await Promise.all(files.map((file) => serializePickedFile(file)));
       const {dshComposerAttachment, ...gatewayParams} = params && typeof params === "object" ? params : {};
+      const uploadStartedAt = Date.now();
       w.__DSH_CLIENT_LOG__?.event("client_health", {component:"resource",routeClass:"local_file",stage:"dispatch",traceId:dshTraceId,itemCount:files.length});
-      const result = await invokeGateway("pick-files", {params: {...gatewayParams, files: serialized}});
+      // Serialization retains the original bytes for the official composer.
+      // The independent upload lane transfers the File objects themselves;
+      // a dispatched HTTP failure must never replay on the page WebSocket.
+      const [serialized, httpReceipt] = await Promise.all([
+        Promise.all(files.map((file) => serializePickedFile(file))),
+        typeof w.__DSH_UPLOAD_PICKED_FILES__ === "function" ? w.__DSH_UPLOAD_PICKED_FILES__(files, {traceId:dshTraceId}) : null,
+      ]);
+      const result = httpReceipt ?? await invokeGateway("pick-files", {params: {...gatewayParams, files: serialized}});
       if (!Array.isArray(result?.files) || result.files.length !== serialized.length || result.files.some((file,index) => !file || typeof file.fsPath !== "string" || file.fsPath !== file.path || file.size !== serialized[index].size)) throw new Error("Attachment upload receipt did not match selected files");
       for (let index = 0; index < result.files.length; index++) {
         const file = serialized[index];
         if (/^image\\//.test(file.type)) dshPickedImages.set(result.files[index], {contentsBase64:file.contentsBase64,mimeType:file.type});
       }
       dshPickedBatches.set(result.files, {preview:localPreview,traceId:dshTraceId,count:files.length});
-      w.__DSH_CLIENT_LOG__?.event("client_health", {component:"resource",routeClass:"local_file",stage:"received",traceId:dshTraceId,itemCount:files.length});
+      w.__DSH_CLIENT_LOG__?.event("client_health", {component:"resource",routeClass:"local_file",stage:"received",traceId:dshTraceId,itemCount:files.length,durationMs:Date.now()-uploadStartedAt});
       localPreview?.complete(result, () => dshReleasePickedFiles(result.files));
       return result;
     } catch (error) { localPreview?.fail(); const failure = new Error("文件已选择，但上传未完成，请连接恢复后重新选择", {cause:error}); failure.code="DSH_ATTACHMENT_UPLOAD_FAILED"; w.__DSH_CLIENT_LOG__?.reportError("execution_failed",error,{component:"resource",routeClass:"local_file",stage:"failed",traceId:dshTraceId,reason:"upload_failed"}); throw failure; }`],

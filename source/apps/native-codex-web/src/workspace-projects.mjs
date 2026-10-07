@@ -3,6 +3,15 @@ import {realpathSync} from 'node:fs';
 
 export const PROJECT_STATE_KEYS=new Set(['local-projects','selected-project','project-order','electron-saved-workspace-roots','electron-workspace-root-labels']);
 
+// These values belong to the scoped state store. Reading them must not build
+// the renderer bootstrap or wait for unrelated Native/model/account reads.
+export function readWorkspaceGlobalState(ws,saved={},key){
+ const globals={pending_worktrees:[],...workspaceProjects(ws,saved).globals};
+ if(Array.isArray(saved.pending_worktrees))globals.pending_worktrees=saved.pending_worktrees;
+ if(key)return PROJECT_STATE_KEYS.has(key)?globals[key]:saved[key]??globals[key];
+ return globals;
+}
+
 // Bindings describe sidebar folders only. The workspace remains the access
 // boundary; neither a saved browser project nor a symlink may expand it.
 export function workspaceProjects(ws,saved={}){

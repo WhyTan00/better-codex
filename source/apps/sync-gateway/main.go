@@ -401,6 +401,9 @@ func (g *Gateway) applyBatchFromBridge(jobs []queuedPublication, source *agent) 
 		changed[key] = g.topics[key]
 	}
 	metrics.ProjectionMs = time.Since(stateStarted).Milliseconds() - metrics.StateLockMs
+	if err := g.mirrorPush(frames, changed); err != nil {
+		return fmt.Errorf("notification commit: %w", err)
+	}
 	if g.cacheStore() != nil {
 		if e := g.cacheStore().commitBatch(frames, changed, metrics); e != nil {
 			if !cacheStorageFailure(e) || g.useMemoryCacheLocked(e) != nil {
@@ -430,7 +433,9 @@ func (g *Gateway) applyBatchFromBridge(jobs []queuedPublication, source *agent) 
 	if g.replica != nil {
 		g.replica.accepted.Store(&replicaCursor{g.agentEpoch, sequence})
 		g.mirrorBatch(frames, changed)
-		g.mirrorPush(frames, changed)
+		if g.push != nil {
+			g.push.signal()
+		}
 	}
 	return nil
 }
@@ -681,6 +686,11 @@ func (g *Gateway) call(ctx context.Context, scope, op string, body any) (json.Ra
 	case value := <-channel:
 		if value.Error != "" {
 			trace.event("failed", "bridge_reply", map[string]any{"failureClass": "adapter", "failureStage": safeReadFailureStage(value.FailureStage), "statusCode": value.Status})
+			if op == "native-catalog" {
+				if conflict := nativeCatalogSessionConflict(scope, value.Status, value.Error); conflict != nil {
+					return nil, conflict
+				}
+			}
 			return nil, errors.New(value.Error)
 		}
 		trace.event("received", "bridge_reply", nil)

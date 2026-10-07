@@ -45,8 +45,10 @@ test('entry binds tailnet identity, rejects cross-origin and cross-workspace cap
  await new Promise(resolve=>front.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>front.close(resolve)));
  const config={...f.config,origin:'https://example.ts.net',access:{mode:'tailscale-serve',users:['a@example.com','b@example.com']},frontPort:front.address().port};
  const entry=await createPortableEntry(config);await new Promise(resolve=>entry.server.listen(0,'127.0.0.1',resolve));t.after(()=>entry.close());
- const request=(url,options={})=>new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:entry.server.address().port,path:url,method:options.method||'GET',headers:{host:'example.ts.net',origin:config.origin,'tailscale-user-login':'a@example.com',...options.headers}},res=>{let body='';res.on('data',data=>body+=data);res.on('end',()=>resolve({status:res.statusCode,json:async()=>JSON.parse(body)}));});req.on('error',reject);req.end(options.body);});
+ const request=(url,options={})=>new Promise((resolve,reject)=>{const req=http.request({hostname:'127.0.0.1',port:entry.server.address().port,path:url,method:options.method||'GET',headers:{host:'example.ts.net',origin:config.origin,'tailscale-user-login':'a@example.com',...options.headers}},res=>{let body='';res.on('data',data=>body+=data);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,json:async()=>JSON.parse(body)}));});req.on('error',reject);req.end(options.body);});
  assert.equal((await request('/',{headers:{'tailscale-user-login':'outsider@example.com'}})).status,401);
+ assert.equal((await request('/',{headers:{'tailscale-user-login':'outsider@example.com',cookie:'better_codex_seen=1'}})).status,401);
+ const unlocked=await request('/');assert.equal(unlocked.status,200);assert.match(unlocked.headers['set-cookie'][0],/^better_codex_seen=1;.*Secure; HttpOnly; SameSite=Strict$/);
  assert.equal((await request('/',{headers:{origin:'https://attacker.example'}})).status,403);
  assert.equal((await request('/',{headers:{host:'attacker.example'}})).status,403);
  const context=await request('/api/context',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspace:'ai'})});assert.equal(context.status,200);const {token}=await context.json();
@@ -89,6 +91,7 @@ test('portable readiness only accepts known optional optimizer diagnostics on th
  assert.equal(gatewayTransportReady(cold),false);assert.equal(gatewayTransportReady(cold,{portable:true}),true);
  cold.compatibility.abnormalPoints[0].issues[0].reason='Expected 1 candidates but found 2';assert.equal(gatewayTransportReady(cold,{portable:true}),false);
  cold.compatibility.abnormalPoints[0].issues[0]={type:'ambiguous',reason:'Expected 1 candidates but found 0'};assert.equal(gatewayTransportReady(cold,{portable:true}),false);
+ const current=structuredClone(v);current.officialBundle={version:'26.1002.52244',build:'13536'};assert.equal(gatewayTransportReady(current,{portable:true}),true);current.officialBundle.build='13537';assert.equal(gatewayTransportReady(current,{portable:true}),false);
  const bad=structuredClone(v);bad.checks.officialAppServer=false;assert.equal(gatewayTransportReady(bad,{portable:true}),false);
  bad.checks.officialAppServer=true;bad.compatibility.abnormalPoints[0].id='static.required.rpc';assert.equal(gatewayTransportReady(bad,{portable:true}),false);
  bad.compatibility=v.compatibility;bad.officialBundle.version='future';assert.equal(gatewayTransportReady(bad,{portable:true}),false);

@@ -1,5 +1,7 @@
+import {patchPostAckEmptyQueue} from './official-post-ack-queue.mjs';
+import {patchImagePreview} from './official-image-preview.mjs';
 import {normalizeOfficialImportMap} from './official-import-map.mjs';
-import {portableConfig} from './runtime-profile.mjs';
+import {portableConfig,runtimeProfile} from './runtime-profile.mjs';
 import {patchDraftReceipt} from './official-draft-receipt.mjs';
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -7,18 +9,19 @@ import {scopeRuntimeAssets} from './official-assets.mjs';
 import {historyAssetPrefix,historyClientAsset,patchInitialHistoryBudget,filePreviewClientAsset,followUpClientAsset,patchFollowUpControls,patchNativeModulePreloads} from './official-history-assets.mjs';
 import {patchWorktreePrecheck} from './official-worktree-precheck.mjs';
 import {patchHistoryEdit} from './official-history-edit.mjs';
-import {patchThreadModelSettings,patchNativeReasoningEfforts,patchNewChatDraftModelReset} from './official-model-settings.mjs';
+import {patchThreadModelSettings,patchNativeReasoningEfforts,patchNewChatDraftModelReset,patchThreadServiceTier,patchThreadServiceTierRestore} from './official-model-settings.mjs';
 import {patchAppCatalogDemandInitial,patchAppCatalogDemandPrimary,patchAppCatalogDemandThread,appCatalogThreadAsset} from './official-app-catalog-demand.mjs';
-import {patchSubmissionReadiness} from './official-submission-readiness.mjs';
+import {patchSubmissionReadiness,patchParallelTurnMetadata,patchFullAccessTurnDirectories,patchSameAttemptSubmissionConfig} from './official-submission-readiness.mjs';
 import {turnCollapseAsset,patchTurnCompletionCollapse} from './official-turn-collapse.mjs';
 import {patchRoutePresentation} from './official-route-presentation.mjs';
+import {patchViewportPresentation} from './official-viewport-presentation.mjs';
 import {patchWebSendTarget} from './official-send-target.mjs';
 import {patchImageAttachments} from './official-image-attachments.mjs';
 import {frozenNativeUI} from './frozen-native-ui.mjs';
 import {patchLocalStartupShell,patchCachedLoadingLogo} from './official-startup-shell.mjs';
-export const submissionReadinessAssetPrefix='/official-patched-v1041/assets/';
+export const submissionReadinessAssetPrefix='/official-patched-v1167/assets/';
 const followUpAssetPrefix=submissionReadinessAssetPrefix;
-export const scopeSources=['client-diagnostics.js','native-theme-color.js','native-android-ui.js','native-startup-preview.js','page-navigation-diagnostics.js','native-navigation.js','native-preview-navigation.js','native-status-recovery.js','native-local-cache.js','native-reading-position.js','native-queue-client.js','native-sidebar-page.js',...(portableConfig?['portable-workbench-plugins.js']:['native-fiction.js','native-portfolio.js','native-agenda.js','native-workbench-plugins.js']),'native-pwa-preferences.js','mobile-focus.js','client-performance.js','embedded-conversation.js','official-scope-bootstrap.js'];
+export const scopeSources=['client-diagnostics.js','native-theme-color.js','native-android-ui.js','native-startup-preview.js','page-navigation-diagnostics.js','native-navigation.js','native-preview-navigation.js','native-status-recovery.js','native-local-cache.js','native-reading-position.js','native-queue-client.js','native-sidebar-page.js',...(portableConfig?['portable-workbench-plugins.js']:runtimeProfile.uiSources),'native-plugin-ui-loader.js','native-pwa-preferences.js','mobile-focus.js','client-performance.js','embedded-conversation.js','official-scope-bootstrap.js'];
 const auxiliaryStyles=['/codex-window-controls-overlay.css','/codex-smart-model-router-settings.css','/codex-smart-scheduling-summary.css','/codex-workspace-root-picker.css'];
 export async function nativeUIRelease(upstream){
  const accepted=await frozenNativeUI();if(accepted)return accepted;
@@ -27,9 +30,10 @@ export async function nativeUIRelease(upstream){
  const styles=await Promise.all(auxiliaryStyles.map(async path=>{const r=await fetch(upstream+path);if(!r.ok||!r.headers.get('content-type')?.includes('text/css'))throw Error('原生辅助样式尚未就绪');return r.text();}));
  const worker=await readFile(new URL('../public/official-service-worker.js',import.meta.url),'utf8');
  const turnResponse=await fetch(upstream+'/official-patched-v8/assets/'+turnCollapseAsset);if(!turnResponse.ok)throw Error('官方回合模块尚未就绪');const turnModule=patchTurnCompletionCollapse(await turnResponse.text());
- const initialResponse=await fetch(upstream+'/official-patched-v8/assets/'+historyClientAsset);if(!initialResponse.ok)throw Error('官方初始模块尚未就绪');const initialModule=patchCachedLoadingLogo(patchNewChatDraftModelReset(patchNativeReasoningEfforts(patchDraftReceipt(patchRoutePresentation(patchAppCatalogDemandInitial(patchSubmissionReadiness(patchThreadModelSettings(patchHistoryEdit(patchWorktreePrecheck(patchInitialHistoryBudget(await initialResponse.text(),{compactFilePreview:true})))))))))));
+ const initialResponse=await fetch(upstream+'/official-patched-v8/assets/'+historyClientAsset);if(!initialResponse.ok)throw Error('官方初始模块尚未就绪');let initialModule=patchParallelTurnMetadata(patchThreadServiceTierRestore(patchThreadServiceTier(patchCachedLoadingLogo(patchNewChatDraftModelReset(patchNativeReasoningEfforts(patchDraftReceipt(patchRoutePresentation(patchAppCatalogDemandInitial(patchSubmissionReadiness(patchThreadModelSettings(patchHistoryEdit(patchWorktreePrecheck(patchInitialHistoryBudget(patchImagePreview(await initialResponse.text()),{compactFilePreview:true}))))))))))))));
+ initialModule=patchPostAckEmptyQueue(patchSameAttemptSubmissionConfig(patchFullAccessTurnDirectories(initialModule)));
  const primaryResponse=await fetch(upstream+'/official-patched-v8/assets/'+followUpClientAsset);if(!primaryResponse.ok)throw Error('官方发送模块尚未就绪');const primaryModule=patchAppCatalogDemandPrimary(patchImageAttachments(patchWebSendTarget(patchFollowUpControls(await primaryResponse.text()))));
- const threadResponse=await fetch(upstream+'/official-patched-v8/assets/'+appCatalogThreadAsset);if(!threadResponse.ok)throw Error('官方会话模块尚未就绪');const threadModule=patchAppCatalogDemandThread(await threadResponse.text());
+ const threadResponse=await fetch(upstream+'/official-patched-v8/assets/'+appCatalogThreadAsset);if(!threadResponse.ok)throw Error('官方会话模块尚未就绪');const threadModule=patchViewportPresentation(patchAppCatalogDemandThread(await threadResponse.text()));
  const version=createHash('sha256').update(JSON.stringify([html,runtime,sources,styles,worker,historyAssetPrefix,filePreviewClientAsset,followUpAssetPrefix,submissionReadinessAssetPrefix,turnModule,initialModule,primaryModule,threadModule,'host-metadata-precheck-v1','local-startup-shell-v1','module-singleton-aliases-v1'])).digest('hex').slice(0,16),base='/dsh-native-assets/'+version+'/';
  const entry=html.match(/<script\b[^>]*type="module"[^>]*src="([^"]+)"/)?.[1];if(!entry)throw Error('原生入口契约已改变');
  const startupAssets=[...new Set([entry,base+'turn.js',...[...html.matchAll(/<link\b[^>]*href="(\/official-patched-v[0-9]+\/assets\/[^"?]+\.css)"/g)].map(m=>m[1]),submissionReadinessAssetPrefix+historyClientAsset,followUpAssetPrefix+'app-primary-6cd7b8b3f5e3.js',...['app-main-d8f7791751c1.js','authed-route-99252ed1daca.js','home-composer-route-eb5ed4bda9e1.js','thread-app-shell-chrome-38678cbd5490.js','zh-CN-5bff6daefa6d.js','app-primary-7fe7c6486695.css'].map(name=>'/official-patched-v8/assets/'+name)])];
@@ -37,7 +41,7 @@ export async function nativeUIRelease(upstream){
  const loader=sources.at(-1).replace('__DSH_NATIVE_RELEASE__',JSON.stringify(manifest)).replace('/* __DSH_EARLY_DIAGNOSTICS__ */',sources[0]).replace('/* __DSH_EARLY_THEME__ */',sources[scopeSources.indexOf('native-theme-color.js')]),css=[sources.at(-2),...styles].join('\n'),pwa=sources.at(-3),scope=sources.slice(0,scopeSources.length).join('\n');
  let shell=patchLocalStartupShell(patchNativeModulePreloads(html).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*(?:modulepreload|codex-web-config\.js|opencodex-runtime-bootstrap\.js)[^>]*>/gi,'').replace(/<meta\b[^>]*name="(?:viewport|theme-color|color-scheme)"[^>]*>/gi,''));
  shell=shell.replace(/<link\b[^>]*>/gi,tag=>auxiliaryStyles.some(path=>tag.includes('href="'+path+'"'))?'':tag);
- const imports={};for(const v of [8,1004,1005,1006,1007,1008,1009,1010,1011,1012,1013,1014,1023,1024,1026,1027,1028,1029,1030,1031,1033,1034,1032,1035,1036,1037,1038,1039,1040,1041]){const p='/official-patched-v'+v+'/assets/';imports[p+appCatalogThreadAsset]=submissionReadinessAssetPrefix+appCatalogThreadAsset;imports[p+turnCollapseAsset]=base+'turn.js';imports[p+'app-initial-cadb12d4a15e.js']=submissionReadinessAssetPrefix+historyClientAsset;imports[p+filePreviewClientAsset]=historyAssetPrefix+filePreviewClientAsset;imports[p+'app-primary-6cd7b8b3f5e3.js']=followUpAssetPrefix+'app-primary-6cd7b8b3f5e3.js';if(v!==8)imports[p]='/official-patched-v8/assets/';}const importMap=JSON.stringify(normalizeOfficialImportMap({imports})),mapHash=createHash('sha256').update(importMap).digest('base64');shell=shell.replace('script-src &#39;self&#39;','script-src &#39;self&#39; &#39;sha256-'+mapHash+'&#39;');
+ const imports={};for(const v of [8,1004,1005,1006,1007,1008,1009,1010,1011,1012,1013,1014,1023,1024,1026,1027,1028,1029,1030,1031,1033,1034,1032,1035,1036,1037,1038,1039,1040,1041,1103,1151,1153,1155,1157,1158,1159,1160,1161,1162,1163,1164,1165,1166,1167]){const p='/official-patched-v'+v+'/assets/';imports[p+appCatalogThreadAsset]=submissionReadinessAssetPrefix+appCatalogThreadAsset;imports[p+turnCollapseAsset]=base+'turn.js';imports[p+'app-initial-cadb12d4a15e.js']=submissionReadinessAssetPrefix+historyClientAsset;imports[p+filePreviewClientAsset]=historyAssetPrefix+filePreviewClientAsset;imports[p+'app-primary-6cd7b8b3f5e3.js']=followUpAssetPrefix+'app-primary-6cd7b8b3f5e3.js';if(v!==8)imports[p]='/official-patched-v8/assets/';}const importMap=JSON.stringify(normalizeOfficialImportMap({imports})),mapHash=createHash('sha256').update(importMap).digest('base64');shell=shell.replace('script-src &#39;self&#39;','script-src &#39;self&#39; &#39;sha256-'+mapHash+'&#39;');
  shell=shell.replace(/(<html[^>]*class=")([^"]*)(")/i,(_,a,b,c)=>a+b.replace(/\belectron-(?:light|dark)\b/g,'')+c);
  // Register the official cascade order before any eager component stylesheet.
  // First appearance fixes layer priority; a later declaration cannot move it.

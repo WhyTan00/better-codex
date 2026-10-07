@@ -53,20 +53,26 @@ magick -background '#080c17' docs/media/quant-research-demo.svg -resize 1600x100
 magick -background '#080c17' docs/media/video-production-demo.svg -resize 1600x1000 docs/media/video-production-demo.png
 ```
 
-The explainer video remains deterministic and code-authored through Remotion:
-see [`video/src/BetterCodexVideo.tsx`](../video/src/BetterCodexVideo.tsx) and
-the rendered [MP4](../video/out/better-codex-explainer.mp4).
+The explainer video is deterministic and code-authored through Remotion:
+see [`video/src/BetterCodexVideo.tsx`](../video/src/BetterCodexVideo.tsx).
+You can render it locally with `pnpm video:install` followed by
+`pnpm video:render`. The generated `video/out/` files are local outputs;
+the repository and this release do not include those MP4 files.
 
-The Chinese vertical cut adds the cache/UX and DSH compatibility story for
-mobile feeds: [1080×1920 MP4](../video/out/better-codex-zh-vertical.mp4) ·
-[shot list](video-script.zh-CN.md) ·
-[DSH boundary](dsh-compatibility.zh-CN.md).
+The earlier Chinese vertical cut explains cache/UX and DSH compatibility for
+mobile feeds: [source](../video/src/BetterCodexZhVertical.tsx) ·
+[shot list](video-script.zh-CN.md) · [DSH boundary](dsh-compatibility.zh-CN.md).
+Render it locally with `pnpm video:render:zh`. This historical presentation
+is illustrative; current product scope is described in the
+[README](../README.md) and [product story](product-story.md).
 
-讲解视频继续使用 Remotion 确定性地由代码生成，见
-[`video/src/BetterCodexVideo.tsx`](../video/src/BetterCodexVideo.tsx) 和已渲染的
-[MP4](../video/out/better-codex-explainer.mp4)。
+讲解视频使用 Remotion 确定性地由代码生成，见
+[`video/src/BetterCodexVideo.tsx`](../video/src/BetterCodexVideo.tsx)。
+先执行 `pnpm video:install`，再执行 `pnpm video:render` 即可本机渲染。
+`video/out/` 是本地产物，仓库与本次发行不包含这些 MP4。
 
-中文竖屏版针对手机信息流补充了缓存、体验优化和 DSH 兼容性说明：
-[1080×1920 MP4](../video/out/better-codex-zh-vertical.mp4) ·
-[分镜](video-script.zh-CN.md) ·
-[DSH 边界](dsh-compatibility.zh-CN.md)。
+此前的中文竖屏版针对手机信息流解释缓存、体验优化和 DSH 兼容性：
+[源码](../video/src/BetterCodexZhVertical.tsx) · [分镜](video-script.zh-CN.md) ·
+[DSH 边界](dsh-compatibility.zh-CN.md)。运行 `pnpm video:render:zh` 可本机生成。
+该历史介绍片属于示意素材；当前产品范围以 [README](../README.md) 与
+[产品介绍](product-story.md)为准。

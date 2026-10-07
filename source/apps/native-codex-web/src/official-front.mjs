@@ -1,4 +1,5 @@
-import {PROJECT_STATE_KEYS,workspaceProjects} from './workspace-projects.mjs';
+import {PROJECT_STATE_KEYS,workspaceProjects,readWorkspaceGlobalState} from './workspace-projects.mjs';
+import {pluginUiRoute,readPluginUi} from './plugin-ui-store.mjs';
 import {ConnectionDiagnostics,hashDiagnosticId,rpcDiagnosticContext,errorDiagnosticFields,appHostError} from './connection-diagnostics.mjs';
 // 私有官方界面前门：静态资源复用 OpenCodex，内容/命令统一经过固定 scope 原生适配器。
 import http from 'node:http';
@@ -19,7 +20,7 @@ import {createAppHostFactory} from './official-app-host.mjs';
 import {OfficialGit} from './official-git.mjs';
 import {OfficialState} from './official-state.mjs';
 import {createOfficialSettings} from './official-settings.mjs';
-import {PageSessions,PAGE_RESUME_PROTOCOL} from './page-sessions.mjs';
+import {PageSessions,PAGE_RESUME_PROTOCOL,REPLY_STREAM_PROTOCOL} from './page-sessions.mjs';
 import {NativeEventDispatcher} from './native-event-dispatcher.mjs';
 import {cacheableBootstrap} from './native-bootstrap.mjs';
 import {nativeUIRelease,scopeSources} from './native-ui-release.mjs';
@@ -31,6 +32,7 @@ import {FileDiagnostics} from './file-diagnostics.mjs';
 import {loadShellAssets} from './shell-assets.mjs';
 import {serveFileResponse} from './file-response.mjs';
 import {Deliverables} from './deliverables.mjs';
+import {PhoneCodeBroker} from './phone-code-broker.mjs';
 import {wantsNativeNotification} from './notification-interest.mjs';
 import {endToEndHeaders} from './http-headers.mjs';
 import {nativeVersion} from './native-version.mjs';
@@ -47,7 +49,8 @@ const PRIVATE=runtimeProfile.runtime;
 const codec=appHostCodec();
 const {RpcSession,RpcTarget}=await appHostProtocol();
 const CHANNEL='codex_desktop:message-for-view';
-const BULK_READ_PROTOCOL='dsh-bulk-read-v1',BULK_READ_METHODS=new Set(['app/list','mcpServerStatus/list','thread/list']);
+const BULK_READ_PROTOCOL='dsh-bulk-read-v1',BULK_READ_METHODS=new Set(['app/list','mcpServerStatus/list','thread/list','thread/read','thread/turns/list','thread/goal/get','config/read','configRequirements/read']);
+const ATTACHMENT_UPLOAD_PROTOCOL='dsh-attachment-upload-v1',ATTACHMENT_MAX=20*1024*1024;
 const BOOTSTRAP_READS=new Set(['codex_desktop:get-initial-sidebar-bootstrap','codex_desktop:get-shared-object-snapshot','codex_desktop:get-build-flavor','codex_desktop:get-system-theme-variant','codex_desktop:get-sentry-init-options']);
 const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(value));};
 async function body(req){let s='',size=0;for await(const b of req){size+=b.length;if(size>29*1024*1024)throw fail(413,'请求过大');s+=b;}try{return JSON.parse(s);}catch{throw fail(400,'请求格式无效');}}
@@ -56,6 +59,7 @@ function errorShape(e){return {code:e.rpcCode||-32000,message:e.code?e.message:'
 export async function createOfficialFront({port=3084,upstream=runtimeProfile.upstream,native=new SharedNative({reconnect:true,preserveProcessIdentity:false}),stateDir=PRIVATE+'/front-state',publicOrigin=null,historyUpgradeWaitMs=10000}={}){
  if(publicOrigin){const u=new URL(publicOrigin);if(portableConfig){if(publicOrigin!==portableConfig.origin)throw fail(400,'入口必须匹配部署配置');}else if(u.protocol!=='http:'||!['localhost','127.0.0.1'].includes(u.hostname))throw fail(400,'开发候选仅允许回环入口');publicOrigin=u.origin;}
  await mkdir(stateDir,{recursive:true,mode:0o700});const connectionLog=new ConnectionDiagnostics({file:path.join(stateDir,'connections.jsonl')});connectionLog.event({component:'front',stage:'boot',processId:process.pid});native.on('connection-diagnostic',entry=>connectionLog.event(entry));
+ const phoneCodes=portableConfig?null:await new PhoneCodeBroker({root:path.join(stateDir,'phone-code')}).start();
  const historyReads=[],historyUpgrades=[];let historyUpgrade;
  const historyUpgradeBeforeResume=async target=>{
   const nativeHome=native.initialization?.codexHome;
@@ -133,6 +137,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  async function invoke(scope,request,client){const channel=request.channel,args=Array.isArray(request.args)?request.args:('payload'in request?[request.payload]:[]),p=args[0]||{};
   trace(scope,'channel',channel);trace(scope,'message',p.type);if(p.type==='mcp-request'){trace(scope,'native',p.request?.method);if(['thread/start','thread/resume','turn/start'].includes(p.request?.method)){for(const key of Object.keys(p.request.params||{}))trace(scope,'native-field',key);for(const key of Object.keys(p.request.params?.config||{}))trace(scope,'native-config',key);}}if(p.type==='fetch')trace(scope,'fetch',String(p.url||'').replace(/^vscode:\/\/codex\//,''));
   if(channel==='codex_desktop:message-from-view'&&(p.type==='mcp-request'||p.type==='thread-prewarm-start')){
+   if(p.type==='thread-prewarm-start'){rpcResponse(client,p.request,null,fail(409,'会话将在首次发送时创建'));return null;}
    const threadId=p.request?.params?.threadId;if(typeof threadId==='string'){client.readThreads??=new Map();client.readThreads.set(threadId,Date.now()+120000);while(client.readThreads.size>64)client.readThreads.delete(client.readThreads.keys().next().value);}
    if(p.type==='thread-prewarm-start'){for(const key of Object.keys(p.request?.params?.config||{}))trace(scope,'native-config',key);}
    if(p.hostId&&p.hostId!=='local')throw fail(403,'远程宿主不属于当前工作区');
@@ -197,6 +202,8 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   }
   if(p.type==='shared-object-subscribe'){const c=await config(scope,client.origin);emit(client,{type:'shared-object-updated',key:p.key||p.objectId,value:c.sharedObjectSnapshot[p.key||p.objectId]});return null;}
   if(p.type==='fetch'){
+   const started=performance.now(),context=rpcDiagnosticContext({id:p.requestId,method:hostMethod,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});
+   connectionLog.event({component:'front',stage:'dispatch',...context});
    try{
    const method=String(p.url||'').replace(/^vscode:\/\/codex\//,'');let input={};try{input=typeof p.body==='string'?JSON.parse(p.body):p.body||{};}catch{}const a=input.params||input;let value;
    if(method==='app-server-connection-state'){if(a.hostId&&a.hostId!=='local')throw fail(403,'宿主不属于当前工作区');value={state:native.state==='ready'?'connected':'disconnected',progress:null,error:null};}
@@ -204,7 +211,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    else if(method==='read-file-binary'){if(a.hostId&&a.hostId!=='local')throw fail(403,'宿主不属于当前工作区');const r=await files.bytes(scope,a.path);value={contentsBase64:r.bytes.toString('base64'),mimeType:r.mime};}
    else if(method==='read-file-metadata')value=await files.metadata(scope,a);
    else if(method==='workspace-directory-entries')value=await files.entries(scope,a);
-   else if(method==='get-global-state'){const c=await config(scope,client.origin),key=a.key;value={value:key?(PROJECT_STATE_KEYS.has(key)?c.initialSidebarBootstrap.globalStateEntries.find(x=>x.key===key)?.value:s.globals[key]??c.initialSidebarBootstrap.globalStateEntries.find(x=>x.key===key)?.value):Object.fromEntries(c.initialSidebarBootstrap.globalStateEntries.map(x=>[x.key,x.value]))};}
+   else if(method==='get-global-state')value={value:readWorkspaceGlobalState(workspace(scope),s.globals,a.key)};
    else if(method==='set-global-state'){if(a.key==='queued-follow-ups')throw fail(409,'队列已改为 Mac 后台执行，请刷新此旧页面后重试');if(typeof a.key!=='string'||a.key.length>256||['__proto__','constructor','prototype'].includes(a.key))throw fail(400,'无效状态键');s.globals[a.key]=PROJECT_STATE_KEYS.has(a.key)?workspaceProjects(workspace(scope),{...s.globals,[a.key]:a.value}).globals[a.key]:a.value;await persist(scope);value={success:true};}
    else if(method==='get-configuration'){value=await boundary.call(scope,{method:'config/read',params:{}});}
    else if(method==='get-settings')value={values:await settings.values(scope),configuredValues:s.settings};
@@ -234,8 +241,9 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    else if(method==='ensure-directory')value=await ensureScopedDirectory(scope,a.path);
    else if(['set-remote-control-connections-enabled','set-remote-wsl-connections-enabled'].includes(method))value={enabled:false};
    else throw fail(403,'此桌面请求尚未开放');
+   connectionLog.event({component:'front',stage:'received',...context,durationMs:Math.round(performance.now()-started)});
    emit(client,{type:'fetch-response',requestId:p.requestId,responseType:'success',status:200,headers:{'content-type':'application/json'},bodyJsonString:JSON.stringify(value)});
-   }catch(e){emit(client,{type:'fetch-response',requestId:p.requestId,responseType:'error',status:statusOf(e),error:e.code?e.message:'官方请求暂不可用'});}
+   }catch(e){connectionLog.event({component:'front',stage:'failed',...context,durationMs:Math.round(performance.now()-started),...errorDiagnosticFields(e)});emit(client,{type:'fetch-response',requestId:p.requestId,responseType:'error',status:statusOf(e),error:e.code?e.message:'官方请求暂不可用'});}
    return null;
   }
   if(p.type==='ready'||p.type==='view-ready'){emitInitialization(client);return null;}
@@ -269,6 +277,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   const safeNavigation=isWorkspaceNavigation(req);
   if(!safeNavigation&&(req.headers.origin&&req.headers.origin!==origin||req.headers['sec-fetch-site']==='cross-site')){navigationDenial(req,'front');throw fail(403,'跨站请求被拒绝');}
   const u=new URL(req.url,origin),route=u.pathname;res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','same-origin');
+  if(route.startsWith('/__phone-code/')){if(!phoneCodes)throw fail(404,'phone_code_unavailable');return await phoneCodes.local(req,res,route.slice('/__phone-code/'.length));}
   if(['GET','HEAD'].includes(req.method)&&shell.serve(req,res,route))return;
   if(req.method==='GET'&&(route==='/conversations'||route==='/'&&u.searchParams.get('view')!=='chat'&&u.searchParams.get('nativeList')!=='1')){const ws=workspace(u.searchParams.get('workspace')||'ai');res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-dsh-cacheable-shell':'1','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"});return res.end(shell.home(ws.id));}
   if(req.method==='GET'&&/^(?:\/official\/?|\/workspaces\/(?:ai|zyy)\/?)$/.test(route)){const ws=workspace(route.match(/^\/workspaces\/(ai|zyy)/)?.[1]||u.searchParams.get('workspace')||'ai');res.writeHead(303,{location:'/?workspace='+ws.id,'cache-control':'no-store'});return res.end();}
@@ -285,6 +294,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    finally{req.off('aborted',cancel);res.off('close',cancel);}return;
   }
   if(route==='/healthz')return json(res,200,{status:'ok',service:'official-codex-front',version:'1.0.0',epoch,...await boundary.hostActivity(),nativeState:native.state,officialUpstream:upstream});
+  const pluginAsset=pluginUiRoute(route);if(pluginAsset&&['GET','HEAD'].includes(req.method)){try{const file=await readPluginUi(path.join(PRIVATE,'plugin-ui'),pluginAsset);res.writeHead(200,{'content-type':file.type,'cache-control':file.cache});return res.end(req.method==='HEAD'?undefined:file.body);}catch{return json(res,404,{error:'插件界面版本尚不可用'});}}
   if(route==='/dsh-scope-session'&&req.method==='GET'){
    const ws=workspace(u.searchParams.get('workspace')),value=req.headers['x-dsh-diagnostic-trace'],started=performance.now();
    const context={component:'front',scope:ws.id,routeClass:'scope_session',method:'GET',reason:'scope_renewal',...typeof value==='string'&&/^[a-f0-9-]{36}$/i.test(value)?{traceId:value}:{}};
@@ -305,14 +315,38 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   if(route==='/codex-web-config.js'){const scope=u.searchParams.get('workspace'),ws=authorized(req,scope,u);const c=await config(ws.id,origin);c.gatewayWsUrl+='?scopeToken='+encodeURIComponent(u.searchParams.get('scopeToken'));return await textResponses.send(req,res,'window.__CODEX_WEB_CONFIG__='+JSON.stringify(c)+';',{'content-type':'text/javascript','cache-control':'no-store'});}
   const scoped=route.match(/^\/w\/(ai|zyy)(\/.*)$/);
   if(scoped){const scope=scoped[1],endpoint=scoped[2],grantMatch=endpoint.match(/^\/api\/local-file\/([A-Za-z0-9_-]{32})\/[^/]+$/);if(grantMatch&&['GET','HEAD'].includes(req.method))return await serveGrantedFile(scope,grantMatch[1],req,res);const ws=authorized(req,scope,u);
+   if(endpoint.startsWith('/api/phone-code/')){if(!phoneCodes||scope!=='ai')throw fail(403,'phone_code_scope_denied');return await phoneCodes.phone(req,res,endpoint.slice('/api/phone-code/'.length));}
    if(req.method==='GET'&&(endpoint==='/api/projects'||/^\/api\/projects\/[a-z0-9-]+$/.test(endpoint)))return json(res,200,await projectData(scope,endpoint.split('/')[3]));
    if(endpoint==='/api/projects/comfyui-video/material-feedback'&&req.method==='POST'){const b=await body(req);return json(res,200,await projectMaterialFeedback(scope,'comfyui-video',b));}
    if(endpoint==='/api/native-cursors'&&req.method==='GET'){const id=u.searchParams.get('threadId');await boundary.checked(workspace(scope),id);const record=nativeCache.get(scope,'history-cursors:'+id);return json(res,200,{cursors:record&&!record.deleted?record.payload:null});}
    if(endpoint==='/api/native-bootstrap'&&req.method==='GET')return json(res,200,await config(scope,origin));
    if(endpoint==='/api/deliverables/prepare'&&req.method==='POST')return json(res,200,await deliverables.prepare(scope,await body(req)));
    if(endpoint==='/api/native-read'&&req.method==='POST'){const b=await body(req);return json(res,200,await nativeCache.read(scope,b.method,b.params,{fresh:!!b.fresh}));}
+   if(endpoint==='/api/attachment-upload'&&req.method==='POST'){
+    const requestId=req.headers['x-dsh-upload-id'];if(typeof requestId!=='string'||!/^[a-f0-9-]{36}$/i.test(requestId))throw fail(400,'附件请求身份无效');
+    const page=clientById.get(scope+':'+req.headers['x-dsh-page-id']),wire=page?.wire,nativeGeneration=native.generation;
+    const current=()=>page&&!page.expired&&clientById.get(scope+':'+page.pageId)===page&&page.wire===wire&&wire?.readyState===1&&page.resumeId===req.headers['x-dsh-page-resume']&&page.stableId===req.headers['x-dsh-client-id']&&page.connectionId===req.headers['x-dsh-connection-id']&&req.headers['x-dsh-front-epoch']===epoch&&String(nativeGeneration)===req.headers['x-dsh-native-generation']&&native.state==='ready'&&native.generation===nativeGeneration;
+    if(!current())throw fail(409,'附件上传连接已更换');
+    if(req.headers['content-type']!=='application/octet-stream')throw fail(400,'附件数据格式无效');
+    let metadata;const header=req.headers['x-dsh-upload-files'];if(typeof header!=='string'||header.length>16384)throw fail(400,'附件清单无效');
+    try{metadata=JSON.parse(decodeURIComponent(header));}catch{throw fail(400,'附件清单无效');}
+    if(!Array.isArray(metadata)||!metadata.length||metadata.length>20||metadata.some(f=>!f||typeof f.name!=='string'||f.name.length>512||typeof f.type!=='string'||f.type.length>128||!Number.isSafeInteger(f.size)||f.size<0))throw fail(400,'附件清单无效');
+    const expected=metadata.reduce((sum,f)=>sum+f.size,0);if(expected>ATTACHMENT_MAX)throw fail(413,'每次附件总量最多 20 MB');
+    const started=performance.now(),context={component:'attachment-upload',scope,traceId:requestId,pageId:page.diagnosticPageId,connectionId:page.connectionId,fileCount:metadata.length,bodyBytes:expected};connectionLog.event({...context,stage:'dispatch'});
+    res.once('finish',()=>connectionLog.event({...context,stage:'committed',statusCode:res.statusCode,durationMs:Math.round(performance.now()-started)}));
+    res.once('close',()=>{if(!res.writableFinished)connectionLog.event({...context,stage:'failed',reason:'write_failed',durationMs:Math.round(performance.now()-started)});});
+    const chunks=[];let received=0;for await(const chunk of req){received+=chunk.length;if(received>ATTACHMENT_MAX||received>expected)throw fail(413,'附件数据超出清单');chunks.push(chunk);}
+    if(received!==expected)throw fail(400,'附件数据不完整');if(!current())throw fail(409,'附件上传连接已更换');
+    connectionLog.event({...context,stage:'received',durationMs:Math.round(performance.now()-started)});
+    const result=await files.uploadBytes(scope,metadata,Buffer.concat(chunks,received));
+    // Upload stores input bytes only; no Native execution has been submitted.
+    // A changed page cannot adopt the old receipt, and it must not auto-retry.
+    if(!current())throw fail(409,'附件已保存，但页面连接已更换；消息尚未发送');
+    res.setHeader('x-dsh-upload-id',requestId);res.setHeader('x-dsh-front-epoch',epoch);res.setHeader('x-dsh-native-generation',String(nativeGeneration));
+    return json(res,200,{requestId,epoch,nativeGeneration,protocol:ATTACHMENT_UPLOAD_PROTOCOL,result});
+   }
    if(endpoint==='/api/bulk-read'&&req.method==='GET'){
-    // Only large directory reads use this response channel. The same boundary
+    // Directory and bounded execution-metadata reads use this response channel. The same boundary
     // and Native connection remain authoritative; no writer or page sequence is
     // created, and no result is also emitted onto the control WebSocket.
     const method=u.searchParams.get('method'),requestId=u.searchParams.get('requestId');
@@ -321,6 +355,12 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
     let params;try{params=JSON.parse(u.searchParams.get('params')||'{}');}catch{throw fail(400,'读取参数无效');}
     if(!params||typeof params!=='object'||Array.isArray(params))throw fail(400,'读取参数无效');
     if(params.hostId&&params.hostId!=='local')throw fail(403,'远程宿主不属于当前工作区');
+    const only=keys=>Object.keys(params).every(key=>keys.includes(key));
+    if(method==='thread/read'&&(!only(['threadId','includeTurns'])||params.includeTurns!==false))throw fail(403,'此通道只读取会话元数据');
+    if(method==='thread/goal/get'&&(!only(['threadId'])||typeof params.threadId!=='string'||!params.threadId))throw fail(403,'此通道只读取当前会话目标');
+    if(method==='thread/turns/list'&&(!only(['threadId','limit','sortDirection','itemsView','cursor'])||params.limit!==1||params.sortDirection!=='desc'||params.itemsView!=='notLoaded'||params.cursor!=null))throw fail(403,'此通道只读取当前轮次身份');
+    if(method==='config/read'&&(!only(['cwd','includeLayers'])||params.includeLayers!=null&&typeof params.includeLayers!=='boolean'))throw fail(403,'执行配置读取参数无效');
+    if(method==='configRequirements/read'&&!only([]))throw fail(403,'执行约束读取参数无效');
     const page=clientById.get(scope+':'+req.headers['x-dsh-page-id']),wire=page?.wire,nativeGeneration=native.generation,identityGeneration=bulkIdentityGeneration;
     const current=()=>page&&!page.expired&&clientById.get(scope+':'+page.pageId)===page&&page.wire===wire&&wire?.readyState===1&&page.resumeId===req.headers['x-dsh-page-resume']&&page.stableId===req.headers['x-dsh-client-id']&&page.connectionId===req.headers['x-dsh-connection-id']&&req.headers['x-dsh-front-epoch']===epoch&&String(nativeGeneration)===req.headers['x-dsh-native-generation']&&native.state==='ready'&&native.generation===nativeGeneration&&bulkIdentityGeneration===identityGeneration;
     if(!current())throw fail(409,'读取连接已更换，请重新读取');
@@ -410,18 +450,19 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
      const stableId=typeof m.dshClientId==='string'&&m.dshClientId.length<=160?m.dshClientId:m.clientId;
      let resumed=false;
      if(m.dshProtocol===PAGE_RESUME_PROTOCOL){
-      try{({session:ws,resumed}=pageSessions.attach(wire,{scope,pageId:m.clientId,stableId,origin:ws.origin,resumeId:m.dshResumeId,ack:m.dshAck??0}));}
+      try{({session:ws,resumed}=pageSessions.attach(wire,{scope,pageId:m.clientId,stableId,origin:ws.origin,resumeId:m.dshResumeId,ack:m.dshAck??0,replyProtocol:m.dshReplyProtocol,replyAck:m.dshReplyAck}));}
       catch(error){const reason=['page_resume_unavailable','page_ack_invalid','page_session_limit'].includes(error?.message)?error.message:'page_resume_unavailable';wireDiagnostic('rejected',{reason});wire.send(JSON.stringify({type:'dsh:resume-unavailable',reason}));wire.close(4009,reason);return;}
    }else{ws.pageId=m.clientId;ws.stableId=stableId;}
      ws.connectionId=connectionId;ws.diagnosticPageId=u.searchParams.get('dshDiagPage');
      handshaken=true;wireDiagnostic('hello',{resumed,durationMs:Date.now()-startedAt});if(resumed)ws.needsCatchup=false;clients.add(ws);clientById.set(scope+':'+ws.pageId,ws);
-      const ack={type:'hello-ack',clientId:m.clientId,...(ws.resumeId?{dshProtocol:PAGE_RESUME_PROTOCOL,dshResumeId:ws.resumeId,dshResumed:resumed,dshReceivedSeq:ws.receivedSeq,dshBulkReadProtocol:BULK_READ_PROTOCOL,dshEpoch:epoch,dshNativeGeneration:native.generation}:{})};
+      const ack={type:'hello-ack',clientId:m.clientId,...(ws.resumeId?{dshProtocol:PAGE_RESUME_PROTOCOL,dshResumeId:ws.resumeId,dshResumed:resumed,dshReceivedSeq:ws.receivedSeq,dshBulkReadProtocol:BULK_READ_PROTOCOL,dshAttachmentUploadProtocol:ATTACHMENT_UPLOAD_PROTOCOL,dshIsolatedReadMethods:[...BULK_READ_METHODS],dshEpoch:epoch,dshNativeGeneration:native.generation,dshNativeConnected:native.state==='ready',...(ws.replyProtocol?{dshReplyProtocol:REPLY_STREAM_PROTOCOL,dshReplySnapshotSeq:ws.replies.rpc.sentSeq}:{})}:{})};
      if(ws.resumeId){pageSessions.control(ws,ack);pageSessions.replay(ws);}else send(ws,ack);
      await syncClient(ws,{recover:resumed});return;
     }
     if(!handshaken)throw fail(403,'hello required');
     if(ws.resumeId){
      if(ws.wire!==wire)return;
+     if(m.type==='dsh:reply-ack'){if(!ws.replyProtocol)throw fail(400,'未协商回应通道');pageSessions.acknowledgeReply(ws,m.stream,m.seq);return;}
      if(m.type==='dsh:ack'){pageSessions.acknowledge(ws,m.seq);if(ws.needsCatchup&&!ws.catchingUp&&ws.bytes<1024*1024){ws.needsCatchup=false;ws.catchingUp=syncClient(ws,{recover:true}).catch(()=>{ws.needsCatchup=true;}).finally(()=>{ws.catchingUp=null;});}return;}
      if(m.type!=='dsh:ping'&&m.type!=='dsh:sync'){
       const first=pageSessions.accept(ws,m.dshClientSeq);pageSessions.control(ws,{type:'dsh:ack',seq:ws.receivedSeq});if(!first)return;
@@ -444,6 +485,6 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  native.on('interrupted',()=>{eventDispatcher.barrier();connectionLog.event({component:'front',stage:'closed',reason:'native_disconnected'});reconnecting=true;for(const ws of clients){ws.ownedThreads?.clear();emit(ws,{type:'codex-app-server-connection-changed',hostId:'local',state:'disconnected',transport:'websocket',isSnapshot:false});send(ws,{type:'dsh:sync-state',epoch,seq:sequence[ws.scope],hostState:'disconnected'});}});
  native.on('ready',()=>{connectionLog.event({component:'front',stage:'ready',reason:'native_ready'});if(!reconnecting)return;reconnecting=false;for(const ws of clients)if(ws.pageId){emitInitialization(ws,{isSnapshot:false});syncClient(ws).catch(()=>{});}});
  await native.start();
- return {server,boundary,native,journal,async close(){capacityRetry?.close();eventDispatcher.barrier();pageSessions.close();for(const ws of clients)ws.close();wss.close();await new Promise(r=>server.close(r));await Promise.allSettled([...boundary.historyPreparations.values()].map(r=>r.promise));native.close();await store.flush();await cacheEvents;nativeCache.close();journal.close();connectionLog.event({component:'front',stage:'stopped',reason:'shutdown'});await connectionLog.close();}};
+ return {server,boundary,native,journal,async close(){phoneCodes?.close();capacityRetry?.close();eventDispatcher.barrier();pageSessions.close();for(const ws of clients)ws.close();wss.close();await new Promise(r=>server.close(r));await Promise.allSettled([...boundary.historyPreparations.values()].map(r=>r.promise));native.close();await store.flush();await cacheEvents;nativeCache.close();journal.close();connectionLog.event({component:'front',stage:'stopped',reason:'shutdown'});await connectionLog.close();}};
 }
 if(process.argv[1]&&fileURLToPath(import.meta.url)===path.resolve(process.argv[1])){const port=Number(process.env.PORT||3084),front=await createOfficialFront({port,stateDir:process.env.DSH_OFFICIAL_STATE_DIR,publicOrigin:process.env.DSH_OFFICIAL_PUBLIC_ORIGIN||null});front.server.listen(port,'127.0.0.1',()=>console.log(JSON.stringify({service:'official-codex-front',port,pid:process.pid})));for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{await front.close();process.exit(0);});}

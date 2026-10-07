@@ -11,17 +11,17 @@
  async function installUpdate(){if(!registration&&'serviceWorker'in navigator)registration=await navigator.serviceWorker.getRegistration('/');if(!registration)throw Error('更新服务尚未就绪');await registration.update();if(registration.installing){const installing=registration.installing;await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{installing.removeEventListener('statechange',changed);reject(Error('新版仍在下载，请稍后再试'));},20000);function changed(){if(!['installed','activated','redundant'].includes(installing.state))return;clearTimeout(timer);installing.removeEventListener('statechange',changed);if(installing.state==='redundant')reject(Error('新版下载未完成，请重试'));else resolve();}installing.addEventListener('statechange',changed);changed();});}const result=await prepare(registration.waiting||registration.active,'PREPARE_NATIVE_CACHE');if(latest&&result.version!==latest.version)throw Error('新版仍在同步，请稍后再试');if(registration.waiting){const worker=registration.waiting;await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{navigator.serviceWorker.removeEventListener('controllerchange',done);reject(Error('切换新版超时，请重新打开应用'));},12000);function done(){clearTimeout(timer);navigator.serviceWorker.removeEventListener('controllerchange',done);resolve();}navigator.serviceWorker.addEventListener('controllerchange',done);worker.postMessage({type:'ACTIVATE_UPDATE'});});}location.reload();}
  function quotaSection(container){
   const heading=node('h3','账户额度'),body=node('div'),status=node('small','正在读取官方额度…');body.className='dsh-quota';container.append(heading,node('small','只读显示；此页面打开时每分钟自动更新。'),body,status);
-  let snapshot=null,pending=false,closed=false;
+  let snapshot=null,pending=false,closed=false,lastError=null;
   const duration=mins=>mins===10080?'每周':mins>=1440?(mins/1440)+' 天':mins>=60?(mins/60)+' 小时':mins+' 分钟';
   function render(value,cached){if(closed)return;snapshot=value;body.replaceChildren();for(const bucket of value.data.buckets||[]){body.append(node('p',bucket.name+(bucket.plan?' · '+bucket.plan.toUpperCase():'')));for(const window of [bucket.primary,bucket.secondary]){if(!window||!Number.isFinite(window.usedPercent))continue;const remaining=Math.max(0,Math.min(100,100-window.usedPercent)),line=node('div',duration(window.windowDurationMins)+'额度剩余 '+remaining+'%'),meter=node('progress');meter.max=100;meter.value=remaining;meter.setAttribute('aria-label',line.textContent);body.append(line,meter);if(Number.isFinite(window.resetsAt))body.append(node('small',new Date(window.resetsAt*1000).toLocaleString('zh-CN')+' 重置'));}if(bucket.credits?.unlimited)body.append(node('div','额外额度：不限量'));else if(bucket.credits?.balance!=null)body.append(node('div','额外额度余额：'+bucket.credits.balance));}
    if(Number.isFinite(value.data.resetsAvailable))body.append(node('p','可用额度重置：'+value.data.resetsAvailable+' 次'));
    if(!value.data.buckets?.length)body.append(node('p','官方暂未返回额度明细'));
-   status.textContent=(cached?'缓存 · 最近读取 ':'已更新 · ')+new Date(value.checkedAt).toLocaleString('zh-CN');
+   status.textContent=(cached?'缓存 · 最近读取 ':'已更新 · ')+new Date(value.checkedAt).toLocaleString('zh-CN')+(cached&&lastError?'；'+lastError:'');
   }
-  async function load(){if(closed||pending||document.visibilityState==='hidden')return;pending=true;try{const read=window.__DSH_READ_ACCOUNT_LIMITS__;if(!read)throw Error('账户连接尚未就绪，连接后会自动更新');render(await read(),false);}catch(error){if(!closed)status.textContent=(snapshot?'缓存 · 最近读取 '+new Date(snapshot.checkedAt).toLocaleString('zh-CN')+'；':'')+(error.message||'额度暂时不可用');}finally{pending=false;}}
+  async function load(){if(closed||pending||document.visibilityState==='hidden')return;pending=true;try{const read=window.__DSH_READ_ACCOUNT_LIMITS__;if(!read)throw Error('账户连接尚未就绪，连接后会自动更新');const value=await read();lastError=null;render(value,false);}catch(error){lastError=error.message||'额度暂时不可用';if(!closed)status.textContent=(snapshot?'缓存 · 最近读取 '+new Date(snapshot.checkedAt).toLocaleString('zh-CN')+'；':'')+lastError;}finally{pending=false;}}
   const changed=event=>{if(!closed&&document.visibilityState!=='hidden'&&event.detail?.data)render(event.detail,false);},resume=()=>{if(!snapshot||Date.now()-snapshot.checkedAt>=60000)load();};
   const timer=setInterval(load,60000);document.addEventListener('visibilitychange',resume);addEventListener('online',resume);addEventListener('dsh:quota-updated',changed);addEventListener('dsh:quota-invalidated',load);addEventListener('dsh:session-ready',resume);
-  const cached=window.__DSH_NATIVE_CACHE__?.meta('account-quota-v1');Promise.resolve(cached).then(value=>{if(value&&!snapshot)render(value,true);}).catch(()=>{}).finally(load);
+  const cached=window.__DSH_NATIVE_CACHE__?.meta('account-quota-v1');Promise.resolve(cached).then(value=>{if(value&&!snapshot)render(value,true);}).catch(()=>{});load();
   return ()=>{closed=true;clearInterval(timer);document.removeEventListener('visibilitychange',resume);removeEventListener('online',resume);removeEventListener('dsh:quota-updated',changed);removeEventListener('dsh:quota-invalidated',load);removeEventListener('dsh:session-ready',resume);};
  }
  function setWorkerRecipient(reg,recipient){return new Promise((resolve,reject)=>{const worker=reg?.active;if(!worker)return reject(Error('请先更新应用并重新打开，再开启通知'));const channel=new MessageChannel(),timer=setTimeout(()=>{channel.port1.close();reject(Error('请先更新应用并重新打开，再开启通知'));},4000);channel.port1.onmessage=e=>{clearTimeout(timer);channel.port1.close();e.data?.recipient===recipient?resolve():reject(Error('通知归属未保存，请重试'));};worker.postMessage({type:'SET_NOTIFICATION_RECIPIENT',recipient},[channel.port2]);});}
@@ -85,14 +85,15 @@
  }
 
  function cacheStatusSection(container){
-  const section=node('section'),heading=node('h3','本机缓存'),intro=node('small','这台设备 · '+scope.id.toUpperCase()+' 工作区'),status=node('p','正在读取本机缓存…'),activity=node('p'),metrics=node('div'),progressLabel=node('p'),progress=node('progress'),stamp=node('small'),nativeStatus=node('p');
+  const section=node('section'),heading=node('h3','本机缓存'),intro=node('small','这台设备 · '+scope.id.toUpperCase()+' 工作区'),status=node('p','正在读取本机缓存…'),activity=node('p'),metrics=node('div'),storageLimit=node('p'),progressLabel=node('p'),progress=node('progress'),stamp=node('small'),nativeStatus=node('p');
+  storageLimit.className='dsh-cache-note';
   section.className='dsh-cache-status';metrics.className='dsh-cache-metrics';status.setAttribute('role','status');activity.className='dsh-cache-activity';progress.max=1;progress.value=0;progress.setAttribute('aria-label','预载范围内已缓存的会话首屏');nativeStatus.className='dsh-cache-note';
   const refreshButton=button('刷新统计',()=>load()),details=node('details'),summary=node('summary','查看会话缓存'),filter=node('select'),list=node('div'),more=button('显示更多会话',()=>{limit+=30;paintRows();});filter.setAttribute('aria-label','缓存会话范围');
   for(const [value,label]of [['pinned','置顶会话'],['all','预载范围全部'],['pending','首屏未齐']]){const option=node('option',label);option.value=value;filter.append(option);}
   details.className='dsh-cache-details';list.className='dsh-cache-list';details.append(summary,filter,list,more);
   const pluginDetails=node('details'),pluginSummary=node('summary','插件与书架缓存'),pluginList=node('div');pluginDetails.className='dsh-cache-details';pluginList.className='dsh-cache-list';pluginDetails.append(pluginSummary,pluginList);
-  const help=node('small','首屏已存：本机有可读取的首屏内容。已准备显示：内容已交给会话界面。更早历史和附件仍按需读取。');help.className='dsh-cache-note';
-  section.append(heading,intro,status,metrics,progressLabel,progress,activity,nativeStatus,stamp,node('br'),refreshButton,details,pluginDetails,help);container.append(section);
+  const help=node('small','首屏已存的会话可直接从本机打开。未变化的内容不重复预载；更早历史和附件按需读取。');help.className='dsh-cache-note';
+  section.append(heading,intro,status,metrics,storageLimit,progressLabel,progress,activity,nativeStatus,stamp,node('br'),refreshButton,details,pluginDetails,help);container.append(section);
   let snapshot=null,plugins=null,native=null,closed=false,locked=false,busy=false,lastRead=0,readTurn=0,limit=30,filterChosen=false,rows=new Map();
   const when=value=>value?new Date(value).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'暂无确认时间';
   const bytes=value=>{if(value<1024)return Math.round(value)+' B';if(value<1048576)return (value/1024).toFixed(1)+' KB';if(value<1073741824)return (value/1048576).toFixed(1)+' MB';return (value/1073741824).toFixed(2)+' GB';};
@@ -103,9 +104,9 @@
    if(state.preparing?.includes(row.id))return '正在准备显示';
    if(row.headChecked===false)return '首屏状态待核对';
    if(row.headReady&&row.localNewer)return '首屏已存 · 新内容待同步';
-   if(row.renderReady)return '首屏已存 · 已准备显示';
+   if(row.renderReady)return '首屏已存 · 当前页面已载入';
    if(row.headReady&&state.prepareFailures?.some(error=>error.id===row.id))return '首屏已存 · 显示准备未完成';
-   if(row.headReady)return state.androidReader?'首屏已存 · 待准备显示':'首屏已存';
+   if(row.headReady)return '首屏已存 · 可直接打开';
    if(state.failures?.some(error=>error.id===row.id))return '预载未完成 · 等待重试';
    if(state.queued?.includes(row.id))return row.stored?'已存部分历史 · 等待补齐':'等待预载';
    return row.stored?'已存部分历史 · 首屏未齐':'尚未缓存首屏';
@@ -162,7 +163,8 @@
     const value=await cache.inspectLocalCache();if(!current())return;snapshot=value;lastRead=Date.now();
     if(!filterChosen){filter.value=snapshot.targets.some(row=>row.pinned)?'pinned':'all';filterChosen=true;}
     const unchecked=snapshot.targets.filter(row=>row.headChecked===false).length;
-    metrics.replaceChildren(metric('已存历史会话',String(snapshot.historyThreadCount)),metric('本地内容记录约',bytes(snapshot.bytes)),metric(unchecked?'已确认首屏':'首屏已存',snapshot.headReady+' / '+snapshot.targets.length),metric('已准备显示',snapshot.activity.androidReader?snapshot.renderReady+' / '+snapshot.targets.length:'—'));
+    metrics.replaceChildren(metric('已存历史会话',String(snapshot.historyThreadCount)),metric('本地内容记录约',bytes(snapshot.bytes)),metric(unchecked?'已确认首屏':'首屏已存',snapshot.headReady+' / '+snapshot.targets.length));
+    const policy=snapshot.storagePolicy;storageLimit.textContent=policy?'展示缓存上限 '+bytes(policy.configuredBudgetBytes)+(policy.effectiveBudgetBytes<policy.configuredBudgetBytes?' · 按系统配额可用 '+bytes(policy.effectiveBudgetBytes):'')+(window.__DSH_ANDROID_BRIDGE__?' · 手机保存的历史正文单独持久保存':''):'缓存上限暂未取得';
     progress.max=Math.max(1,snapshot.targets.length);progress.value=snapshot.headReady;progressLabel.textContent='预载范围：置顶、运行中与最近 '+snapshot.recentLimit+' 个会话';
     status.textContent='当前界面可读取的本机历史；内容大小不含安装包、界面文件和后台尚未接入的数据。'+(unchecked?' 还有 '+unchecked+' 个会话的首屏状态待核对。':'');stamp.textContent='统计时间 '+when(snapshot.at)+' · 状态自动更新';paintActivity();paintPlugins();paintNative();
    }catch(error){if(!closed)status.textContent=(snapshot?'保留上次统计 · ':'')+(error.message||'本机统计暂时不可用，请重试');}

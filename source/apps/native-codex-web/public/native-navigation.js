@@ -12,7 +12,7 @@
  if(!scope||window.parent!==window&&new URL(location.href).searchParams.get('dshEmbedded')==='1')return;
  const push=history.pushState.bind(history),replace=history.replaceState.bind(history);
  const managed=u=>u.origin===location.origin&&(/^\/local\/[0-9a-f-]{36}$/i.test(u.pathname)||u.pathname==='/');
- let cursor=Number.isSafeInteger(history.state?.dshNavIndex)?history.state.dshNavIndex:0,pendingEntry=null,notificationNavigation=0,selectedPresentation=null;
+ let cursor=Number.isSafeInteger(history.state?.dshNavIndex)?history.state.dshNavIndex:0,pendingEntry=null,notificationNavigation=0,selectedPresentation=null,selectionRevision=0;
  const strictFinal=window.__DSH_NOTIFICATION_FINAL_GATE__===true;
  let pendingNotification=null,notificationOverlay=null,notificationTimer=null,notificationObserver=null,notificationFrame=null;
  const notificationLog=(p,stage)=>window.__DSH_CLIENT_LOG__?.event('client_health',{component:'android-webview',stage,reason:'notification_open',threadId:p.path.split('/')[2],turnId:p.turnId||undefined,traceId:p.traceId});
@@ -37,24 +37,25 @@
   const delta=row.getBoundingClientRect().top-timeline.getBoundingClientRect().top-12;
   if(Number.isFinite(delta)&&Math.abs(delta)>1)timeline.scrollTop+=delta;
  }
- let completionEntry={path:location.pathname,baseline:null,touched:false},completionObserver=null,completionFrame=null;
- const lastFinal=()=>[...document.querySelectorAll('[data-app-action-timeline-scroll] [data-dsh-final-answer-identities][data-dsh-final-thread-id][data-dsh-final-turn-id]')].at(-1)?.getAttribute('data-dsh-final-answer-identities')||null;
+ let completionEntry={path:location.pathname,baseline:null,touched:false,presented:false},completionObserver=null,completionFrame=null;
+ const finalIdentityAt=path=>[...document.querySelectorAll('[data-app-action-timeline-scroll] [data-dsh-final-answer-identities][data-dsh-final-thread-id][data-dsh-final-turn-id]')].filter(row=>row.getAttribute('data-dsh-final-thread-id')===path.split('/')[2]).map(row=>row.getAttribute('data-dsh-final-answer-identities')||'').filter(Boolean).join(' ')||null;
+ const lastFinal=()=>finalIdentityAt(location.pathname);
  function clearCompletionAnchor(){completionObserver?.disconnect();completionObserver=null;if(completionFrame)cancelAnimationFrame(completionFrame);completionFrame=null;}
- function beginCompletionEntry(baseline=null){clearCompletionAnchor();completionEntry={path:location.pathname,baseline,touched:false};}
+ function beginCompletionEntry(baseline=null){clearCompletionAnchor();completionEntry={path:location.pathname,baseline,touched:false,presented:false};}
  function completedContentReady(id,final){
   const entry=completionEntry,path='/local/'+id;
-  if(!final||entry.path!==path||location.pathname!==path||entry.touched||pendingNotification||entry.baseline?.split(' ').includes(final.identity))return;
+  if(!final||entry.path!==path||location.pathname!==path||entry.touched||entry.presented||pendingNotification||entry.baseline?.split(' ').includes(final.identity))return;
   entry.target={path,turnId:final.turnId,identity:final.identity};
   const align=()=>{
-   if(completionEntry!==entry||entry.touched||location.pathname!==path||document.visibilityState!=='visible'||window.__DSH_NATIVE_SIDEBAR__?.isList)return;
+   if(completionEntry!==entry||entry.touched||entry.presented||location.pathname!==path||document.visibilityState!=='visible'||window.__DSH_NATIVE_SIDEBAR__?.isList)return;
    const row=findFinal(entry.target),timeline=document.querySelector('[data-app-action-timeline-scroll]');if(!row||!timeline||!row.getClientRects().length||completionFrame)return;
    alignFinal(timeline,row);
-   completionFrame=requestAnimationFrame(()=>{completionFrame=null;if(completionEntry!==entry||entry.touched||location.pathname!==path)return;const current=findFinal(entry.target);if(!current)return;alignFinal(timeline,current);entry.baseline=final.identity;clearCompletionAnchor();window.__DSH_ANDROID_BRIDGE__?.markCompletionSeen?.(id,final.turnId);window.__DSH_CLIENT_LOG__?.event('client_health',{component:'android-webview',stage:'shown',reason:'content_painted',threadId:id,turnId:final.turnId,cacheReady:true,textAvailable:true});});
+   completionFrame=requestAnimationFrame(()=>{completionFrame=null;if(completionEntry!==entry||entry.touched||entry.presented||location.pathname!==path)return;const current=findFinal(entry.target);if(!current)return;alignFinal(timeline,current);entry.baseline=final.identity;entry.presented=true;clearCompletionAnchor();window.__DSH_ANDROID_BRIDGE__?.markCompletionSeen?.(id,final.turnId);window.__DSH_CLIENT_LOG__?.event('client_health',{component:'android-webview',stage:'shown',reason:'content_painted',threadId:id,turnId:final.turnId,cacheReady:true,textAvailable:true});});
   };
   clearCompletionAnchor();completionObserver=new MutationObserver(align);completionObserver.observe(document.body,{subtree:true,childList:true});align();
  }
  let hiddenFinal=null;
- document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){hiddenFinal=lastFinal();clearCompletionAnchor();}else beginCompletionEntry(hiddenFinal);});
+ document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){hiddenFinal=lastFinal();clearCompletionAnchor();}else{beginCompletionEntry(hiddenFinal);completionEntry.presented=!!document.querySelector('[data-app-action-timeline-scroll]')?.getClientRects?.().length;}});
  addEventListener('dsh:native-route',()=>{if(completionEntry.path!==location.pathname)beginCompletionEntry();});
  function checkFinal(){
   const p=pendingNotification;if(!p?.strict||!p.layout||location.pathname!==p.path||notificationFrame)return;
@@ -89,7 +90,7 @@
   const u=new URL(target??location.href,location.href);
   if(!managed(u))return (method==='pushState'?push:replace)(value,title,target);
   const mode=u.searchParams.get('nativeList')==='1'||window.__DSH_NATIVE_SIDEBAR__?.isList?'list':'chat';
-  if(method==='pushState'&&pendingEntry?.path===u.pathname&&pendingEntry.index===cursor&&mode==='chat'){
+  if(method==='pushState'&&!value?.dshPluginPage&&pendingEntry?.path===u.pathname&&pendingEntry.index===cursor&&mode==='chat'){
    pendingEntry=null;view=mode;return replace(state(value,mode),title,url(u.href,mode));
   }
   if(method==='pushState'){cursor++;pendingEntry=null;}
@@ -108,18 +109,20 @@
   const back=document.createElement('button');back.type='button';back.textContent='返回列表';back.addEventListener('click',()=>window.__DSH_NAVIGATION__.backToList());overlay.append(retry,back);document.body.append(overlay);
   notificationTimer=setTimeout(()=>{if(pendingNotification?.ticket!==ticket)return;checkFinal();if(notificationFrame)return;status.textContent=pendingNotification.layout?'回复同步较慢':'会话连接较慢';retry.hidden=false;},15000);
  }
- function revealList(){window.__DSH_HISTORY_RECOVERY__?.cancel();notificationNavigation++;if(pendingNotification)clearNotification();pendingEntry=null;view='list';replace(state(history.state,'list'),'',url(location.href,'list'));window.__DSH_NATIVE_SIDEBAR__?.show(false);}
+ function revealList(){window.__DSH_HISTORY_RECOVERY__?.cancel();notificationNavigation++;selectionRevision++;selectedPresentation=null;if(pendingNotification)clearNotification();pendingEntry=null;view='list';replace(state(history.state,'list'),'',url(location.href,'list'));window.__DSH_NATIVE_SIDEBAR__?.show(false);window.dispatchEvent(new CustomEvent('dsh:conversation-selection'));}
  window.__DSH_NAVIGATION__={
   completedContentReady,
+  presentationPath:()=>selectedPresentation??location.pathname,
+  selectionRevision:()=>selectionRevision,
   confirmSendTarget({threadId,clientThreadId}){
    const path=selectedPresentation??location.pathname,route=path.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1]??null;
-   if(route?route!==threadId&&route!==clientThreadId:threadId!=null)return false;
+   if(threadId!=null?route!==threadId:route!=null&&route!==clientThreadId)return false;
    if(path!==location.pathname){const target=new URL(location.href);target.pathname=path;target.searchParams.delete('nativeList');replace(state(history.state,'chat'),'',url(target.href,'chat'));window.dispatchEvent(new CustomEvent('dsh:native-route',{detail:{path}}));}
    return true;
   },
   // Downloads may run anywhere; applying an update waits for the list so it
   // cannot rebuild a conversation that has just become readable.
-  canApplyUiUpdate:()=>!pendingNotification&&(window.__DSH_NATIVE_SIDEBAR__?.isList===true||view==='list'),
+  canApplyUiUpdate:()=>!pendingNotification&&!window.__DSH_NATIVE_WORKBENCH__?.current&&(window.__DSH_NATIVE_SIDEBAR__?.isList===true||view==='list'),
   notificationTarget:()=>pendingNotification?.strict?{threadId:pendingNotification.path.split('/')[2],turnId:pendingNotification.turnId}:null,
   acceptRoute(path){return (!pendingNotification||pendingNotification.path===path)&&(!selectedPresentation||selectedPresentation==='/'||selectedPresentation===path);},
   // Called by the original renderer's setConversationPresented layout effect,
@@ -146,8 +149,10 @@
    revealList();return true;
   },
   beginConversation(path){
-   selectedPresentation=path;
-   beginCompletionEntry();completionEntry.path=path;
+   selectedPresentation=path;selectionRevision++;window.dispatchEvent(new CustomEvent('dsh:conversation-selection',{detail:{path}}));
+   // A route presentation can precede its transcript. Preserve an already
+   // mounted final on return; a fresh body still gets its first final anchor.
+   beginCompletionEntry(finalIdentityAt(path));completionEntry.path=path;
    window.__DSH_HISTORY_RECOVERY__?.begin(path.split('/')[2]);
    if(pendingNotification)clearNotification();
    if(view!=='list')return;
@@ -167,8 +172,12 @@
  for(const type of ['dsh:history-updated','dsh:history-adopted','dsh:history-synchronized','dsh:session-ready','dsh:conversation-ready','dsh:android-import-complete'])addEventListener(type,()=>{if(!pendingNotification?.identity)prepareFinal();else checkFinal();});
  addEventListener('dsh:android-cache-updated',event=>{const p=pendingNotification;if(event.detail?.scope===scope.id&&p&&event.detail.threadIds?.includes(p.path.split('/')[2]))prepareFinal(true);});
  addEventListener('popstate',event=>{
+  // Module history overlays the existing document. Consume it before the
+  // official router can remount or treat it as leaving a conversation.
+  if(window.__DSH_NATIVE_WORKBENCH__?.onPopState?.(event)){cursor=event.state?.dshNavIndex??cursor;view=event.state?.dshListPage?'list':'chat';event.stopImmediatePropagation?.();return;}
   if(window.__DSH_PREVIEW__?.onPopState(event)){cursor=event.state?.dshNavIndex??cursor;return;}
   window.__DSH_HISTORY_RECOVERY__?.cancel();
+  selectionRevision++;selectedPresentation=null;
   if(pendingNotification)clearNotification();
   pendingEntry=null;
   const target=event.state||history.state||{},next=Number.isSafeInteger(target.dshNavIndex)?target.dshNavIndex:null;

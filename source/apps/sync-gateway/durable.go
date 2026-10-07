@@ -16,6 +16,7 @@ import (
 
 // Disk mode uses FULL synchronous WAL. Memory mode explicitly acknowledges
 // an ephemeral read projection; execution and command identity stay on Mac.
+const nativeDiskHistoryBudget int64 = 1024 * 1024 * 1024
 
 // Only rebuildable history is evicted. Catalog, tombstones, approval state and
 // command identities are retained. The just-committed response stays readable.
@@ -277,7 +278,7 @@ func (d *DurableStore) commitBatch(frames []frame, topics map[string]*Topic, met
 	metrics.NativeWriteMs = time.Since(nativeStarted).Milliseconds()
 	pruneStarted := time.Now()
 	if len(protected) > 0 {
-		budget := int64(512 * 1024 * 1024)
+		budget := nativeDiskHistoryBudget
 		if d.memory {
 			budget = 32 * 1024 * 1024
 		}

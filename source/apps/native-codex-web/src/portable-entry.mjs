@@ -63,7 +63,7 @@ export async function createPortableEntry(config,{plugins=null}={}){
  const upstream=url=>url.pathname.startsWith('/sync/v1/')?'http://127.0.0.1:'+config.relayPort:'http://127.0.0.1:'+config.frontPort;
  function proxy(req,res,url){
   const request=http.request(new URL(req.url,upstream(url)),{method:req.method,headers:headers(req)},response=>{
-   res.writeHead(response.statusCode,endToEndHeaders(response.headers));pipeline(response,res,()=>{});
+   const outgoing=endToEndHeaders(response.headers),hint=res.getHeader('set-cookie');if(hint)outgoing['set-cookie']=[hint,...(Array.isArray(outgoing['set-cookie'])?outgoing['set-cookie']:outgoing['set-cookie']?[outgoing['set-cookie']]:[])];res.writeHead(response.statusCode,outgoing);pipeline(response,res,()=>{});
   });
   request.on('error',()=>{if(!res.headersSent)json(res,503,{error:'Core service is unavailable'});else res.destroy();});
   req.once('aborted',()=>request.destroy());res.once('close',()=>{if(!res.writableEnded)request.destroy();});req.pipe(request);
@@ -72,6 +72,9 @@ export async function createPortableEntry(config,{plugins=null}={}){
   try{
    if(req.method==='GET'&&req.url==='/__workbench_health'&&loopback(req.socket.remoteAddress)&&!req.headers.origin&&req.headers['sec-fetch-site']!=='cross-site')return json(res,200,{service:'workbench-entry',ready:true,access:config.access.mode});
    const {url,principal}=authenticatePortableRequest(config,req,{proxyKey});
+   // Cache-unlock hint only. Every network request still passes the same access
+   // check above; this cookie is never accepted as an authentication credential.
+   if(config.access.mode==='tailscale-serve'&&config.origin.startsWith('https:'))res.setHeader('set-cookie','better_codex_seen=1; Path=/; Secure; HttpOnly; SameSite=Strict');
    if(url.pathname==='/_sync-agent'||url.pathname.startsWith('/__'))throw fail(404,'Route is not available');
    if(url.pathname==='/api/context'&&req.method==='POST'){
     const value=await body(req),ws=plugins.workspace(value.workspace);

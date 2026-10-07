@@ -1,34 +1,44 @@
-# Portable release validation
+# Validation · v0.2.0-beta.3
 
-Host: macOS Apple Silicon, Node 24.3.0, official desktop 26.928.20755 build 12246. The HTTP renderer is pinned to 26.901.51231 build 8109. OpenCodex source is pinned to 2.1.0. Tests use separate ports, state and an empty Native account directory.
+The maintained candidate was checked on an Apple Silicon Mac and an isolated Android 16/API 36 emulator (WebView 133). No production Native connection, real business thread, account credential or paid model request was used by the public test run.
 
-- The real `install.sh` completes in a fresh installation directory using checksum-verified downloads; startup uses the generated launcher.
-- With only macOS system tools in PATH, the installer also bootstraps its own Node and Go. Its generated command and launcher then pass the same 43 protocol checks and six running-installation checks without a global Node/npm/Go dependency. Source ZIP builds do not require Git metadata.
-- `verify-portable.mjs` exercises the local entry, Native directory, complete initial resource list, PWA icon, configured plugins, live observer/relay link, actual HTTP/WS AppHost, reconnect identity and peer cleanup. It sends no model turn and modifies no conversation history.
-- Node tests cover workspace roots, tailnet login and origin checks, scope/principal capabilities, read-only plugins, source revisions, symlink containment, existing Serve route protection, and exact compatibility diagnostics.
-- The exported Go suite includes its real Node producer fixtures. Cache-unavailable, source-page delivery, live events and replay contracts run from the public tree.
-- An update while the host is running is rejected and leaves the deployment unchanged. Stopping the supervisor closes only its owned children. The installed official application's code signature remains valid.
+- **Android source:** 224 Java tests, zero failures/errors, two pre-existing conditional skips. The origin-pinned release APK built successfully with a locally generated 192-file, hash-verified renderer bundle. Native-shaped fixture data is synthetic, including a body over 1 MiB, 28 items, nine-turn EOF history, and a view-only timestamp update; private conversation fixtures are not distributed.
+- **Generated renderer:** 230 behavioral assertions run against the actual Android initial, primary, scope and import-map targets. They cover execution/history preparation, same-attempt configuration, post-ACK queue behavior, captured send destinations and late callback ownership, Fast restoration, full image handling and cached state.
+- **Real Android WebView:** send, slow-read and reconnect scenarios passed with the exact generated transport/cache modules. Tests used an isolated TLS/protocol fixture, not a logged-in public APK or a real model. The lab app, server and owned emulator stopped afterward; existing private application data and emulator userdata were not cleared.
+- **Portable core:** 220 behavior assertions cover cache/body witnesses, priority, persistent prewarm, source replacement, foreground control, loader and transport lifecycle, queue/attachment isolation, metadata collector parity, local-environment normalization, and child details excluded from lists/warming but available by scoped explicit ID. Thirteen host/config/plugin/authentication tests passed.
+- **Go relay:** the full Go suite passed, including actual JavaScript producer output delivered to Go consumers while an ACK/body path is blocked, Native catalogue conflict classification and notification commit behavior.
+- **Actual local entry:** a separate empty account home, empty workspace, independently owned Native daemon and official host passed 43 HTTP resource, directory, IPC, AppHost, plugin, reconnect and invalid-target checks. No `thread/start` or `turn/start` was sent to a real Native service. The supervisor and its exact child processes stopped afterward. This reused the installer’s previously verified dependency cache; it is not a new clean-machine download test.
+- **Authenticated CVM shape:** real local Caddy passed nine HTTPS and TLS WebSocket checks, including anonymous/forged identity rejection, credential stripping, same-origin policy and plugin capability coexistence. The test changed no cloud service, DNS or system trust and stopped its services afterward.
 
-## CVM and client continuity follow-up
+The installed official desktop build `26.1002.52244/13536` had the same four unsupported optional optimization locators observed on `26.928.20755/12246`; all required checks passed. The portable readiness rule now recognizes only those exact version/build pairs and exact optional diagnostics. It keeps unknown builds, missing required hooks and additional failures closed.
 
-The complete portable host also passes 43 read-only protocol/resource checks through a real Caddy HTTPS proxy using isolated ports and an empty Native account directory. This covers actual Native directory access, AppHost, WebSocket reconnect, renderer resources, local relay and plugins; no model turn was sent. An initial full-host failure exposed a loopback-only front-origin guard; it now accepts exactly the validated portable deployment origin while retaining the private development guard.
+Ten first-paint process checks verify that the newest two local observed turns are read before hydration, without network or other-conversation preload; rewrite/source retirement cannot borrow old process state.
 
-The CVM profile generates a private Caddy configuration, a loopback reverse-SSH command and Mac proxy authentication settings. Tests cover rejected forged identities, same-origin enforcement, principal-scoped plugin capabilities and credential stripping. The real Caddy HTTPS integration test passes authenticated reads and WebSocket streams; it does not change system trust or a live cloud service.
+Twenty-seven agent directory/detail checks cover cached child headers, single-ID Native metadata fallback, explicit scope rejection, and keeping child threads out of readPage, pins, bootstrap and warm sets.
 
-The renderer patches also bind late send/create callbacks to their original conversation and prepare cached projects/pins before the first sidebar. Final private PWA/Android bundles passed the targeted old-failure and adjacent-success cases, including 14 actual Android WebView cases. This is function-level WebView evidence, not full logged-in phone UI acceptance. The portable source carries the same patches; its generated renderer also passes 14 focused send/cache/startup checks. Import maps now normalize every official resource prefix to one module identity. A real Android WebView fixture reproduced the previous duplicate-module initialization failure with frozen renderer bytes, then passed with the normalized map.
+The first-turn environment probe uses the actual Native reply shape: one `local` descriptor with the configured cwd and roots. The boundary converts it into the already permitted top-level parameters, retains the same request/receipt identity, and still rejects cross-workspace, remote, extra-field, conflicting-root and multi-environment requests. This probe is synthetic and does not launch a model turn.
 
-## Recorded compatibility limits
+## Reproduce
 
-For official desktop 26.928.20755 build 12246, OpenCodex reports unsupported optional optimization locators for hidden macOS push registration, pet prewarm, pet restoration, and worktree-shell caching. The portable front implements its own required worktree metadata and notification interfaces, which are exercised by the protocol probe. Its readiness policy accepts only those exact points on that exact build, with the observed cold-start diagnostic `Expected 1 candidates but found 0` or cached-start diagnostic `Cached locator did not resolve`, while still requiring the Native connection, official IPC, bundle and all required host hooks. Missing required IPC, an unknown diagnostic or another degraded app build remains a startup failure. Upstream's degraded report is retained.
+```sh
+npm ci --prefix packages/host-cli --ignore-scripts --no-audit --no-fund
+npm test
+npm run test:core
+(cd source/apps/sync-gateway && go test ./...)
+```
 
-The generated development runner uses contained framework/helper copies and local ad-hoc signatures; official application files and OS settings are unchanged. ASAR validation remains enabled.
+After generating your own Android UI as described in [Android build](android.md):
 
-## Not yet verified
+```sh
+node scripts/test-renderer.mjs \
+  --ui "$HOME/.better-codex/android-ui" \
+  --upstream http://127.0.0.1:4174
+```
 
-- Physical phone/PWA rendering and natural background/resume behavior.
-- A real Tailscale Serve session between devices; identity and routing decisions have local contract coverage only.
-- Real CVM DNS/certificate issuance, a sustained external reverse SSH tunnel and phone HTTP Basic login.
-- Intel Mac startup.
-- A signed-in model execution through the clean portable installation; the protocol test deliberately uses no account credentials or paid model request.
+The renderer test verifies the supplied manifest and module bytes before running its probes. Official bytes remain in the adopter's local UI and temporary test directory; they are not part of this repository or release assets.
 
-This is a beta release. Local protocol acceptance does not stand in for these device/account checks. Private deployment records and raw logs are not included in the public package.
+## Unverified
+
+Physical-phone/OEM background lifecycle, real Tailscale device pairing, Android HTTP Basic credential handoff, real CVM DNS/certificate/tunnel deployment, Intel Mac startup, a signed-in model run, natural send latency, upload latency on mobile networks, and sustained battery/thermal behavior remain unverified. A local fixture, successful build or source snapshot does not replace these acceptance layers.
+
+The private app’s latest list/new-conversation complaints are not an assertion that all product regressions are fixed. This release publishes the bounded tested changes and records the remaining validation limits. No production signing material, official renderer resource archive or raw private diagnostic log is published.

@@ -9,7 +9,7 @@ export function patchWebSendTarget(source){
   ['De={...t,threadReferences:n,','De={...t,...K.type===`local`?{dshSendTarget:{threadId:c,clientThreadId:o}}:{},threadReferences:n,'],
   ['z=async(t,n,r,i,a,s,l,d)=>{let f=o==null?','z=async(t,n,r,i,a,s,l,d)=>{const dshTarget=t.dshSendTarget;if(dshTarget){const actual=c?.type===`local`?c.localConversationId:null;if(actual!==(dshTarget.threadId??null)||actual==null&&dshTarget.clientThreadId!=null&&dshTarget.clientThreadId!==o)throw Error(`发送目标会话已变化，消息未发送，请返回原会话`);const {dshSendTarget,...context}=t;t=context;}let f=o==null?']
  ];
- for(const [before,after]of edits){if(source.split(before).length!==2)throw Error('Official web send contract changed: '+before.slice(0,70));source=source.replace(before,after);}return patchSendCompletionOwnership(patchSendTargetNavigation(source));
+ for(const [before,after]of edits){if(source.split(before).length!==2)throw Error('Official web send contract changed: '+before.slice(0,70));source=source.replace(before,after);}return patchAcceptedCreationNavigation(patchSendCompletionOwnership(patchSendTargetNavigation(source)));
 }
 
 // Cv callbacks keep their identity while their React implementation changes.
@@ -43,4 +43,39 @@ export function patchSendTargetNavigation(source){
  const before='if(route?route!==dshSendOrigin.threadId&&route!==dshSendOrigin.clientThreadId:dshSendOrigin.threadId!=null)throw Error(`会话正在切换，请返回原会话后发送`);';
  const after='const dshMatches=window.__DSH_NAVIGATION__?.confirmSendTarget?.(dshSendOrigin)??(route?route===dshSendOrigin.threadId||route===dshSendOrigin.clientThreadId:dshSendOrigin.threadId==null);if(!dshMatches){const error=Error(`会话正在切换，消息尚未发送，请稍后重试`);globalThis.__DSH_CLIENT_LOG__?.event(`send_flow`,{stage:`blocked`,reason:`not_current`,threadId:dshSendOrigin.threadId});e.handleSubmitError?.(error);return;}dshSendOrigin.path=location.pathname;';
  if(source.includes(after))return source;if(source.split(before).length!==2)throw Error('Send navigation guard contract changed');return source.replace(before,after);
+}
+
+// The local pending row is mounted synchronously. Network/configuration work
+// may start while its paint is pending; uploads keep their own paint handoff.
+export function patchSendPreparationPaint(source){
+ if(!source.includes('dshInstant')&&!source.includes('dshPending'))return source;
+ for(const [before,after] of [
+  ['await dshInstant?.pending.presented();if(n.type===`local`','if(n.type===`local`'],
+  ['await dshPending?.presented();let[t,n]=await Promise.all([r(Se,','let[t,n]=await Promise.all([r(Se,']
+ ]){
+  if(source.includes(before)){if(source.split(before).length!==2)throw Error('Send preparation paint contract changed');source=source.replace(before,after);}
+  else if(!source.includes(after))throw Error('Send preparation paint boundary missing');
+ }
+ return source;
+}
+
+// Creation metadata may move the official route off the temporary task before
+// its old conditional navigation runs. Commit the accepted Native destination
+// when this creation still owns the captured selection, even with onCreated.
+// A later list/new-chat/conversation selection invalidates that permission.
+export function patchAcceptedCreationNavigation(source){
+ if(source.includes('const dshCreationSelection='))return source;
+ const replacements=[
+ ['const dshCompletionOrigin={threadId:c,clientThreadId:o,path:location.pathname};','const dshCompletionOrigin={threadId:c,clientThreadId:o,path:location.pathname,selectionRevision:window.__DSH_NAVIGATION__?.selectionRevision?.()};'],
+ ['const dshOwnsComposer=()=>{if(K.type!==`local`)return true;','const dshOwnsComposer=()=>{if(K.type!==`local`)return true;if(dshCompletionOrigin.selectionRevision!=null&&window.__DSH_NAVIGATION__?.selectionRevision?.()!==dshCompletionOrigin.selectionRevision)return false;'],
+ ['ids=[dshCompletionOrigin.threadId,dshCompletionOrigin.clientThreadId,dshAcceptedThread].filter(Boolean)','ids=[dshCompletionOrigin.threadId,dshCompletionOrigin.threadId==null?dshCompletionOrigin.clientThreadId:null,dshAcceptedThread].filter(Boolean)'],
+ ['ids=[dshSubmitOrigin.threadId,dshSubmitOrigin.clientThreadId,dshSubmittedThread,accepted].filter(Boolean)','ids=[dshSubmitOrigin.threadId,dshSubmitOrigin.threadId==null?dshSubmitOrigin.clientThreadId:null,dshSubmittedThread,accepted].filter(Boolean)']
+ ];for(const [before,after]of replacements){if(source.split(before).length!==2)throw Error('Submission presentation identity contract changed');source=source.replace(before,after);}
+
+ const origin='let dshSubmittedThread=null;const dshSubmitOwns=(accepted=null)=>{';
+ const next='let dshSubmittedThread=null;const dshCreationSelection=window.__DSH_NAVIGATION__?.selectionRevision?.();const dshSubmitOwns=(accepted=null)=>{if(c?.type!==`cloud`&&dshCreationSelection!=null&&window.__DSH_NAVIGATION__?.selectionRevision?.()!==dshCreationSelection)return false;';
+ if(source.split(origin).length!==2)throw Error('Accepted creation origin contract changed');source=source.replace(origin,next);
+ const navigation='i||(F&&M!=null&&o!=null&&e.get(D_e)?.pathname===Mv(o)?m(Mv(t),{replace:!0}):F&&g==null&&M==null&&f()&&m(`/local/${t}`))';
+ const accepted='i||(F&&dshSubmitOrigin.threadId==null&&dshSubmitOwns(t)?m(Mv(t),{replace:!0}):F&&M!=null&&o!=null&&e.get(D_e)?.pathname===Mv(o)?m(Mv(t),{replace:!0}):F&&g==null&&M==null&&f()&&m(`/local/${t}`))';
+ if(source.split(navigation).length!==2)throw Error('Accepted creation route contract changed');source=source.replace(navigation,accepted);const bind='if(dshSubmitOwns(t))dshSubmittedThread=t;try{';if(source.split(bind).length===2)return source.replace(bind,'window.__DSH_ANDROID_PENDING__?.bindThread?.(o,t);if(dshSubmitOwns(t))dshSubmittedThread=t;try{');const legacy='K=(0,P9.default)(async t=>{try{o!=null&&G()';if(source.split(legacy).length!==2)throw Error('Accepted creation binding contract changed');return source.replace(legacy,'K=(0,P9.default)(async t=>{window.__DSH_ANDROID_PENDING__?.bindThread?.(o,t);if(dshSubmitOwns(t))dshSubmittedThread=t;try{o!=null&&G()');
 }

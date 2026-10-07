@@ -3,7 +3,11 @@ import {mkdirSync,chmodSync} from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {workspace,validateId,fail,SCOPES} from './registry.mjs';
+import {reconcileCatalogStatus} from './native-catalog-status.mjs';
 
+const subagentSources=new Set(['subagent','subAgent','subAgentReview','subAgentCompact','subAgentThreadSpawn','subAgentOther']);
+const subagentSource=value=>{if(subagentSources.has(value))return true;if(typeof value==='string'&&value.length<8192&&value.startsWith('{'))try{return subagentSource(JSON.parse(value));}catch{return false;}return !!(value&&typeof value==='object'&&(Object.hasOwn(value,'subAgent')||Object.hasOwn(value,'subagent')));};
+export const internalThread=thread=>thread?.ephemeral===true||thread?.threadSource==='thread_title'||!!thread?.parentThreadId&&thread?.canAcceptDirectInput===false||subagentSource(thread?.source)||subagentSource(thread?.sourceKind)||subagentSource(thread?.threadSource);
 export const nativeCacheReads=new Set(['thread/read','thread/turns/list','thread/items/list']);
 export function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().filter(k=>value[k]!==undefined).map(k=>[k,canonical(value[k])]));return value;}
 export function normalizeReadParams(method,params){const p={...(params||{})};if(p.cursor==null)delete p.cursor;
@@ -26,7 +30,7 @@ export function catalogEntry(thread){return {
 export class NativeReadCache {
  constructor(dir,{boundary,budget=512*1024*1024}={}){
   mkdirSync(dir,{recursive:true,mode:0o700});this.db=new DatabaseSync(path.join(dir,'native-read.sqlite'));chmodSync(path.join(dir,'native-read.sqlite'),0o600);
-  Object.assign(this,{boundary,budget,dir});this.loading=new Map();this.catalogLoading=new Map();this.touches=new Map();
+  Object.assign(this,{boundary,budget,dir});this.loading=new Map();this.catalogLoading=new Map();this.internalThreads=new Set();this.touches=new Map();
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
    CREATE TABLE IF NOT EXISTS cache_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cache_changes(revision INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,key TEXT NOT NULL);
@@ -46,6 +50,16 @@ export class NativeReadCache {
    CREATE TRIGGER IF NOT EXISTS cache_bytes_update AFTER UPDATE OF bytes ON cache_records BEGIN UPDATE cache_meta SET value=CAST(value AS INTEGER)+NEW.bytes-OLD.bytes WHERE key='record-bytes'; END;
    `);});
   if(!this.meta('read-key-v2'))this.transaction(()=>{for(const row of this.db.prepare("SELECT scope,key FROM cache_records WHERE kind='history'").all()){try{const [method,params]=JSON.parse(row.key.slice(5)),key=nativeReadKey(method,params);if(key!==row.key&&!this.db.prepare('SELECT 1 FROM cache_records WHERE scope=? AND key=?').get(row.scope,key))this.db.prepare('UPDATE cache_records SET key=? WHERE scope=? AND key=?').run(key,row.scope,row.key);}catch{}}this.setMeta('read-key-v2','1');});
+  // Retire only the old directory projection. Original child bodies, parent
+  // records, source generation and command ownership remain unchanged.
+  if(!this.meta('user-directory-source-v1'))this.transaction(()=>{
+   const changed=new Set();for(const row of this.db.prepare("SELECT scope,key,thread_id,payload FROM cache_records WHERE kind='catalog' AND deleted=0").all()){
+    let thread;try{thread=JSON.parse(row.payload)?.nativeThread;}catch{continue;}
+    if(this.rememberInternal(thread)){this.put(row.scope,row.key,'catalog',row.thread_id,null,{deleted:true});changed.add(row.scope);}
+   }
+   for(const scope of changed){const status=this.get(scope,'catalog-status');if(status?.payload)this.put(scope,'catalog-status','catalog-status','',{...status.payload,count:Number(this.db.prepare("SELECT count(*) n FROM cache_records WHERE scope=? AND kind='catalog' AND deleted=0").get(scope).n)});}
+   this.setMeta('user-directory-source-v1','1');
+  });
  }
  meta(key){return this.db.prepare('SELECT value FROM cache_meta WHERE key=?').get(key)?.value;}
  setMeta(key,value){this.db.prepare('INSERT INTO cache_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,String(value));}
@@ -60,7 +74,7 @@ export class NativeReadCache {
   return this.transaction(()=>{const revision=Number(this.db.prepare('INSERT INTO cache_changes(scope,key) VALUES(?,?)').run(scope,key).lastInsertRowid),at=new Date().toISOString();
    if(revision%128===0)this.db.prepare('DELETE FROM cache_changes WHERE revision<?').run(revision-4096);
    this.db.prepare(`INSERT INTO cache_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,key) DO UPDATE SET kind=excluded.kind,thread_id=excluded.thread_id,generation=excluded.generation,revision=excluded.revision,payload=excluded.payload,hash=excluded.hash,confirmed_at=excluded.confirmed_at,bytes=excluded.bytes,accessed_at=excluded.accessed_at,deleted=excluded.deleted`).run(scope,key,kind,threadId,generation,revision,raw,fingerprint,at,bytes,Date.now(),deleted?1:0);
-   return this.get(scope,key);
+   this.onChange?.();return this.get(scope,key);
   });
  }
  changes(after=0,limit=100,scope=null,kind=null){
@@ -84,10 +98,18 @@ export class NativeReadCache {
   const loadingKey=scope+':'+key;if(this.loading.has(loadingKey)){trace('native_read','pending',{sharedRead:true});return this.loading.get(loadingKey);}
   const generation=this.version(scope,params.threadId),work=(async()=>{
    const started=Date.now();trace('native_read','dispatch');
-   const result=await this.boundary.call(scope,{method,params});
+   const catalogBefore=this.get(scope,'thread:'+params.threadId);
+   let result=await this.boundary.call(scope,{method,params});
    trace('native_read','received',{durationMs:Date.now()-started});
    // A revert received while this read was in flight invalidates its result.
    if(generation!==this.version(scope,params.threadId)||(this.get(scope,'invalidate:'+params.threadId)?.revision||0)!==(invalidation?.revision||0))throw fail(409,'历史已更新，请重新读取');
+   // Keep the full detail DTO and catalog consistent. Native can omit the
+   // separately persisted name from either projection of the same thread.
+   if(result.thread){
+    const known=this.get(scope,'thread:'+params.threadId);
+    const nameChanged=known?.revision>(catalogBefore?.revision||0)&&known?.payload?.nativeThread?.name!==catalogBefore?.payload?.nativeThread?.name;
+    if(known&&!known.deleted&&known.generation===generation&&(nameChanged||!result.thread.name?.trim()&&known.payload?.nativeThread?.name?.trim()))result={...result,thread:{...result.thread,name:known.payload.nativeThread.name}};
+   }
    const commitStarted=Date.now();trace('local_commit','dispatch');
    const record=this.transaction(()=>{this.normalize(scope,method,params,result);return this.put(scope,key,'history',params.threadId,{method,params,result},{minRevision:invalidation?.revision||0});}),normalizeMs=Date.now()-commitStarted,evictStarted=Date.now();this.evict();trace('local_commit','committed',{durationMs:Date.now()-commitStarted,normalizeMs,evictMs:Date.now()-evictStarted,recordRevision:record.revision,responseBytes:record.bytes});return {...record,source:'native'};
   })().finally(()=>this.loading.delete(loadingKey));this.loading.set(loadingKey,work);return work;
@@ -100,13 +122,21 @@ export class NativeReadCache {
   if(method==='thread/items/list')for(const value of result.data||[]){const item=value.item||value,turnId=value.turnId||params.turnId;if(turnId&&typeof item.id==='string')this.put(scope,'item:'+id+':'+turnId+':'+item.id,'item',id,{turnId,item});}
  }
  rememberCursors(scope,result){const id=result?.thread?.id;if(!id||typeof result.itemsBackwardsCursor!=='string')return;return this.put(scope,'history-cursors:'+id,'historyCursor',id,{itemsBackwardsCursor:result.itemsBackwardsCursor,turnsBackwardsCursor:result.turnsBackwardsCursor??null});}
- rememberThread(scope,thread){if(!thread?.id)return;const {turns,...metadata}=thread;return this.put(scope,'thread:'+thread.id,'catalog',thread.id,catalogEntry(metadata));}
+ rememberInternal(thread){if(!internalThread(thread))return false;this.internalThreads.add(thread.id);if(this.internalThreads.size>512)this.internalThreads.delete(this.internalThreads.values().next().value);return true;}
+ rememberThread(scope,thread,{nameAuthoritative=false}={}){if(!thread?.id||this.rememberInternal(thread))return;const {turns,...metadata}=thread;
+  // Native metadata projections can omit the separately persisted name. Only
+  // an explicit name notification can clear it; a detail/list read cannot.
+  const previous=this.get(scope,'thread:'+thread.id),known=previous&&!previous.deleted&&previous.generation===this.version(scope,thread.id)?previous.payload?.nativeThread?.name:null;
+  if(!nameAuthoritative&&!metadata.name?.trim()&&typeof known==='string'&&known.trim())metadata.name=known;
+  return this.put(scope,'thread:'+thread.id,'catalog',thread.id,catalogEntry(metadata));}
  async catalog(scope,{fresh=false}={}){
   workspace(scope);if(this.catalogLoading.has(scope))return this.catalogLoading.get(scope);
   if(!fresh&&this.get(scope,'catalog-status'))return this.changes(0,100,scope,'catalog');
   const work=(async()=>{const started=this.db.prepare('SELECT COALESCE(MAX(revision),0) revision FROM cache_records').get().revision,ids=new Set(),seen=new Set();let cursor;
    do{const page=await this.boundary.call(scope,{method:'thread/list',params:{limit:50,sortKey:'updated_at',...(cursor?{cursor}:{})}});
-    this.transaction(()=>{for(const thread of page.data){
+    const threads=await reconcileCatalogStatus(this.boundary,scope,page.data.filter(thread=>!this.rememberInternal(thread)),{previous:id=>this.get(scope,'thread:'+id)?.payload?.nativeThread});
+    this.transaction(()=>{for(const thread of threads){
+     if(this.rememberInternal(thread))continue;
      ids.add(thread.id);const previous=this.get(scope,'thread:'+thread.id);
      if((previous?.revision||0)>started)continue;
      // State-DB list summaries can omit a name returned by thread/read.
@@ -119,7 +149,7 @@ export class NativeReadCache {
     if(cursor)await new Promise(resolve=>setTimeout(resolve,10));
    }while(cursor);
    for(const row of this.db.prepare("SELECT key,thread_id,revision FROM cache_records WHERE scope=? AND kind='catalog' AND deleted=0").all(scope))if(!ids.has(row.thread_id)&&row.revision<=started)this.put(scope,row.key,'catalog',row.thread_id,null,{deleted:true});
-   this.put(scope,'catalog-status','catalog-status','',{complete:true,count:ids.size,confirmedAt:new Date().toISOString()});
+   this.put(scope,'catalog-status','catalog-status','',{complete:true,count:ids.size});
    return this.changes(0,100,scope,'catalog');
   })().finally(()=>this.catalogLoading.delete(scope));this.catalogLoading.set(scope,work);return work;
  }
@@ -133,9 +163,9 @@ export class NativeReadCache {
   return this.put(scope,key,'invalidation',threadId,{threadId,rewrite,at:Date.now()}, {generation:this.version(scope,threadId),minRevision});
  }
  deleteThread(scope,id){this.transaction(()=>{this.invalidate(scope,id,{rewrite:true});for(const row of this.db.prepare('SELECT key,kind FROM cache_records WHERE scope=? AND thread_id=?').all(scope,id))this.put(scope,row.key,row.kind,id,null,{deleted:true});});}
- async observe(m){const id=m.params?.threadId||m.params?.thread?.id;if(!id)return;const methods=['thread/started','thread/name/updated','thread/status/changed','thread/archived','thread/unarchived','thread/reverted','turn/started','turn/completed'];if(!methods.includes(m.method)&&!m.method.startsWith('thread/section/'))return;
-  for(const scope of SCOPES){try{const t=await this.boundary.checked(workspace(scope),id,{fresh:true});
-    if(m.method==='thread/archived')this.put(scope,'thread:'+id,'catalog',id,null,{deleted:true});else this.rememberThread(scope,t);
+ async observe(m){const id=m.params?.threadId||m.params?.thread?.id;if(!id)return;if(m.method==='thread/closed'){this.internalThreads.delete(id);return;}if(this.rememberInternal(m.params?.thread)||this.internalThreads.has(id))return;const methods=['thread/started','thread/name/updated','thread/status/changed','thread/archived','thread/unarchived','thread/reverted','turn/started','turn/completed'];if(!methods.includes(m.method)&&!m.method.startsWith('thread/section/'))return;
+  for(const scope of SCOPES){try{const t=await this.boundary.checked(workspace(scope),id,{fresh:true});if(this.rememberInternal(t))return;
+    if(m.method==='thread/archived')this.put(scope,'thread:'+id,'catalog',id,null,{deleted:true});else this.rememberThread(scope,m.method==='thread/name/updated'?{...t,name:m.params.threadName}:t,{nameAuthoritative:m.method==='thread/name/updated'});
     if(['thread/reverted','turn/started','turn/completed'].includes(m.method))this.invalidate(scope,id,{rewrite:m.method==='thread/reverted'});
     if(m.method.startsWith('thread/section/'))this.put(scope,'catalog-invalidation','catalog-status','',{complete:false,at:Date.now()});
     break;
@@ -143,7 +173,7 @@ export class NativeReadCache {
  }
  evict(){let total=Number(this.meta('record-bytes'));if(total<=this.budget)return;this.flushTouches();this.transaction(()=>{
   for(const row of this.db.prepare("SELECT scope,key,kind,thread_id,bytes FROM cache_records WHERE kind IN ('history','turn','item') AND deleted=0 ORDER BY accessed_at LIMIT 128").all()){
-   if(total<=this.budget*0.8)break;this.put(row.scope,row.key,row.kind,row.thread_id,null,{deleted:true});total-=row.bytes;
+   if(total<=this.budget*0.8)break;this.put(row.scope,row.key,row.kind,row.thread_id,{cacheEvicted:true},{deleted:true});total-=row.bytes;
   }});
  }
  close(){this.flushTouches();this.db.close();}

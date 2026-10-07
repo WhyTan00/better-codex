@@ -52,17 +52,21 @@ export class OfficialFiles {
  }
  async resolve(scope,value,{create=false}={}){
   const ws=workspace(scope);if(typeof value!=='string'||value.includes('\0')||value.length>8192)throw fail(400,'无效文件路径');
-  const target=path.resolve(ws.root,value),uploadRoot=path.join(this.root,scope),actualUpload=await realpath(uploadRoot).catch(e=>{if(e.code==='ENOENT')return uploadRoot;throw e;}),visualBase=path.join(runtimeProfile.codexHome,'visualizations');let root=ws.root;
+  const target=path.resolve(ws.root,value),uploadRoot=path.join(this.root,scope),actualUpload=await realpath(uploadRoot).catch(e=>{if(e.code==='ENOENT')return uploadRoot;throw e;}),visualBase=path.join(runtimeProfile.codexHome,'visualizations'),generatedBase=path.join(runtimeProfile.codexHome,'generated_images');let root=ws.root,artifactBase=null;
   if(inside(target,uploadRoot))root=uploadRoot;else if(inside(target,actualUpload))root=actualUpload;
   else if(inside(target,nativeAttachments)){const {directory}=this.goalDirectory(target);if(!this.ownsGoalDirectory(scope,directory))throw fail(403,'目标附件不属于当前工作区');if(await realpath(directory)!==directory)throw fail(403,'附件目录链接不可用');root=directory;}
   else if(inside(target,visualBase)){
    const m=target.slice(visualBase.length+1).match(/^(\d{4}\/\d{2}\/\d{2})\/([0-9a-f-]{36})(?:\/|$)/i);
-   if(!m)throw fail(403,'产物目录不属于当前会话');await this.boundary.checked(ws,m[2]);root=path.join(visualBase,m[1],m[2]);
+   if(!m)throw fail(403,'产物目录不属于当前会话');await this.boundary.checked(ws,m[2]);root=path.join(visualBase,m[1],m[2]);artifactBase=visualBase;
+  }
+  else if(inside(target,generatedBase)){
+   const m=target.slice(generatedBase.length+1).match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i);
+   if(!m)throw fail(403,'生成图片目录不属于当前会话');await this.boundary.checked(ws,m[1]);root=path.join(generatedBase,m[1]);artifactBase=generatedBase;
   }
   if(!inside(target,root))throw fail(403,'文件超出当前工作区');
   // Walk to the nearest existing ancestor. Compare against the canonical
   // workspace or exact per-thread artifact root, including not-yet-created roots.
-  let base=root,missing=[];if(inside(target,visualBase)){base=visualBase;missing=path.relative(visualBase,root).split(path.sep);}while(true){try{base=path.join(await realpath(base),...missing);break;}catch(e){if(e.code!=='ENOENT')throw e;missing.unshift(path.basename(base));base=path.dirname(base);}}
+  let base=root,missing=[];if(artifactBase){base=artifactBase;missing=path.relative(artifactBase,root).split(path.sep);}while(true){try{base=path.join(await realpath(base),...missing);break;}catch(e){if(e.code!=='ENOENT')throw e;missing.unshift(path.basename(base));base=path.dirname(base);}}
   let ancestor=target,suffix=[];while(true){try{const actual=path.join(await realpath(ancestor),...suffix);if(!inside(actual,base))throw fail(403,'文件链接超出当前工作区');return actual;}catch(e){if(e.code!=='ENOENT'||!create)throw e;suffix.unshift(path.basename(ancestor));ancestor=path.dirname(ancestor);}}
  }
  async directory(scope,value){this.writable(scope);const target=await this.resolve(scope,value,{create:true});await mkdir(target,{recursive:true,mode:0o700});await this.resolve(scope,target);return {success:true};}
@@ -81,9 +85,26 @@ export class OfficialFiles {
   this.writable(scope);
   if(!Array.isArray(files)||files.length>20)throw fail(413,'每次最多选择 20 个文件');let total=0;
   const decoded=files.map(f=>{if(typeof f.name!=='string'||typeof f.contentsBase64!=='string'||f.contentsBase64.length>Math.ceil(MAX/3)*4||f.contentsBase64.length%4!==0||! /^[A-Za-z0-9+/]*={0,2}$/.test(f.contentsBase64))throw fail(400,'附件格式无效');const bytes=Buffer.from(f.contentsBase64,'base64');total+=bytes.length;if(bytes.length>MAX||total>MAX||f.size!=null&&f.size!==bytes.length)throw fail(413,'每次附件总量最多 20 MB');return {...f,bytes};});
+  return this.storeUploads(scope,decoded);
+ }
+ // The protected HTTP lane transports original bytes. Its metadata describes
+ // exact consecutive slices; neither partial data nor an extra trailing byte
+ // may produce an upload receipt.
+ async uploadBytes(scope,files,bytes){
+  this.writable(scope);
+  if(!Array.isArray(files)||files.length>20)throw fail(413,'每次最多选择 20 个文件');
+  if(!(bytes instanceof Uint8Array))throw fail(400,'附件格式无效');
+  let total=0;
+  const metadata=files.map(f=>{if(!f||typeof f.name!=='string'||!Number.isSafeInteger(f.size)||f.size<0||f.type!=null&&(typeof f.type!=='string'||f.type.length>256)||f.lastModified!=null&&!Number.isFinite(f.lastModified))throw fail(400,'附件格式无效');total+=f.size;if(f.size>MAX||total>MAX)throw fail(413,'每次附件总量最多 20 MB');return {name:f.name,size:f.size,type:f.type,lastModified:f.lastModified};});
+  if(bytes.byteLength>MAX)throw fail(413,'每次附件总量最多 20 MB');
+  if(total!==bytes.byteLength)throw fail(400,'附件长度与所选文件不匹配');
+  const body=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength);let offset=0;
+  return this.storeUploads(scope,metadata.map(f=>{const value={...f,bytes:body.subarray(offset,offset+f.size)};offset+=f.size;return value;}));
+ }
+ async storeUploads(scope,decoded){
   const out=[];for(const f of decoded){const proposed=path.basename(f.name.replaceAll('\\','/')).replace(/[\x00-\x1f]/g,'_').slice(0,180),label=(!proposed||proposed==='.'||proposed==='..')?'attachment':proposed,target=path.join(this.root,workspace(scope).id,randomUUID(),label);await mkdir(path.dirname(target),{recursive:true,mode:0o700});await writeFile(target,f.bytes,{flag:'wx',mode:0o600});out.push({path:target,fsPath:target,filePath:target,label,name:label,size:f.bytes.length,type:f.type||mime(label),lastModified:f.lastModified||Date.now()});}return {files:out};
  }
- async createTemporary(scope,{bytes,fileName}){const b=Buffer.from(bytes),file=(await this.upload(scope,[{name:fileName||'attachment',contentsBase64:b.toString('base64'),size:b.length}])).files[0].path;this.temporary.set(file,scope);return {path:file};}
+ async createTemporary(scope,{bytes,fileName}){const b=Buffer.from(bytes),file=(await this.uploadBytes(scope,[{name:fileName||'attachment',size:b.length}],b)).files[0].path;this.temporary.set(file,scope);return {path:file};}
  async retainQueuedInput(scope,input){for(const item of input){if(!['localImage','localAudio','mention'].includes(item.type))continue;const target=await this.resolve(scope,item.path),root=await realpath(path.join(this.root,scope)).catch(()=>path.join(this.root,scope));if(!inside(target,root))continue;this.db?.prepare('INSERT OR IGNORE INTO retained_queue_files VALUES(?,?)').run(scope,target);this.retained.add(target);}}
  async releaseTemporary(scope,value){if(this.temporary.get(value)!==scope)return;const target=await this.resolve(scope,value);if(this.retained.has(target)||this.db?.prepare('SELECT 1 FROM retained_queue_files WHERE workspace=? AND path=?').get(scope,target))return;await unlink(target);this.temporary.delete(value);await rmdir(path.dirname(target)).catch(e=>{if(e.code!=='ENOTEMPTY')throw e;});}
  async write(scope,p){this.writable(scope);if(p.hostId&&p.hostId!=='local')throw fail(403,'文件宿主不属于当前工作区');const bytes=Buffer.from(p.bytes);if(bytes.length>MAX)return {outcome:'too-large',maxBytes:MAX};const target=await this.resolve(scope,p.path,{create:true});

@@ -166,10 +166,10 @@ func notificationPreview(t *Topic, turn string) (string, string) {
 	}
 	return notificationExcerpt(title, 64), notificationExcerpt(answer, 180)
 }
-func (g *Gateway) mirrorPush(frames []frame, changed map[string]*Topic) {
+func (g *Gateway) mirrorPush(frames []frame, changed map[string]*Topic) error {
 	p := g.push
-	if p == nil || !p.isolated || p.projectionFailed.Load() {
-		return
+	if p == nil || !p.isolated {
+		return nil
 	}
 	job := notificationProjection{}
 	for _, f := range frames {
@@ -189,16 +189,17 @@ func (g *Gateway) mirrorPush(frames []frame, changed map[string]*Topic) {
 		}
 	}
 	if len(job.threads) == 0 && len(job.completions) == 0 {
-		return
+		return nil
 	}
 	// This small authoritative state commits before the source ACK. Only the
 	// large reading replica is disposable/asynchronous; a completion ACK may
 	// never retire its sender before deduplication and delivery intent exist.
-	if p.saveProjection(job) != nil {
+	if err := p.saveProjection(job); err != nil {
 		p.projectionFailed.Store(true)
-		return
+		return err
 	}
-	p.signal()
+	p.projectionFailed.Store(false)
+	return nil
 }
 func (p *PushService) saveProjection(job notificationProjection) error {
 	tx, err := p.store.db.Begin()
@@ -214,6 +215,11 @@ func (p *PushService) saveProjection(job notificationProjection) error {
 	now := time.Now().UnixMilli()
 	for _, c := range job.completions {
 		if c.turn == "" || !validScope(c.scope) || !validID(c.thread) || c.completedAt < now-int64(15*time.Minute/time.Millisecond) || c.completedAt > now+60000 {
+			continue
+		}
+		var silent bool
+		_ = tx.QueryRow("SELECT silent FROM push_thread_policies WHERE scope=? AND thread_id=?", c.scope, c.thread).Scan(&silent)
+		if silent {
 			continue
 		}
 		var child bool

@@ -26,6 +26,7 @@ import (
 // Replayed completions never enqueue twice; realtime mode isolates this store
 // from the optional reading replica.
 const pushSchema = `
+CREATE TABLE IF NOT EXISTS push_thread_policies(scope TEXT,thread_id TEXT,silent INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(scope,thread_id));
 CREATE TABLE IF NOT EXISTS push_device_owners(device_id TEXT PRIMARY KEY,recipient TEXT NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS push_devices(scope TEXT,device_id TEXT,subscription BLOB NOT NULL,enabled INTEGER NOT NULL,enabled_at INTEGER NOT NULL,last_received_at INTEGER NOT NULL DEFAULT 0,last_received_job TEXT NOT NULL DEFAULT '',last_failure TEXT NOT NULL DEFAULT '',last_test_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(scope,device_id));
 CREATE TABLE IF NOT EXISTS push_completion_content(scope TEXT,thread_id TEXT,turn_id TEXT,title TEXT NOT NULL,summary TEXT NOT NULL,PRIMARY KEY(scope,thread_id,turn_id));
@@ -134,6 +135,11 @@ func enqueueCompletion(tx *sql.Tx, f frame, now int64) error {
 	if f.Event.Type != "turn" || f.Event.Turn == nil || f.Event.Turn.Status != "completed" || !validScope(f.Scope) || !validID(f.ThreadID) || f.Event.Turn.ID == "" {
 		return nil
 	}
+	var silent bool
+	_ = tx.QueryRow("SELECT silent FROM push_thread_policies WHERE scope=? AND thread_id=?", f.Scope, f.ThreadID).Scan(&silent)
+	if silent {
+		return nil
+	}
 	if completionIsSubagent(tx, f.Scope, f.ThreadID) {
 		return nil
 	}
@@ -239,6 +245,12 @@ func (p *PushService) sendNext(ctx context.Context) bool {
 		_, _ = p.store.db.Exec("UPDATE push_jobs SET state='cancelled' WHERE id=? AND state='queued'", j.ID)
 		return true
 	}
+	var silent bool
+	_ = p.store.db.QueryRow("SELECT silent FROM push_thread_policies WHERE scope=? AND thread_id=?", j.Scope, j.Thread).Scan(&silent)
+	if j.Thread != "" && silent {
+		_, _ = p.store.db.Exec("UPDATE push_jobs SET state='cancelled' WHERE id=? AND state='queued'", j.ID)
+		return true
+	}
 	if json.Unmarshal(raw, &j.Subscription) != nil || !validPushSubscription(j.Subscription) {
 		_, _ = p.store.db.Exec("UPDATE push_jobs SET state='failed' WHERE id=?", j.ID)
 		return true
@@ -300,6 +312,17 @@ func (g *Gateway) servePush(w http.ResponseWriter, r *http.Request, scope, op st
 		writeJSON(w, 200, map[string]any{"available": true, "publicKey": g.push.keys.Public})
 		return
 	}
+	if op == "push-thread-policy" && r.Method == "GET" {
+		id := r.URL.Query().Get("threadId")
+		if !validID(id) {
+			http.Error(w, "thread required", 400)
+			return
+		}
+		var silent bool
+		_ = g.push.store.db.QueryRow("SELECT silent FROM push_thread_policies WHERE scope=? AND thread_id=?", scope, id).Scan(&silent)
+		writeJSON(w, 200, map[string]any{"threadId": id, "silent": silent})
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "method", 405)
 		return
@@ -314,6 +337,8 @@ func (g *Gateway) servePush(w http.ResponseWriter, r *http.Request, scope, op st
 		Subscription webpush.Subscription `json:"subscription"`
 		JobID        string               `json:"jobId"`
 		Receipt      string               `json:"receipt"`
+		ThreadID     string               `json:"threadId"`
+		Silent       bool                 `json:"silent"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 12<<10)
 	if json.NewDecoder(r.Body).Decode(&body) != nil {
@@ -322,6 +347,36 @@ func (g *Gateway) servePush(w http.ResponseWriter, r *http.Request, scope, op st
 	}
 	db := g.push.store.db
 	now := time.Now().UnixMilli()
+	if op == "push-thread-policy" {
+		if !validID(body.ThreadID) {
+			http.Error(w, "thread required", 400)
+			return
+		}
+		known, _ := completionThreadClassification(db, scope, body.ThreadID)
+		if g.push.isolated {
+			_ = db.QueryRow("SELECT known FROM notification_threads WHERE scope=? AND thread_id=?", scope, body.ThreadID).Scan(&known)
+		}
+		if !known {
+			http.Error(w, "thread unavailable", 404)
+			return
+		}
+		tx, e := db.Begin()
+		if e != nil {
+			http.Error(w, "storage unavailable", 503)
+			return
+		}
+		defer tx.Rollback()
+		_, e = tx.Exec("INSERT INTO push_thread_policies VALUES(?,?,?,?) ON CONFLICT(scope,thread_id) DO UPDATE SET silent=excluded.silent,updated_at=excluded.updated_at", scope, body.ThreadID, body.Silent, now)
+		if e == nil && body.Silent {
+			_, e = tx.Exec("UPDATE push_jobs SET state='cancelled' WHERE scope=? AND thread_id=? AND state='queued'", scope, body.ThreadID)
+		}
+		if e != nil || tx.Commit() != nil {
+			http.Error(w, "storage unavailable", 503)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"threadId": body.ThreadID, "silent": body.Silent})
+		return
+	}
 	if op == "push-received" {
 		if len(body.JobID) != 32 || len(body.Receipt) != 32 {
 			http.Error(w, "invalid receipt", 400)

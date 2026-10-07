@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "model": "gpt-6-astra",
+      "id": "gpt-6-astra",
+      "isDefault": true,
+      "defaultReasoningEffort": "medium",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low"
+        },
+        {
+          "reasoningEffort": "medium"
+        },
+        {
+          "reasoningEffort": "high"
+        },
+        {
+          "reasoningEffort": "xhigh"
+        },
+        {
+          "reasoningEffort": "max"
+        },
+        {
+          "reasoningEffort": "ultra"
+        }
+      ]
+    }
+  ]
+}

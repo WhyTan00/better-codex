@@ -10,7 +10,7 @@
  const direction=root=>getComputedStyle(root).flexDirection==='column-reverse'?'column-reverse':'column';
  const key=id=>'reading:'+tab+':'+id,recent=new Map(),pending=new Map(),writes=new Map();
  let visit=null,saving=null;
- function current(){const id=thread();if(!visit||visit.id!==id)visit={id,attempted:false,sealed:false};return visit;}
+ function current(){const id=thread();if(!visit||visit.id!==id)visit={id,attempted:false,sealed:false,presented:false,restored:false};return visit;}
  function flush(){clearTimeout(saving);saving=null;for(const[k,value]of pending){pending.delete(k);const work=(writes.get(k)||Promise.resolve()).catch(()=>{}).then(()=>cache.saveMeta(k,value));writes.set(k,work);work.catch(()=>{}).finally(()=>{if(writes.get(k)===work)writes.delete(k);});}}
  function save(){
   const id=thread(),root=scroller();if(!id||!root||window.__DSH_NATIVE_SIDEBAR__?.isList||document.visibilityState==='hidden')return;
@@ -34,11 +34,23 @@
   const found=nodes(root).find(n=>n.getAttribute(saved.anchor.attribute)===saved.anchor.value);if(!found)return;
   const delta=found.getBoundingClientRect().top-root.getBoundingClientRect().top-saved.offset;
   if(Number.isFinite(delta)&&Math.abs(delta)>1)root.scrollTop+=delta;
+  owner.restored=true;
  }
- window.__DSH_READING_POSITION__={register(){},save,restore};
+ function present(id,{hasRestore=false}={}){
+  const owner=current(),root=scroller();if(owner.id!==id||owner.presented||!root||window.__DSH_NATIVE_SIDEBAR__?.isList||document.visibilityState==='hidden')return;
+  // Explicit notification/search navigation and an existing reading position
+  // have priority. Choose the actual reply row, never a turn/prompt wrapper.
+  if(!owner.restored&&!hasRestore&&!location.hash&&!window.__DSH_NAVIGATION__?.notificationTarget?.()){
+   const row=[...root.querySelectorAll('[data-dsh-final-answer-identities][data-dsh-final-thread-id][data-dsh-final-turn-id]')]
+    .filter(node=>node.getAttribute('data-dsh-final-thread-id')===id&&node.getClientRects?.().length).at(-1);
+   if(row){const delta=row.getBoundingClientRect().top-root.getBoundingClientRect().top-12;if(Number.isFinite(delta)&&Math.abs(delta)>1)root.scrollTop+=delta;}
+  }
+  owner.sealed=true;owner.presented=true;save();
+ }
+ window.__DSH_READING_POSITION__={register(){},save,restore,present,hasPresented:id=>current().id===id&&current().presented};
  document.addEventListener('scroll',event=>{if(event.target===scroller())save();},{capture:true,passive:true});
- for(const name of ['wheel','touchstart','pointerdown','keydown'])document.addEventListener(name,event=>{if(event.isTrusted)current().sealed=true;},{capture:true,passive:true});
- addEventListener('dsh:conversation-ready',()=>{current().sealed=true;});
+ for(const name of ['wheel','touchstart','pointerdown','keydown'])document.addEventListener(name,event=>{if(event.isTrusted){current().sealed=true;current().presented=true;}},{capture:true,passive:true});
+ addEventListener('dsh:conversation-ready',()=>{current().sealed=true;current().presented=true;});
  addEventListener('dsh:native-route',()=>{current();flush();});
  addEventListener('pagehide',flush);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){current().sealed=true;flush();}});
  new MutationObserver(()=>{restore();}).observe(document,{subtree:true,childList:true});

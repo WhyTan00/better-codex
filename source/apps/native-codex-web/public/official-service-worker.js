@@ -6,12 +6,12 @@ const SHELL_CACHE='dsh-native-shell-v1',RELEASE='/dsh-native-release.json';
 const OFFLINE='/dsh-offline.html';
 const DEVICE_CACHE='dsh-notification-device-v1',RECIPIENT_KEY='/__dsh-notification-recipient-v1';
 async function notificationRecipient(){try{const saved=await(await caches.open(DEVICE_CACHE)).match(RECIPIENT_KEY);const recipient=saved?(await saved.json()).recipient:null;return ['ai','zyy'].includes(recipient)?recipient:null;}catch{return null;}}
-const STATIC=/^(?:\/official-patched-v[0-9]+\/assets\/[^?]+\.(?:js|css|woff2?|png|svg)|\/dsh-shell\/[0-9a-f]{16}\/[a-z-]+\.(?:mjs|css))$/;
+const STATIC=/^(?:\/official-patched-v[0-9]+\/assets\/[^?]+\.(?:js|css|woff2?|png|svg)|\/dsh-shell\/[0-9a-f]{16}\/[a-z-]+\.(?:mjs|css)|\/dsh-plugin-ui\/ai\/(?:agenda|portfolio|quant)\/[a-f0-9]{64}\.js)$/;
 const NATIVE_STATIC=/^\/dsh-native-assets\/[a-f0-9]{16}\/[a-z-]+\.(?:js|css)$/;
 function reportCache(event,hit){if(event.clientId)self.clients.get(event.clientId).then(client=>client?.postMessage({type:'dsh-static-cache',hit})).catch(()=>{});}
 const CORE=/\/(?:app-initial-|app-primary-|index-|rolldown-runtime-|zh-CN-)[^/]+\.(?:js|css)$/;
 // Release ownership replaces permanent exemptions for every historical bundle.
-const RELEASE_RECORD='/__dsh-ui-release/',MAX_CACHE_BYTES=128*1024*1024,MAX_CACHE_ENTRIES=512;
+const RELEASE_RECORD='/__dsh-ui-release/',MAX_CACHE_BYTES=128*1024*1024,REQUIRED_CACHE_HEADROOM=64*1024*1024,MAX_CACHE_ENTRIES=512;
 const clientPins=new Map();let cacheMutation=Promise.resolve(),preparingAssets=new Set(),queuedCacheWrites=0;
 const serializedCache=work=>{const next=cacheMutation.catch(()=>{}).then(work);cacheMutation=next.catch(()=>{});return next;};
 async function cacheProtection(){
@@ -20,11 +20,15 @@ async function cacheProtection(){
  const current=await shells.match(RELEASE);if(current){try{const value=await current.json();if(!records.some(r=>r.version===value.version))records.push(value);}catch{}}
  const clients=await self.clients.matchAll({type:'window',includeUncontrolled:true});const ids=new Set(clients.map(c=>c.id));for(const id of clientPins.keys())if(!ids.has(id))clientPins.delete(id);
  const versions=new Set(records.slice(-2).map(r=>r.version));let unknown=false;
- const paths=new Set([OFFLINE,...preparingAssets]);for(const client of clients){const pin=clientPins.get(client.id);if(pin){versions.add(pin.version);for(const path of pin.paths)paths.add(path);}else{unknown=true;client.postMessage?.({type:'DSH_CACHE_VERSION_REQUEST'});}}
+ const paths=new Set([OFFLINE,...preparingAssets]);for(const client of clients){
+  // This separately served page loads only video-workbench.js/css, outside
+  // these renderer caches. It cannot own historical Codex startup bundles.
+  if(new URL(client.url).pathname==='/video-workbench')continue;
+  const pin=clientPins.get(client.id);if(pin){versions.add(pin.version);for(const path of pin.paths)paths.add(path);}else{unknown=true;client.postMessage?.({type:'DSH_CACHE_VERSION_REQUEST'});}}
  for(const r of records)if(versions.has(r.version))for(const path of [r.scope,r.runtime,r.pwa,r.css,r.loader,r.initial,r.primary,r.thread,...(r.startupAssets||[])])if(path)paths.add(path);
  return {shells,keys,versions,protected:path=>paths.has(path)||[...versions].some(v=>path.startsWith('/dsh-native-assets/'+v+'/'))||unknown&&(CORE.test(path)||NATIVE_STATIC.test(path))};
 }
-async function trimStatic(cache,incomingPath=null,incomingBytes=0){
+async function trimStatic(cache,incomingPath=null,incomingBytes=0,required=false){
  const protection=await cacheProtection(),rows=[];let bytes=incomingBytes,count=incomingPath?1:0;
  for(const key of await cache.keys()){const path=new URL(key.url).pathname;if(path===incomingPath)continue;const response=await cache.match(key,{ignoreVary:true});if(!response)continue;let size=Number(response.headers.get('x-dsh-cache-bytes'));
   if(!response.headers.has('x-dsh-cache-bytes')||!Number.isFinite(size)){const body=await response.arrayBuffer();size=body.byteLength;const headers=new Headers(response.headers);headers.set('x-dsh-cache-bytes',String(size));headers.delete('content-encoding');headers.delete('content-length');await cache.put(key,new Response(body,{status:response.status,headers}));}
@@ -34,10 +38,14 @@ async function trimStatic(cache,incomingPath=null,incomingBytes=0){
  // In-flight/unknown live pages win over admission of new optional resources.
  // Once they close/announce their version, the next pass reclaims stale bundles.
  for(const key of protection.keys){const path=new URL(key.url).pathname,version=path.startsWith(RELEASE_RECORD)?path.slice(RELEASE_RECORD.length):path.match(/^\/dsh-native-assets\/([a-f0-9]{16})\/shell\.html$/)?.[1];if(version&&!protection.versions.has(version))await protection.shells.delete(key);}
- return bytes<=MAX_CACHE_BYTES&&count<=MAX_CACHE_ENTRIES;
+ // A legacy/frozen page may never answer the ownership request. Required
+ // startup files can use bounded headroom while its resources remain intact;
+ // optional preloads cannot grow this allowance. Normal trims reclaim it once
+ // ownership is known or that page closes.
+ return bytes<=MAX_CACHE_BYTES+(required?REQUIRED_CACHE_HEADROOM:0)&&count<=MAX_CACHE_ENTRIES;
 }
-async function cacheStatic(cache,path,response){if(queuedCacheWrites>=32)return false;queuedCacheWrites++;return serializedCache(async()=>{const body=await response.arrayBuffer(),pathname=new URL(typeof path==='string'?path:path.url,self.location.origin).pathname;if(!await trimStatic(cache,pathname,body.byteLength))return false;const headers=new Headers(response.headers);headers.set('x-dsh-cache-bytes',String(body.byteLength));headers.delete('content-encoding');headers.delete('content-length');await cache.put(path,new Response(body,{status:response.status,headers}));return true;}).finally(()=>{queuedCacheWrites--;});}
-async function pinClient(event){let client;try{client=event.source;if(new URL(client.url).origin!==self.location.origin||!client.id||!/^[a-f0-9]{16}$/.test(event.data.version))return;}catch{return;}const old=clientPins.get(client.id);clientPins.set(client.id,{version:event.data.version,paths:old?.version===event.data.version?old.paths:new Set()});await serializedCache(async()=>trimStatic(await caches.open(CACHE)));}
+async function cacheStatic(cache,path,response,required=false){if(queuedCacheWrites>=32)return false;queuedCacheWrites++;return serializedCache(async()=>{const body=await response.arrayBuffer(),pathname=new URL(typeof path==='string'?path:path.url,self.location.origin).pathname;if(!await trimStatic(cache,pathname,body.byteLength,required))return false;const headers=new Headers(response.headers);headers.set('x-dsh-cache-bytes',String(body.byteLength));headers.delete('content-encoding');headers.delete('content-length');await cache.put(path,new Response(body,{status:response.status,headers}));return true;}).finally(()=>{queuedCacheWrites--;});}
+async function pinClient(event){let client;try{client=event.source;if(new URL(client.url).origin!==self.location.origin||!client.id||!/^[a-f0-9]{16}$/.test(event.data.version))return;}catch{return;}const old=clientPins.get(client.id);if(old?.version===event.data.version)return;clientPins.set(client.id,{version:event.data.version,paths:new Set()});await serializedCache(async()=>trimStatic(await caches.open(CACHE)));}
 let preparing=null;
 async function prepareShell(){if(preparing)return preparing;preparing=(async()=>{
  const cache=await caches.open(CACHE),response=await fetch(RELEASE,{cache:'no-store',redirect:'manual'});if(!response.ok||response.redirected)throw Error('release unavailable');const manifest=await response.json();if(manifest.disabled===true){const shells=await caches.open(SHELL_CACHE);await shells.delete(RELEASE);return;}
@@ -45,12 +53,14 @@ async function prepareShell(){if(preparing)return preparing;preparing=(async()=>
  const nativeFiles=[manifest.scope,manifest.runtime,manifest.pwa,manifest.css,manifest.loader],startup=manifest.startupAssets||[];if(nativeFiles.some(p=>!NATIVE_STATIC.test(p))||!Array.isArray(startup)||startup.some(p=>typeof p!=='string'||!(STATIC.test(p)||NATIVE_STATIC.test(p)&&p===manifest.base+'turn.js')))throw Error('invalid assets');const files=[...new Set([...nativeFiles,...startup])];
  preparingAssets=new Set(files);const shells=await caches.open(SHELL_CACHE),prior=await shells.match(RELEASE).catch(()=>null);if(prior&&(await prior.json()).version===manifest.version&&await shells.match(manifest.shell,{ignoreVary:true})&&(await Promise.all(files.map(p=>cache.match(p,{ignoreVary:true})))).every(Boolean))return manifest.version;
  // Bounded parallel preparation shortens cold install without competing with every lazy chunk.
- for(let start=0;start<files.length;start+=4)await Promise.all(files.slice(start,start+4).map(async path=>{if(await cache.match(path,{ignoreVary:true}))return;const result=await fetch(path,{cache:'reload',redirect:'manual'});if(!result.ok||result.redirected||/text\/html|application\/json/.test(result.headers.get('content-type')||''))throw Error('asset unavailable');if(!await cacheStatic(cache,path,result))throw Error('cache budget occupied by active pages');}));
+ for(let start=0;start<files.length;start+=4)await Promise.all(files.slice(start,start+4).map(async path=>{if(await cache.match(path,{ignoreVary:true}))return;const result=await fetch(path,{cache:'reload',redirect:'manual'});if(!result.ok||result.redirected||/text\/html|application\/json/.test(result.headers.get('content-type')||''))throw Error('asset unavailable');if(!await cacheStatic(cache,path,result,true))throw Error('cache budget occupied by active pages');}));
  const shell=await fetch(manifest.shell,{cache:'reload',redirect:'manual'});if(!shell.ok||shell.redirected||shell.headers.get('x-dsh-credential-free-shell')!=='1')throw Error('shell not verified');
  await shells.put(manifest.shell,shell);await shells.put(RELEASE_RECORD+manifest.version,new Response(JSON.stringify(manifest),{headers:{'content-type':'application/json'}}));await shells.put(RELEASE,new Response(JSON.stringify(manifest),{headers:{'content-type':'application/json'}}));await serializedCache(()=>trimStatic(cache));return manifest.version;
 })().catch(()=>{}).finally(()=>{preparing=null;preparingAssets=new Set();});return preparing;}
 self.addEventListener('install',event=>event.waitUntil((async()=>{const cache=await caches.open(CACHE);const r=await fetch(OFFLINE,{cache:'reload'});if(r.ok&&!r.redirected&&r.headers.get('content-type')?.includes('text/html'))await cache.put(OFFLINE,r);await prepareShell();})().catch(()=>{})));
-self.addEventListener('activate',event=>event.waitUntil(Promise.all([self.clients.claim(),prepareShell()])));
+// Installation and the page's PREPARE_NATIVE_CACHE message prepare updates.
+// Activation must not wait for a second network read of an installed shell.
+self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
 self.addEventListener('message',event=>{if(event.data?.type==='DSH_CACHE_CLIENT_VERSION')event.waitUntil(pinClient(event));if(event.data?.type==='SET_NOTIFICATION_RECIPIENT')event.waitUntil(setNotificationRecipient(event));if(event.data?.type==='ACTIVATE_UPDATE')event.waitUntil(prepareShell().then(version=>{if(version)return self.skipWaiting();}));if(event.data?.type==='PREPARE_NATIVE_CACHE')event.waitUntil(prepareShell().then(version=>event.ports?.[0]?.postMessage({ready:!!version,version})));});
 async function setNotificationRecipient(event){const recipient=event.data.recipient;let origin;try{origin=new URL(event.source?.url).origin;}catch{}if(origin!==self.location.origin||!['ai','zyy'].includes(recipient))return;try{await(await caches.open(DEVICE_CACHE)).put(RECIPIENT_KEY,new Response(JSON.stringify({recipient}),{headers:{'content-type':'application/json'}}));event.ports?.[0]?.postMessage({recipient});}catch{event.ports?.[0]?.postMessage({error:'storage unavailable'});}}
 self.addEventListener('fetch',event=>{

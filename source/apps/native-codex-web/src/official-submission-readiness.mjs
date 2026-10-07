@@ -56,7 +56,7 @@ export function patchSubmissionReadiness(source) {
  // Normal navigation and history callers still await resumeConversation.
  replace('let t=await Rb(e,r.getHostId()).resumeConversation({conversationId:a,model:null,serviceTier:o,reasoningEffort:null,workspaceRoots:p,useAppServerPermissionDefault:s,collaborationMode:m},{readResumeInputs:KO(e,r.getHostId())});',
   'let t=await(r.dshResumeForSubmission?((...args)=>r.dshResumeForSubmission(...args)):((...args)=>Rb(e,r.getHostId()).resumeConversation(...args)))({conversationId:a,model:null,serviceTier:o,reasoningEffort:null,workspaceRoots:p,useAppServerPermissionDefault:s,collaborationMode:m},{readResumeInputs:KO(e,r.getHostId())});');
- return patchPreparationMetadataRefresh(patchParallelResumePreparation(source));
+ return patchParallelSubmissionReads(patchResumeMetadataLane(patchPreparationMetadataRefresh(patchParallelResumePreparation(source))));
 }
 
 // The renderer tool catalogue depends only on the settings already captured by
@@ -83,4 +83,90 @@ export function patchPreparationMetadataRefresh(source) {
  const after='async function Uls(e,t){await Promise.all([e.query.invalidate(ED,{hostId:t},{exact:!0},{cancelRefetch:!1}),e.query.invalidate(jD,{hostId:t},{exact:!0})])}';
  if(source.split(before).length!==2)throw Error('Pinned metadata refresh cancellation contract changed');
  return source.replace(before,after);
+}
+
+export function patchResumeMetadataLane(source){
+ const from='j=e.readThread(s,{includeTurns:!1,requestOptions:A}).catch(',to='j=(e.getHostId()===`local`&&e.dshReadResumeMetadata?e.dshReadResumeMetadata(s,A):e.readThread(s,{includeTurns:!1,requestOptions:A})).catch(';
+ if(source.includes(to))return source;
+ if(source.split(from).length!==2)throw Error('Pinned resume metadata read contract changed');
+ return source.replace(from,to);
+}
+
+// These reads have no data dependency: retained roots, projectless membership
+// and its two display path maps are joined before any workspace is created or
+// permissions are computed. Keep fresh host reads; do not turn an old cache
+// snapshot into execution settings. Proxy/config reads retain error precedence.
+export function patchParallelSubmissionReads(source) {
+ const replace=(before,after)=>{if(source.includes(after))return;if(source.split(before).length!==2)throw Error('Pinned parallel submission contract changed: '+before.slice(0,100));source=source.replace(before,after);};
+ replace('let t=await this.loadConversationIds();if(t==null)return!1;this.conversationIds=e?t:new Set([...t,...this.conversationIds]);let[n,r]=await Promise.all([this.loadThreadPathHints(`thread-projectless-output-directories`),this.loadThreadPathHints(`thread-workspace-root-hints`)]);',
+ 'let[t,n,r]=await Promise.all([this.loadConversationIds(),this.loadThreadPathHints(`thread-projectless-output-directories`),this.loadThreadPathHints(`thread-workspace-root-hints`)]);if(t==null)return!1;this.conversationIds=e?t:new Set([...t,...this.conversationIds]);');
+ replace('g=e.getThreadWorkspaceState(t),_=p?m??[d.cwd]:await Zsn(e,t),{applied:v,pendingRevision:y,workspace:b}=Vsn(',
+ 'g=e.getThreadWorkspaceState(t),{applied:v,pendingRevision:y,workspace:b}=Vsn(');
+ replace('S=Wsn(v,h),C=o.canUseProjectlessWorkspace&&await Gsn({environmentCwd:f,hasPendingWorkspace:x!=null,state:g,isProjectlessConversation:()=>$sn(e,t),workspaceKind:a.workspaceKind})?await ecn(',
+ 'S=Wsn(v,h),[_,dshProjectless]=await Promise.all([p?m??[d.cwd]:Zsn(e,t),o.canUseProjectlessWorkspace?Gsn({environmentCwd:f,hasPendingWorkspace:x!=null,state:g,isProjectlessConversation:()=>$sn(e,t),workspaceKind:a.workspaceKind}):!1]),C=dshProjectless?await ecn(');
+ replace('let l={},u=await n(),d;if(u!=null)',
+ 'const dshProxy=Promise.resolve().then(()=>n()).then(value=>({value}),error=>({error})),dshConfig=a==null?null:Promise.resolve().then(()=>a()).then(value=>({value}),error=>({error}));let l={},dshProxyResult=await dshProxy;if(`error`in dshProxyResult)throw dshProxyResult.error;let u=dshProxyResult.value,d;if(u!=null)');
+ replace('if(a){let e=await a();if(e)for(let[t,n]of Object.entries(e))l[t]=n}',
+ 'if(dshConfig){let dshConfigResult=await dshConfig;if(`error`in dshConfigResult)throw dshConfigResult.error;let e=dshConfigResult.value;if(e)for(let[t,n]of Object.entries(e))l[t]=n}');
+ return source;
+}
+
+// Once the request cwd and inherited settings have been resolved, personality,
+// Fast requirements and codex-home filesystem preparation are independent.
+// Start fresh reads together and join at the original checkpoints, preserving
+// the existing error precedence, permission calculation and task Fast choice.
+export function patchParallelTurnMetadata(source){
+ const replace=(from,to)=>{if(source.includes(to))return;if(source.split(from).length!==2)throw Error('Pinned turn metadata contract changed');source=source.replace(from,to);};
+ const personality='s.personality===void 0?E?.personality===void 0?L?.personality??await e.readDefaultPersonality(ae):E.personality:s.personality';
+ const inherited=source.includes('jan(n.context?.dshInheritTaskModel?Ee:');
+ const tier='await jan('+(inherited?'n.context?.dshInheritTaskModel?Ee:':'')+'s.serviceTier===void 0?Ee:s.serviceTier,e.logger,()=>e.sendRequest(`configRequirements/read`,void 0,{priority:`critical`,timeoutMs:Zx}))';
+ replace('se=a.environments?.[0]?.environmentId,W=o.canMaterializeCodexHomeRoots',
+ 'se=a.environments?.[0]?.environmentId,dshTurnRead=fn=>Promise.resolve().then(fn).then(value=>({value}),error=>({error})),dshTurnValue=result=>{if(`error`in result)throw result.error;return result.value},dshPersonality=dshTurnRead(async()=>'+personality+'),dshTier=dshTurnRead(async()=>{let Ee=E?.serviceTier===void 0?L?.serviceTier===void 0?null:L.serviceTier:E.serviceTier;return '+tier+'}),W=o.canMaterializeCodexHomeRoots');
+ replace('we='+personality,'we=dshTurnValue(await dshPersonality)');
+ replace('De='+tier,'De=dshTurnValue(await dshTier)');
+ return source;
+}
+
+// Extra codex-home roots are sandbox bookkeeping, not a turn-start directory
+// dependency under full access. Preserve the roots and all restricted-sandbox
+// preparation; avoid creating directories on the ordinary full-access send.
+export function patchFullAccessTurnDirectories(source){
+ const before='await Promise.all(ce.map(t=>e.ensureDirectory(t,se)));';
+ const after='if(oe.type!==`dangerFullAccess`)await Promise.all(ce.map(t=>e.ensureDirectory(t,se)));';
+ if(source.includes(after))return source;
+ if(source.split(before).length!==2)throw Error('Pinned turn directory contract changed');
+ return source.replace(before,after);
+}
+
+// A configuration read made by this prepared start can also resolve its final
+// personality default. The opaque, one-use context token is deliberately not
+// a persistent cache, transferable DTO, or an execution/permission witness.
+export function patchSameAttemptSubmissionConfig(source){
+ const marker='const dshAttemptConfigs=new WeakMap();';
+ const capture='D=u||d&&y,O=D?await KPi(n.requestClient,o,';
+ const captured='D=u||d&&y,dshConfigHead=n.dshSubmissionHead?.(a),O=D?await KPi(n.requestClient,o,';
+ const finish='return M.request.additionalContext=iK(a,v,M.request.additionalContext),';
+ const finished='dshBindAttemptConfig(M.context,n,dshConfigHead,o,a,M.request.clientUserMessageId,O);'+finish;
+ const read='L?.personality??await e.readDefaultPersonality(ae)';
+ const reused='L?.personality??await dshAttemptDefaultPersonality(e,n.context,t,r,ae)';
+ for(const value of ['async function KPi(e,t,n){let r={includeLayers:!1,cwd:t??null};','function Qjt(e){return e===`friendly`||e===`pragmatic`}','function Sv(e){return Qjt(e)?e:null}','return Sv(r?.personality)??Sv(r?.model_personality)??t.readExperimentPersonality().catch(()=>null)'])if(source.split(value).length!==2)throw Error('Pinned attempt configuration decoder contract changed');
+ if(source.includes(marker)){
+  if([captured,finished,reused].some(value=>source.split(value).length!==2))throw Error('Pinned attempt configuration patch is incomplete');
+  return source;
+ }
+ for(const value of [capture,finish,read,'async function TMs('])if(source.split(value).length!==2)throw Error('Pinned attempt configuration contract changed');
+ const helpers=`${marker}
+function dshCanonicalAttemptCwd(value){return typeof value===\`string\`&&value.startsWith(\`/\`)&&!value.includes(\`//\`)&&!value.split(\`/\`).some(part=>part===\`.\`||part===\`..\`)&&(value===\`/\`||!value.endsWith(\`/\`))?value:null}
+function dshBindAttemptConfig(context,manager,head,cwd,threadId,messageId,config){
+ try{const path=dshCanonicalAttemptCwd(cwd);if(!context||!config||path==null||manager.getHostId()!==\`local\`||manager.disposed||manager.requestClient?.hostId!==\`local\`||typeof messageId!==\`string\`||!messageId||head?.threadId!==threadId||typeof head.isCurrent!==\`function\`||!head.isCurrent()||manager.dshSubmissionHead?.(threadId)!==head)return;
+ const token=Object.freeze({});context.dshAttemptConfig=token;dshAttemptConfigs.set(token,{context,manager,requests:manager.requestClient,head,cwd:path,threadId,messageId,includeLayers:!1,config:Object.freeze({personality:config.personality,model_personality:config.model_personality})});}catch{}
+}
+async function dshAttemptDefaultPersonality(manager,context,threadId,messageId,cwd){
+ const token=context?.dshAttemptConfig,saved=token&&dshAttemptConfigs.get(token);if(token)dshAttemptConfigs.delete(token);
+ let valid=!1;try{valid=!!saved&&saved.context===context&&saved.manager===manager&&saved.requests===manager.requestClient&&saved.includeLayers===!1&&manager.getHostId()===\`local\`&&manager.requestClient?.hostId===\`local\`&&!manager.disposed&&saved.threadId===threadId&&saved.messageId===messageId&&saved.cwd===dshCanonicalAttemptCwd(cwd)&&manager.dshSubmissionHead?.(threadId)===saved.head&&saved.head.isCurrent()&&typeof manager.settings?.readExperimentPersonality===\`function\`;}catch{}
+ if(!valid)return manager.readDefaultPersonality(cwd);
+ return Sv(saved.config.personality)??Sv(saved.config.model_personality)??manager.settings.readExperimentPersonality().catch(()=>null);
+}
+`;
+ return source.replace('async function TMs(',helpers+'async function TMs(').replace(capture,captured).replace(finish,finished).replace(read,reused);
 }

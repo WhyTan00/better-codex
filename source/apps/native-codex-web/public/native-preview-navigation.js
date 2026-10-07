@@ -62,6 +62,33 @@
   if(!htmlPath(payload?.url))return false;
   return showHtml('网页预览',()=>payload.url);
  }
+
+ const privateImage=value=>{try{const u=new URL(value,location.href),scope=window.__DSH_SCOPE__?.id;if(u.origin!==location.origin||u.username||u.password||!/\.(?:png|jpe?g|webp|gif|avif)(?:$)/i.test(u.pathname))return false;return u.pathname.startsWith('/w/'+scope+'/api/local-file/')||u.pathname.startsWith('/__dsh_deliverables/'+scope+'/')||scope==='ai'&&u.pathname.startsWith('/android/design-reviews/');}catch{return false;}};
+ window.__DSH_PRIVATE_IMAGE__=privateImage;
+ // Desktop's app://fs protocol is unavailable in the phone WebView. Reuse the
+ // existing scoped file resolver and its versioned grant instead of moving
+ // image bodies as base64 through the ordered command/replay lane.
+ window.__DSH_LOCAL_IMAGE_URL__=(value,hostId='local')=>{
+  const scope=window.__DSH_SCOPE__;
+  if(hostId!=='local'||typeof value!=='string'||!scope?.token||!['ai','zyy'].includes(scope.id))return null;
+  let target=value;
+  try{
+   if(target.startsWith('app://fs/@fs/'))target=decodeURIComponent(target.slice('app://fs/@fs'.length));
+   else if(target.startsWith('/@fs/'))target=decodeURIComponent(target.slice('/@fs'.length));
+   if(!target.startsWith('/')||target.startsWith('//')||target.includes('\0')||target.includes('\\')||!/\.(?:png|jpe?g|webp|gif|avif|svg)$/i.test(target))return null;
+   const url=new URL('/w/'+scope.id+'/api/app-fs/@fs/'+target.split('/').map(encodeURIComponent).join('/'),location.origin);
+   url.searchParams.set('scopeToken',scope.token);return url.href;
+  }catch{return null;}
+ };
+ function showImage(value){
+  if(!/^\/local\/[0-9a-f-]{36}$/i.test(location.pathname)||window.__DSH_NATIVE_SIDEBAR__?.isList)return false;
+  const node=document.createElement('section');node.className='dsh-image-preview';node.setAttribute('role','dialog');node.setAttribute('aria-label','图片预览');
+  const picture=document.createElement('img');picture.src=value;picture.alt='';const toolbar=document.createElement('div');toolbar.className='dsh-image-preview-toolbar';
+  const closeButton=document.createElement('button');closeButton.textContent='关闭';closeButton.onclick=()=>close();const fit=document.createElement('button');fit.textContent='适合屏幕';const zoom=document.createElement('button');zoom.textContent='原始尺寸';
+  const viewport=document.createElement('div');viewport.className='dsh-image-preview-viewport';viewport.append(picture);fit.onclick=()=>{node.dataset.zoom='fit';};zoom.onclick=()=>{node.dataset.zoom='original';};picture.ondblclick=()=>{node.dataset.zoom=node.dataset.zoom==='original'?'fit':'original';};
+  node.dataset.zoom='fit';toolbar.append(closeButton,fit,zoom);node.append(toolbar,viewport);document.body.append(node);const release=open({kind:'image',node,isOpen:()=>node.isConnected,close:()=>node.remove()});if(!release){node.remove();return false;}return true;
+ }
+ document.addEventListener('click',event=>{const link=event.target.closest?.('a[href]');if(!link||event.defaultPrevented||event.button>0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||link.hasAttribute('download')||!privateImage(link.href))return;if(showImage(link.href)){event.preventDefault();event.stopImmediatePropagation();}},true);
  window.__DSH_PREVIEW__={open,close,sync,openHtml,openHtmlUrl,isOpen:()=>!!active,onPopState(event){
   const entry=active||closing;if(!entry)return false;
   // iframe history may emit a pop without leaving the parent preview entry.

@@ -173,7 +173,7 @@ func TestAgentRequiresSeparateCredentialAndRejectsBrowserOrigin(t *testing.T) {
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	u := "ws" + strings.TrimPrefix(server.URL, "http") + "/_sync-agent"
-	for _, header := range []http.Header{{}, {"Authorization": {"Bearer " + string(g.secret)}, "Origin": {"https://example.invalid"}}} {
+	for _, header := range []http.Header{{}, {"Authorization": {"Bearer " + string(g.secret)}, "Origin": {"https://workbench.example.test"}}} {
 		conn, r, err := websocket.DefaultDialer.Dial(u, header)
 		if conn != nil {
 			conn.Close()

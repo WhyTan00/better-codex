@@ -8,7 +8,14 @@ export function normalizeOfficialImportMap(map){
   if(!targets.has(match[2])||match[1]==='/official-patched-v8/assets/')targets.set(match[2],value);
   const destination=typeof value==='string'&&value.match(/^(\/official-patched-v[0-9]+\/assets\/)/);if(destination)prefixes.add(destination[1]);
  }
- for(const prefix of prefixes)for(const [name,target]of targets)imports[prefix+name]=target;
+ // A newly mapped entry changes the base of its relative imports. Exact
+ // shared-module aliases alone do not cover the unchanged runtime/chunks.
+ // Keep explicit directory overrides and supply the original asset directory
+ // for each newly discovered patched directory before adding exact aliases.
+ for(const prefix of prefixes){
+  if(prefix!=='/official-patched-v8/assets/'&&!Object.hasOwn(imports,prefix))imports[prefix]='/official-patched-v8/assets/';
+  for(const [name,target]of targets)imports[prefix+name]=target;
+ }
  return {...map,imports};
 }
 

@@ -51,18 +51,33 @@
   let failed=null;const session=window.__DSH_SESSION_READY__=freshSession().catch(error=>{failed=error;return false;});
   const online=session.then(ok=>ok?freshBootstrap():null).catch(()=>null);
   const [locked,saved]=await Promise.all([cache.meta('auth-locked').catch(()=>false),cache.meta('bootstrap').catch(()=>null)]);let cached=locked?null:saved;
-  // An existing local boot does not wait for the Android delta importer.
-  if(!cached&&!locked){await waitForAndroidCache();cached=await cache.meta('bootstrap').catch(()=>null);}
+  // A missing browser copy does not make the Android delta importer a gate
+  // for the independent cloud/Mac read. Use whichever valid source is ready.
+  const androidBootstrap=!cached&&!locked?waitForAndroidCache().then(()=>cache.meta('bootstrap')).catch(()=>null):Promise.resolve(null);
   const cloudBootstrap=!cached&&!['127.0.0.1','localhost'].includes(location.hostname)?window.__DSH_CONNECTION_JSON__('/sync/v1/w/'+id+'/native-bootstrap',{cache:'no-store',redirect:'manual'},30000).then(({response:r,data})=>{if(r.status===401||r.type==='opaqueredirect')throw Object.assign(Error('请重新登录'),{login:true});if(!r.ok)return null;return data?.config;}).catch(()=>null):Promise.resolve(null);
-  const requireConfig=value=>{if(!value)throw Error('启动配置暂不可用');return value;};const config=cached||await Promise.any([cloudBootstrap.then(requireConfig),online.then(requireConfig)]).catch(()=>null);if(!config)throw failed||Error('尚未缓存此工作区，请先在线打开一次');
+  const requireConfig=(value,source)=>{if(!value)throw Error('启动配置暂不可用');return {value,source};};const selected=cached?{value:cached,source:'indexeddb'}:await Promise.any([androidBootstrap.then(value=>requireConfig(value,'indexeddb')),cloudBootstrap.then(value=>requireConfig(value,'network')),online.then(value=>requireConfig(value,'network'))]).catch(()=>null);const config=selected?.value;if(!config)throw failed||Error('尚未缓存此工作区，请先在线打开一次');cached=selected.source==='indexeddb'?config:null;
   const initial=await cache.prepareSidebarBootstrap(structuredClone(config));initial.gatewayBaseUrl=location.origin+'/w/'+id;initial.gatewayWsUrl=location.origin.replace(/^http/,'ws')+'/w/'+id+'/ws';
   initial.persistedAtomSnapshot={...initial.persistedAtomSnapshot,...await atomsReady};if(initial.dshNativeInitialization)cache.saveMeta('native-initialization',initial.dshNativeInitialization).catch(()=>{});window.__CODEX_WEB_CONFIG__=initial;document.documentElement.dataset.dshCachedBoot=cached?'1':'0';window.__DSH_PERF__?.event('native_cache_boot',{source:cached?'indexeddb':'network'});
   configured=true;controlReady();
   // A late failed read must never overwrite a newer successful renewal/socket.
   session.then(ok=>{if(!ok&&!authenticated&&!authBlocked&&window.__DSH_EXECUTION_CONNECTED__!==true)window.dispatchEvent(new CustomEvent('dsh:connection-state',{detail:{state:'offline-cache'}}));});
-  let recovering=false;const recover=()=>{if(recovering||authBlocked||window.__DSH_EXECUTION_CONNECTED__===true)return;recovering=true;freshSession().catch(()=>{}).finally(()=>{recovering=false;});};addEventListener('online',recover);addEventListener('focus',recover);setInterval(recover,15000);
+  let recovering=false,recoveryTimer=null,recoverySuspended=false;
+  const mayRecover=()=>!recoverySuspended&&document.visibilityState!=='hidden'&&navigator.onLine!==false&&!authBlocked&&window.__DSH_EXECUTION_CONNECTED__!==true;
+  const recover=()=>{if(recovering||!mayRecover())return;recovering=true;freshSession().catch(()=>{}).finally(()=>{recovering=false;armRecovery();});};
+  function stopRecovery(){clearInterval(recoveryTimer);recoveryTimer=null;}
+  function armRecovery(){stopRecovery();if(mayRecover())recoveryTimer=setInterval(recover,15000);}
+  const resumeRecovery=()=>{recoverySuspended=false;armRecovery();recover();};
+  for(const type of ['online','focus','pageshow'])addEventListener(type,resumeRecovery);
+  for(const type of ['offline','dsh:execution-state','dsh:connection-state','dsh:authentication-required'])addEventListener(type,armRecovery);
+  addEventListener('pagehide',()=>{recoverySuspended=true;stopRecovery();});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')stopRecovery();else resumeRecovery();});
+  armRecovery();
   if(cached&&home)await window.__DSH_STARTUP_PREVIEW__?.show();
   if(cached&&home){window.__DSH_CACHE_FIRST_PAINT__=true;firstPaintObserver=new MutationObserver(()=>{if(document.querySelector('#root #app-shell-sidebar'))finishCachedPaint();});firstPaintObserver.observe(document.getElementById('root'),{subtree:true,childList:true});}
-  await Promise.all([script(release.runtime),script(release.pwa)]);await script(release.entry,true);
+  const runtimeReady=script(release.runtime);
+  // Install/update/workspace chrome is optional; its slow or failed resource
+  // must not prevent the conversation renderer from mounting.
+  script(release.pwa).catch(()=>{try{window.__DSH_CLIENT_LOG__?.event?.('client_health',{component:'resource',stage:'failed',reason:'upstream_failure'});}catch{}});
+  await runtimeReady;await script(release.entry,true);
  })().catch(error=>{finishCachedPaint();window.__DSH_CLIENT_LOG__?.reportError('boot_error',error);window.__DSH_STARTUP_PREVIEW__?.hide();const root=document.getElementById('root');if(root){root.replaceChildren();const p=document.createElement('p');p.className='dsh-cache-boot-error';p.textContent=error.message;root.append(p);const a=document.createElement('a');a.href=location.pathname+location.search;a.textContent='重新连接';root.append(a);}});
 })();

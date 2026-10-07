@@ -27,7 +27,19 @@
  let renewal=null;function renewScope(){if(renewal)return renewal.promise;const at=performance.now();let statusCode=0;const traceId=crypto.randomUUID(),init={cache:'no-store',redirect:'manual',headers:{'x-dsh-diagnostic-trace':traceId}},renewalOperation={promise:null};renewal=renewalOperation;
   renewalOperation.promise=(async()=>{try{connectionTrace({component:'scope-session',stage:'attempt',reason:'request_start',traceId,count:credentialRevision});
    const nativeControl=window.__DSH_ANDROID_BRIDGE__?.scopeSession;
-   const result=nativeControl?await nativeControl({traceId}).then(value=>({response:{status:value.status,ok:value.status===200,type:'basic'},data:value.data})):await window.__DSH_CONNECTION_JSON__('/dsh-scope-session?workspace='+encodeURIComponent(scope.id),init,SCOPE_RENEWAL_DEADLINE_MS),r=result.response;statusCode=r.status;if(r.type==='opaqueredirect'||[301,302,303,307,308,401].includes(r.status)){recoverLogin();throw Error('login expired');}if(!r.ok)throw Error('scope renewal unavailable');const next=result.data;if(renewal!==renewalOperation)throw Error('stale scope renewal');if(next.id!==scope.id||(typeof next.token!=='string'||!next.token))throw Error('invalid scope renewal');scope.token=next.token;if(next.portable===true&&Array.isArray(next.workspaces)){scope.portable=true;scope.label=next.label;scope.workspaces=next.workspaces;}credentialRevision++;window.dispatchEvent(new Event('dsh:scope-renewed'));connectionTrace({component:'scope-session',stage:'received',reason:'scope_renewal_ok',traceId,statusCode,durationMs:Math.round(performance.now()-at)});return true;}catch(error){connectionTrace({component:'scope-session',stage:'failed',reason:'scope_renewal_failed',traceId,failureClass:error?.code==='DSH_CONNECTION_JSON_TIMEOUT'?'timeout':'connection',statusCode,durationMs:Math.round(performance.now()-at)});return false;}finally{if(renewal===renewalOperation)renewal=null;}})();return renewalOperation.promise;}
+   const controlURL='/dsh-scope-session?workspace='+encodeURIComponent(scope.id);let result;
+   if(nativeControl){try{const value=await nativeControl({traceId});result={response:{status:value.status,ok:value.status===200,type:'basic'},data:value.data};}
+    catch(error){
+     // A failed optional native HTTP reader must not disable the existing
+     // authenticated WebView GET. Share one deadline; never retry a command,
+     // an authentication rejection, a scope error or an invalid native reply.
+     const remaining=SCOPE_RENEWAL_DEADLINE_MS-(performance.now()-at);
+     if(error?.code!=='CONTROL_UNAVAILABLE'||remaining<=0||renewal!==renewalOperation||loginRequired)throw error;
+     connectionTrace({component:'scope-session',stage:'skipped',reason:'upstream_failure',traceId,failureClass:'connection'});
+     result=await window.__DSH_CONNECTION_JSON__(controlURL,init,remaining);
+    }
+   }else result=await window.__DSH_CONNECTION_JSON__(controlURL,init,SCOPE_RENEWAL_DEADLINE_MS);
+   const r=result.response;statusCode=r.status;if(r.type==='opaqueredirect'||[301,302,303,307,308,401].includes(r.status)){recoverLogin();throw Error('login expired');}if(!r.ok)throw Error('scope renewal unavailable');const next=result.data;if(renewal!==renewalOperation)throw Error('stale scope renewal');if(next.id!==scope.id||(typeof next.token!=='string'||!next.token))throw Error('invalid scope renewal');scope.token=next.token;if(next.portable===true&&Array.isArray(next.workspaces)){scope.portable=true;scope.label=next.label;scope.workspaces=next.workspaces;}credentialRevision++;window.dispatchEvent(new Event('dsh:scope-renewed'));connectionTrace({component:'scope-session',stage:'received',reason:'scope_renewal_ok',traceId,statusCode,durationMs:Math.round(performance.now()-at)});return true;}catch(error){connectionTrace({component:'scope-session',stage:'failed',reason:'scope_renewal_failed',traceId,failureClass:error?.code==='DSH_CONNECTION_JSON_TIMEOUT'?'timeout':'connection',statusCode,durationMs:Math.round(performance.now()-at)});return false;}finally{if(renewal===renewalOperation)renewal=null;}})();return renewalOperation.promise;}
 
  window.__DSH_RENEW_SCOPE__=renewScope;
 
@@ -37,12 +49,16 @@
  // given unacknowledged messages from an old session.
  const NativeWS=window.WebSocket,sockets=new Set(),outbound=new Map();
  let resumeId=null,serverSeq=0,clientSeq=0,outboundBytes=0,observedEpoch=null;
+ const REPLY_STREAM_PROTOCOL='dsh-reply-stream-v1',replySeq={'rpc':0,'app-host':0};let replySnapshotSeq=0;
  let frozen=false,wasHidden=false,activeTasks=false,blocked=false,heartbeatTimer=null,syncing=null;
  let generation=0,rebuilding=null,rebuildAttempts=[],hostNeedsRecreation=false;
- const BULK_READ_PROTOCOL='dsh-bulk-read-v1',BULK_READ_DEADLINE_MS=30000,bulkMethods=new Set(['app/list','mcpServerStatus/list','thread/list']),bulkWaiters=new Set(),bulkOperations=new Set();let bulkAuthBlocked=false;
+ const BULK_READ_PROTOCOL='dsh-bulk-read-v1',BULK_READ_DEADLINE_MS=30000,bulkMethods=new Set(['app/list','mcpServerStatus/list','thread/list','thread/read','thread/turns/list','thread/goal/get','config/read','configRequirements/read']),bulkWaiters=new Set(),bulkOperations=new Set();let bulkAuthBlocked=false;
  const bulkError=(message,status=503)=>Object.assign(Error(message),{status,statusCode:status});
- const bulkDeadline=at=>Math.min(Number.isFinite(at)?at:Infinity,Date.now()+BULK_READ_DEADLINE_MS),bulkTimeout=()=>Object.assign(bulkError('目录读取超时',504),{code:'DSH_CONNECTION_JSON_TIMEOUT'});
+ const bulkDeadline=(at,budget=BULK_READ_DEADLINE_MS)=>Math.min(Number.isFinite(at)?at:Infinity,Date.now()+budget),bulkTimeout=()=>Object.assign(bulkError('目录读取超时',504),{code:'DSH_CONNECTION_JSON_TIMEOUT'});
  function bulkState(){const wire=[...sockets].reverse().find(ws=>ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshHelloReceived);if(!wire)return null;if(wire.__dshBulkReadProtocol!==BULK_READ_PROTOCOL)return {supported:false,wire};return wire.__dshNativeConnected&&Number.isSafeInteger(wire.__dshNativeGeneration)&&wire.__dshFrontEpoch?{supported:true,wire}:null;}
+ // Small execution checks use the existing prioritized RPC reply lane. They
+ // must not acquire an HTTP slot occupied by bulk history/preload reads.
+ window.__DSH_EXECUTION_METADATA_CONTROL_READY__=()=>{const state=bulkState(),wire=state?.wire;return !bulkAuthBlocked&&!blocked&&!loginRequired&&!!wire&&wire.__dshNativeConnected===true&&wire.__dshReplyProtocol===REPLY_STREAM_PROTOCOL;};
  function refreshBulkState(error){const state=bulkAuthBlocked||blocked||loginRequired?null:bulkState();window.__DSH_BULK_READ_HTTP_READY__=window.__DSH_APP_CATALOG_HTTP_READY__=state?.supported===true;for(const waiter of [...bulkWaiters]){if(error)waiter.finish(error);else if(state)waiter.finish(null,state.supported);}}
  function cancelBulkReads(error,wire){for(const operation of bulkOperations)if(!wire||operation.wire===wire)operation.controller.abort(error);for(const waiter of [...bulkWaiters])if(!wire||waiter.wire===wire)waiter.finish(error);refreshBulkState();}
  window.__DSH_BULK_READ_HTTP_READY__=window.__DSH_APP_CATALOG_HTTP_READY__=false;
@@ -57,7 +73,9 @@
  };
  window.__DSH_READ_BULK_RPC__=async(method,params={},options={})=>{
   if(!bulkMethods.has(method))throw bulkError('此读取通道不接受执行请求',403);
-  const deadlineAt=bulkDeadline(options.deadlineAt);
+  // Keep the existing 65s Native RPC lifetime for execution checks. The
+  // directory transport retains its independent 30s budget.
+  const deadlineAt=bulkDeadline(options.deadlineAt,['thread/read','thread/turns/list','thread/goal/get','config/read','configRequirements/read'].includes(method)?65000:BULK_READ_DEADLINE_MS);
   if(!await window.__DSH_WAIT_BULK_READ_HTTP__({signal:options.signal,deadlineAt}))throw bulkError('此版本尚未提供目录读取通道');
   const state=bulkState(),wire=state?.wire;if(!state?.supported)throw bulkError('目录读取连接已更换');
   const identity={wire,generation,resumeId,credentialRevision,epoch:wire.__dshFrontEpoch,nativeGeneration:wire.__dshNativeGeneration},controller=new AbortController(),operation={wire,controller},abort=()=>controller.abort(options.signal?.reason||Object.assign(Error('读取已取消'),{name:'AbortError'}));
@@ -86,6 +104,34 @@
   }finally{options.signal?.removeEventListener('abort',abort);bulkOperations.delete(operation);}
  };
  window.__DSH_READ_APP_CATALOG__=(params,options)=>window.__DSH_READ_BULK_RPC__('app/list',params,options);
+ window.__DSH_UPLOAD_PICKED_FILES__=async(files,{signal,traceId}={})=>{
+  if(!await window.__DSH_WAIT_BULK_READ_HTTP__({signal}))return null;
+  const state=bulkState(),wire=state?.wire;if(wire?.__dshAttachmentUploadProtocol!=='dsh-attachment-upload-v1')return null;
+  if(!Array.isArray(files)||!files.length||files.length>20)throw bulkError('每次最多选择 20 个文件',413);
+  const metadata=files.map(file=>({name:file.name,type:file.type||'',size:file.size,lastModified:file.lastModified}));
+  if(metadata.some(f=>typeof f.name!=='string'||f.name.length>512||f.type.length>128||!Number.isSafeInteger(f.size)||f.size<0)||metadata.reduce((n,f)=>n+f.size,0)>20*1024*1024)throw bulkError('每次附件总量最多 20 MB',413);
+  const identity={wire,generation,resumeId,epoch:wire.__dshFrontEpoch,nativeGeneration:wire.__dshNativeGeneration},controller=new AbortController(),operation={wire,controller},abort=()=>controller.abort(signal.reason||Object.assign(Error('上传已取消'),{name:'AbortError'}));
+  const current=()=>!bulkAuthBlocked&&!blocked&&!loginRequired&&generation===identity.generation&&sockets.has(wire)&&wire.readyState===1&&wire.__dshNativeConnected&&resumeId===identity.resumeId&&wire.__dshFrontEpoch===identity.epoch&&wire.__dshNativeGeneration===identity.nativeGeneration;
+  const requestId=typeof traceId==='string'&&/^[a-f0-9-]{36}$/i.test(traceId)?traceId:crypto.randomUUID(),headers={'content-type':'application/octet-stream','x-dsh-upload-files':encodeURIComponent(JSON.stringify(metadata)),'x-dsh-upload-id':requestId,'x-dsh-scope':scope.token,'x-dsh-page-id':wire.__dshPageId,'x-dsh-page-resume':identity.resumeId,'x-dsh-client-id':client,'x-dsh-connection-id':wire.__dshDiagnosticId,'x-dsh-front-epoch':identity.epoch,'x-dsh-native-generation':String(identity.nativeGeneration)};
+  if(signal?.aborted)throw signal.reason||Object.assign(Error('上传已取消'),{name:'AbortError'});signal?.addEventListener('abort',abort,{once:true});bulkOperations.add(operation);
+  try{
+   if(!current())throw bulkError('附件上传连接已更换');
+   const {response,data}=await connectionJSON(new URL('/w/'+scope.id+'/api/attachment-upload',location.origin).href,{method:'POST',headers,body:new Blob(files,{type:'application/octet-stream'}),cache:'no-store',redirect:'manual',signal:controller.signal},65000);
+   if(!current()||controller.signal.aborted)throw controller.signal.reason||bulkError('附件上传连接已更换，消息尚未发送');
+   if(response.status===401||response.type==='opaqueredirect'||[302,303].includes(response.status))checkReadAuthentication(credentialRevision,'other');
+   if(response.status!==200||!data?.result?.files)throw bulkError('附件上传未确认；文件选择已保留，请稍后重试',response.status||503);
+   if(response.headers.get('x-dsh-upload-id')!==requestId||response.headers.get('x-dsh-front-epoch')!==identity.epoch||response.headers.get('x-dsh-native-generation')!==String(identity.nativeGeneration)||data.requestId!==requestId||data.epoch!==identity.epoch||data.nativeGeneration!==identity.nativeGeneration||data.protocol!=='dsh-attachment-upload-v1')throw bulkError('附件上传回应身份不匹配');
+   return data.result;
+  }finally{signal?.removeEventListener('abort',abort);bulkOperations.delete(operation);}
+ };
+ // Older fronts advertise only directory reads. Fall back before dispatch only;
+ // a failed isolated read never queues a second copy onto the page replay lane.
+ window.__DSH_READ_EXECUTION_RPC__=async(method,params,options={})=>{
+  if(!['thread/read','thread/turns/list','thread/goal/get','config/read','configRequirements/read'].includes(method))throw bulkError('执行元数据读取类型无效',403);
+  if(!await window.__DSH_WAIT_BULK_READ_HTTP__(options))return null;
+  if(!bulkState()?.wire?.__dshIsolatedReadMethods?.has(method))return null;
+  return window.__DSH_READ_BULK_RPC__(method,params,options);
+ };
  addEventListener('dsh:authentication-required',()=>{bulkAuthBlocked=true;cancelBulkReads(bulkError('请重新登录',401));});
  let connectionState='connected',statusTimer=null,statusNode=null,lastSyncAt=0,recoveryStartedAt=null;
  function connectionStatus(state,{silent=false,reason}={}){
@@ -121,7 +167,7 @@
    const rebuildGeneration=++generation;blocked=true;window.__DSH_CONNECTION_PAUSED__=true;connectionStatus('syncing');
    // Never replay messages into a replacement server session. Drop the old
    // transport only, rebuild the original native AppHost, then read history.
-   hostNeedsRecreation=true;window.__DSH_RESET_APP_HOST__?.();window.__DSH_RESET_BROWSER_PORTS__();outbound.clear();outboundBytes=0;clientSeq=0;serverSeq=0;resumeId=null;
+   hostNeedsRecreation=true;window.__DSH_RESET_APP_HOST__?.();window.__DSH_RESET_BROWSER_PORTS__();outbound.clear();outboundBytes=0;clientSeq=0;serverSeq=0;replySeq.rpc=replySeq['app-host']=0;replySnapshotSeq=0;resumeId=null;
    for(const ws of sockets)ws.close(4000,'page session replacement');
    const renewed=scopeReady||await renewScope();if(!renewed||loginRequired||rebuildGeneration!==generation){blocked=true;window.__DSH_CONNECTION_PAUSED__=true;connectionStatus('unavailable');return;}
    blocked=false;window.__DSH_CONNECTION_PAUSED__=false;
@@ -146,7 +192,7 @@
    if(document.visibilityState!=='visible'){control(ws,{type:'dsh:ping',nonce:crypto.randomUUID()});continue;}
    // Probe on foreground; a missed response replaces only that socket.
    if(!ws.__dshPingTimer){const nonce=crypto.randomUUID();ws.__dshPingNonce=nonce;control(ws,{type:'dsh:ping',nonce});
-    ws.__dshPingTimer=setTimeout(()=>{ws.__dshPingTimer=null;if(document.visibilityState==='visible'&&ws.__dshPingNonce===nonce){connectionTrace({component:'page-ws',stage:'failed',reason:'heartbeat_timeout',connectionId:ws.__dshDiagnosticId,lastMessageAgeMs:Date.now()-(ws.__dshLastMessageAt||ws.__dshOpenedAt||Date.now()),lastPongAgeMs:Date.now()-(ws.__dshLastPongAt||ws.__dshOpenedAt||Date.now()),socketState:ws.readyState,bufferedBytes:ws.bufferedAmount});ws.close(4000,'foreground connection stale');}},8000);}
+    ws.__dshPingTimer=setTimeout(()=>{ws.__dshPingTimer=null;if(document.visibilityState==='visible'&&ws.__dshPingNonce===nonce){connectionTrace({component:'page-ws',stage:'failed',reason:'heartbeat_timeout',connectionId:ws.__dshDiagnosticId,lastMessageAgeMs:Date.now()-(ws.__dshLastMessageAt||ws.__dshOpenedAt||Date.now()),lastPongAgeMs:Date.now()-(ws.__dshLastPongAt||ws.__dshOpenedAt||Date.now()),socketState:ws.readyState,bufferedBytes:ws.bufferedAmount});ws.__dshNativeConnected=false;ws.close(4000,'foreground connection stale');const connected=[...sockets].some(other=>other!==ws&&other.__dshGeneration===generation&&other.readyState===1&&other.__dshNativeConnected);if(window.__DSH_EXECUTION_CONNECTED__!==connected){window.__DSH_EXECUTION_CONNECTED__=connected;window.dispatchEvent(new Event('dsh:execution-state'));}refreshBulkState();if(!connected&&!blocked&&!loginRequired&&!frozen&&navigator.onLine!==false){connectionStatus('reconnecting');window.__DSH_RECONNECT_TRANSPORT__?.();}}},8000);}
   }
   heartbeatTimer=setTimeout(heartbeat,activeTasks?20000:60000);
  }
@@ -157,7 +203,7 @@
    const next=new URL(url,location.href),owned=next.origin===location.origin.replace(/^http/,'ws')&&next.pathname==='/w/'+scope.id+'/ws';
    const connectionId=owned?crypto.randomUUID():null;if(owned){next.searchParams.set('scopeToken',scope.token);next.searchParams.set('dshDiag',connectionId);const identity=window.__DSH_CLIENT_LOG__?.identity?.();if(identity?.pageId)next.searchParams.set('dshDiagPage',identity.pageId);if(identity?.uiVersion)next.searchParams.set('dshDiagUI',identity.uiVersion);}if(owned)window.__DSH_BEFORE_CONTROL_CONNECT__?.();super(next.href,protocols);if(!owned)return;this.__dshDiagnosticId=connectionId;const startedAt=Date.now();const handshake=deadlineOperation('page-ws-handshake',document.visibilityState==='visible'&&!frozen?HANDSHAKE_DEADLINE_MS:0,operation=>{const socket=operation.socket;if(!socket||socket.__dshHandshakeOperation!==operation||!sockets.has(socket)||socket.readyState>1||socket.__dshHelloReceived)return;if(document.visibilityState!=='visible'||frozen){operation.done=false;operation.timedOut=false;operation.arm(HANDSHAKE_DEADLINE_MS);return;}connectionTrace({component:'page-ws',stage:'pending',connectionId,reason:'timeout',handshakeComplete:false,socketState:socket.readyState,durationMs:Date.now()-startedAt});connectionTrace({component:'page-ws',stage:'failed',connectionId,reason:'timeout',handshakeComplete:false,socketState:socket.readyState,durationMs:Date.now()-startedAt});const healthy=[...sockets].some(ws=>ws!==socket&&ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshHelloReceived&&ws.__dshNegotiated);socket.close(4000,'hello timeout');if(!healthy&&!blocked&&!loginRequired&&!frozen&&navigator.onLine!==false){connectionStatus('reconnecting');window.__DSH_RECONNECT_TRANSPORT__?.();}});handshake.socket=this;this.__dshHandshakeOperation=handshake;connectionTrace({component:'page-ws',stage:'attempt',connectionId});this.addEventListener('open',()=>{this.__dshOpenedAt=Date.now();connectionTrace({component:'page-ws',stage:'connected',connectionId,durationMs:Date.now()-startedAt,handshakeComplete:false});});this.addEventListener('error',()=>connectionTrace({component:'page-ws',stage:'failed',connectionId,reason:'socket_error',socketState:this.readyState,handshakeComplete:!!this.__dshHelloReceived}));
     this.__dshOwned=true;this.__dshGeneration=generation;sockets.add(this);for(const waiter of bulkWaiters)if(!waiter.wire)waiter.wire=this;
-    this.addEventListener('close',event=>{handshake.cleanup();connectionTrace({component:'page-ws',stage:'closed',connectionId,reason:'socket_closed',closeCode:event.code,wasClean:event.wasClean,handshakeComplete:!!this.__dshHelloReceived,durationMs:Date.now()-startedAt,lastMessageAgeMs:Date.now()-(this.__dshLastMessageAt||startedAt),socketState:this.readyState,bufferedBytes:this.bufferedAmount});sockets.delete(this);cancelBulkReads(bulkError('目录读取连接已中断'),this);clearTimeout(this.__dshPingTimer);const connected=[...sockets].some(ws=>ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshNativeConnected);window.__DSH_EXECUTION_CONNECTED__=connected;window.dispatchEvent(new Event('dsh:execution-state'));if(!connected){if(this.__dshHelloReceived&&!blocked)connectionStatus('reconnecting');renewScope();}});
+    this.addEventListener('close',event=>{handshake.cleanup();connectionTrace({component:'page-ws',stage:'closed',connectionId,reason:'socket_closed',closeCode:event.code,wasClean:event.wasClean,handshakeComplete:!!this.__dshHelloReceived,durationMs:Date.now()-startedAt,lastMessageAgeMs:Date.now()-(this.__dshLastMessageAt||startedAt),socketState:this.readyState,bufferedBytes:this.bufferedAmount});sockets.delete(this);cancelBulkReads(bulkError('目录读取连接已中断'),this);clearTimeout(this.__dshPingTimer);const connected=[...sockets].some(ws=>ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshNativeConnected);if(window.__DSH_EXECUTION_CONNECTED__!==connected){window.__DSH_EXECUTION_CONNECTED__=connected;window.dispatchEvent(new Event('dsh:execution-state'));}if(!connected){if(this.__dshHelloReceived&&!blocked)connectionStatus('reconnecting');renewScope();}});
    this.addEventListener('message',event=>{const receivedAt=Date.now(),receivedMono=typeof performance==='undefined'?receivedAt:performance.now();this.__dshLastMessageAt=receivedAt;
     if(this.__dshGeneration!==generation){event.stopImmediatePropagation?.();return;}
     let m;try{m=JSON.parse(event.data);}catch{return;}
@@ -166,20 +212,38 @@
      clearTimeout(heartbeatTimer);event.stopImmediatePropagation?.();rebuildConnection();return;
     }
     if(m.type==='hello-ack'){
-     handshake.cleanup();this.__dshHelloReceived=true;this.__dshPageId=m.clientId;this.__dshBulkReadProtocol=m.dshBulkReadProtocol;this.__dshFrontEpoch=m.dshEpoch;this.__dshNativeGeneration=m.dshNativeGeneration;connectionTrace({component:'page-ws',stage:'received',connectionId,handshakeComplete:true,resumed:!!m.dshResumed,durationMs:Date.now()-startedAt});this.__dshNegotiated=m.dshProtocol==='dsh-page-resume-v1';
+     this.__dshAttachmentUploadProtocol=m.dshAttachmentUploadProtocol;
+     this.__dshReplyProtocol=m.dshReplyProtocol===REPLY_STREAM_PROTOCOL?REPLY_STREAM_PROTOCOL:null;this.__dshReplySnapshotSeq=Number.isSafeInteger(m.dshReplySnapshotSeq)?m.dshReplySnapshotSeq:0;
+     handshake.cleanup();this.__dshHelloReceived=true;this.__dshPageId=m.clientId;this.__dshBulkReadProtocol=m.dshBulkReadProtocol;this.__dshIsolatedReadMethods=new Set(Array.isArray(m.dshIsolatedReadMethods)?m.dshIsolatedReadMethods:[]);this.__dshFrontEpoch=m.dshEpoch;this.__dshNativeGeneration=m.dshNativeGeneration;connectionTrace({component:'page-ws',stage:'received',connectionId,handshakeComplete:true,resumed:!!m.dshResumed,durationMs:Date.now()-startedAt});this.__dshNegotiated=m.dshProtocol==='dsh-page-resume-v1';
      if(this.__dshNegotiated){
       if(resumeId&&(!m.dshResumed||resumeId!==m.dshResumeId)){event.stopImmediatePropagation?.();rebuildConnection();return;}
       resumeId=m.dshResumeId;
+      if(this.__dshReplyProtocol)replySnapshotSeq=Math.max(replySnapshotSeq,this.__dshReplySnapshotSeq);
       try{acknowledgeClient(m.dshReceivedSeq);}catch{this.close(4000,'transport sequence invalid');return;}
       // Only resume the same server session. Sequence deduplication precedes
       // server dispatch; this is not re-submission of a native operation.
       for(const frame of outbound.values())NativeWS.prototype.send.call(this,frame.raw);
       if(m.dshResumed)connectionStatus('syncing');
      }
+     // A resumed page may already have ACKed the original readiness event.
+     // Use only an explicit snapshot from the authenticated current handshake;
+     // absence on an older front still waits for the normal Native event.
+     if(typeof m.dshNativeConnected==='boolean'){
+      this.__dshNativeConnected=m.dshNativeConnected;
+      window.__DSH_EXECUTION_CONNECTED__=[...sockets].some(ws=>ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshNativeConnected);
+      window.dispatchEvent(new Event('dsh:execution-state'));
+     }
      heartbeat();refreshBulkState();
     }
     if(m.type==='dsh:ack'){try{acknowledgeClient(m.seq);}catch{this.close(4000,'transport acknowledgement invalid');}event.stopImmediatePropagation?.();return;}
     if(m.type==='dsh:pong'){this.__dshLastPongAt=Date.now();if(m.nonce===this.__dshPingNonce){clearTimeout(this.__dshPingTimer);this.__dshPingTimer=null;this.__dshPingNonce=null;}event.stopImmediatePropagation?.();return;}
+    if(m.dshReplyStream!==undefined||m.dshReplySeq!==undefined){
+     const stream=m.dshReplyStream,seq=m.dshReplySeq;
+     if(!this.__dshReplyProtocol||!Object.hasOwn(replySeq,stream)||!Number.isSafeInteger(seq)||seq<1||m.dshPageSeq!==undefined){event.stopImmediatePropagation?.();this.close(4000,'reply stream invalid');return;}
+     if(seq<=replySeq[stream]){control(this,{type:'dsh:reply-ack',stream,seq:replySeq[stream]});event.stopImmediatePropagation?.();return;}
+     if(seq!==replySeq[stream]+1){event.stopImmediatePropagation?.();this.close(4000,'reply stream gap');return;}
+     replySeq[stream]=seq;control(this,{type:'dsh:reply-ack',stream,seq});
+    }
     if(Number.isSafeInteger(m.dshPageSeq)){
      if(m.dshPageSeq<=serverSeq){control(this,{type:'dsh:ack',seq:serverSeq});event.stopImmediatePropagation?.();return;}
      if(m.dshPageSeq!==serverSeq+1){event.stopImmediatePropagation?.();this.close(4000,'transport gap');return;}
@@ -188,7 +252,10 @@
     // Preserve transport ACK/order even when an old replay cannot modify an
     // already completed local turn. The official renderer handles other events.
     if(m.payload?.type==='mcp-notification'&&window.__DSH_ACCEPT_NATIVE_NOTIFICATION__?.(m.payload.method,m.payload.params)===false){event.stopImmediatePropagation?.();return;}
-    if(m.payload?.type==='codex-app-server-connection-changed'){const oldGeneration=this.__dshNativeGeneration;this.__dshNativeConnected=m.payload.state==='connected';if(Number.isSafeInteger(m.payload.dshNativeGeneration))this.__dshNativeGeneration=m.payload.dshNativeGeneration;if(m.dshEpoch)this.__dshFrontEpoch=m.dshEpoch;if(!this.__dshNativeConnected||oldGeneration!==this.__dshNativeGeneration)cancelBulkReads(bulkError('目录读取宿主连接已更换'),this);else refreshBulkState();connectionTrace({component:'page-ws',stage:this.__dshNativeConnected?'connected':'unavailable',connectionId,reason:this.__dshNativeConnected?'native_ready':'native_disconnected',nativeOnline:this.__dshNativeConnected});window.__DSH_EXECUTION_CONNECTED__=[...sockets].some(ws=>ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshNativeConnected);window.dispatchEvent(new Event('dsh:execution-state'));}
+    // The authenticated hello is newer than retained readiness snapshots.
+    // Receipt still advances, but replay cannot undo that current fact.
+    if(m.payload?.type==='codex-app-server-connection-changed'&&m.dshReplyStream==='rpc'&&m.dshReplySeq<=replySnapshotSeq){event.stopImmediatePropagation?.();return;}
+    if(m.payload?.type==='codex-app-server-connection-changed'){const oldGeneration=this.__dshNativeGeneration,oldEpoch=this.__dshFrontEpoch,wasConnected=this.__dshNativeConnected;this.__dshNativeConnected=m.payload.state==='connected';if(Number.isSafeInteger(m.payload.dshNativeGeneration))this.__dshNativeGeneration=m.payload.dshNativeGeneration;if(m.dshEpoch)this.__dshFrontEpoch=m.dshEpoch;if(!this.__dshNativeConnected||oldGeneration!==this.__dshNativeGeneration)cancelBulkReads(bulkError('目录读取宿主连接已更换'),this);else refreshBulkState();connectionTrace({component:'page-ws',stage:this.__dshNativeConnected?'connected':'unavailable',connectionId,reason:this.__dshNativeConnected?'native_ready':'native_disconnected',nativeOnline:this.__dshNativeConnected});const connected=[...sockets].some(ws=>ws.__dshGeneration===generation&&ws.readyState===1&&ws.__dshNativeConnected);if(window.__DSH_EXECUTION_CONNECTED__!==connected||wasConnected!==this.__dshNativeConnected||oldGeneration!==this.__dshNativeGeneration||oldEpoch!==this.__dshFrontEpoch){window.__DSH_EXECUTION_CONNECTED__=connected;window.dispatchEvent(new Event('dsh:execution-state'));}}
     if(m.dshEpoch||m.epoch)window.__DSH_HOST_METADATA_EPOCH__?.(m.dshEpoch||m.epoch);
     if(window.__DSH_IPC_CACHE_RESPONSE__?.(m.payload)===true)Object.defineProperty(event,'data',{value:JSON.stringify(m)});
     receivedFrame?.();
@@ -223,16 +290,17 @@
    if(!this.__dshOwned)return super.send(raw);
    if(this.__dshGeneration!==generation)throw Error('旧连接已替换，请核对当前会话');
    const m=JSON.parse(raw),rpc=m.request?.args?.[0]?.request;if(rpc)window.__DSH_PERF__?.start(rpc.id,rpc.method);
-   if(m.type==='hello'){m.dshClientId=client;m.dshProtocol='dsh-page-resume-v1';if(resumeId)m.dshResumeId=resumeId;m.dshAck=serverSeq;return super.send(JSON.stringify(m));}
+   const wire=()=>{try{if(m.type==='opencodex:ipc-invoke'){const at=Date.now();window.__DSH_CLIENT_LOG__?.wire?.(m.request?.args?.[0],{connectionId:this.__dshDiagnosticId,bufferedBytes:this.bufferedAmount,socketState:this.readyState,handshakeComplete:!!this.__dshHelloReceived&&!!this.__dshNegotiated,transportConnected:this.readyState===1,nativeOnline:this.__dshNativeConnected===true,count:outbound.size,...this.__dshLastMessageAt?{lastMessageAgeMs:Math.max(0,at-this.__dshLastMessageAt)}:{},...this.__dshLastPongAt?{lastPongAgeMs:Math.max(0,at-this.__dshLastPongAt)}:{}},{at,mono:performance.now()});}}catch{/* Metadata collection must not change a successful send or its receipt tracking. */}};
+   if(m.type==='hello'){m.dshClientId=client;m.dshProtocol='dsh-page-resume-v1';m.dshReplyProtocol=REPLY_STREAM_PROTOCOL;m.dshReplyAck={...replySeq};if(resumeId)m.dshResumeId=resumeId;m.dshAck=serverSeq;return super.send(JSON.stringify(m));}
    if(blocked)throw Error('页面连接尚未恢复，请保留草稿后重试');
    if(this.readyState!==1)throw Error('连接正在恢复，消息尚未发送');
-   if(this.__dshNegotiated&&!['dsh:sync','dsh:ping','dsh:ack'].includes(m.type)){
+   if(this.__dshNegotiated&&!['dsh:sync','dsh:ping','dsh:ack','dsh:reply-ack'].includes(m.type)){
     m.dshClientSeq=clientSeq+1;const encoded=JSON.stringify(m),bytes=encoded.length*2;
     if(outboundBytes+bytes>32*1024*1024)throw Error('连接尚未确认，请稍后重试');
     // Native WS semantics: do not retain a call that failed before send.
-    super.send(encoded);clientSeq++;outbound.set(clientSeq,{raw:encoded,bytes});outboundBytes+=bytes;return;
+    super.send(encoded);wire();clientSeq++;outbound.set(clientSeq,{raw:encoded,bytes});outboundBytes+=bytes;return;
    }
-   return super.send(raw);
+   const result=super.send(raw);wire();return result;
   }
  };
  async function sync(){

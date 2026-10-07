@@ -22,7 +22,7 @@ const pushDevice = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab
 
 func newPushTest(t *testing.T) *Gateway {
 	t.Helper()
-	g := NewGateway(t.TempDir(), "https://example.invalid", []byte(strings.Repeat("s", 32)), false)
+	g := NewGateway(t.TempDir(), "https://workbench.example.test", []byte(strings.Repeat("s", 32)), false)
 	var e error
 	g.push, e = newPushService(g)
 	if e != nil {

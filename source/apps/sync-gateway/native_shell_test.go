@@ -31,7 +31,7 @@ func TestNativeShellAssetsAndBootstrapWithoutMac(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatal("unknown workspace accepted")
 	}
-	record := NativeRecord{Scope: "ai", Key: "bootstrap", Kind: "bootstrap", SourceGeneration: "source-db", Generation: "g", Revision: 1, Payload: json.RawMessage(`{"config":{"workspaceRoots":["/workspace/primary"]}}`)}
+	record := NativeRecord{Scope: "ai", Key: "bootstrap", Kind: "bootstrap", SourceGeneration: "source-db", Generation: "g", Revision: 1, Payload: json.RawMessage(`{"config":{"workspaceRoots":["/workspace/example"]}}`)}
 	raw, _ = json.Marshal(record)
 	if e := g.apply(frame{Epoch: "source", Seq: 1, Scope: "ai", Event: Event{Type: "nativeRecord"}, Data: raw}); e != nil {
 		t.Fatal(e)
@@ -43,7 +43,7 @@ func TestNativeShellAssetsAndBootstrapWithoutMac(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	g.serveNativeBootstrap(w, httptest.NewRequest("GET", "http://127.0.0.1/sync/v1/w/zyy/native-bootstrap", nil), "zyy")
-	if w.Code == 200 || strings.Contains(w.Body.String(), "/workspace/primary") {
+	if w.Code == 200 || strings.Contains(w.Body.String(), "/workspace/example") {
 		t.Fatal("bootstrap crossed scope")
 	}
 }

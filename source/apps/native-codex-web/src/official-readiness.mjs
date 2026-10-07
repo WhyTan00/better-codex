@@ -10,12 +10,13 @@ const nativeReady=native=>native.state==='ready'&&!native.closed&&native.socket?
 const portableOptionalPoints=new Set(['static.cache.main.macos-push-registration','static.cache.main.native-pet.prewarm','static.cache.main.native-pet.restore','static.cache.main.worktree-shell-environment']);
 // Upstream uses the first message while discovering a new bundle and the
 // second when restoring the same unsupported locator from its local cache.
+const portableObservedBuilds=new Set(['26.928.20755:12246','26.1002.52244:13536']);
 const portableOptionalReasons=new Set(['Expected 1 candidates but found 0','Cached locator did not resolve']);
 export function gatewayTransportReady(value,{portable=false}={}){
  const ipc=value?.officialIpc;
  if(value?.gateway?.kind!=='official'||ipc?.ready!==true||!Array.isArray(ipc.listeners)||!ipc.listeners.includes('codex_desktop:connect-app-host'))return false;
  if(value.ok===true)return true;
- if(!portable||value.officialBundle?.version!=='26.928.20755'||String(value.officialBundle?.build)!=='12246')return false;
+ if(!portable||!portableObservedBuilds.has(value.officialBundle?.version+':'+String(value.officialBundle?.build)))return false;
  if(!['officialBundle','officialIpc','officialAppServer','officialElectronModule','officialNotification','officialTray'].every(key=>value.checks?.[key]===true))return false;
  const c=value.compatibility;
  return c?.unavailableCount===0&&c.status==='degraded'&&Array.isArray(c.abnormalPoints)&&c.abnormalPoints.length>0&&c.abnormalPoints.length===c.abnormalCount&&c.abnormalPoints.every(p=>portableOptionalPoints.has(p.id)&&p.issues?.length>0&&p.issues.every(i=>i.type==='unsupported'&&portableOptionalReasons.has(i.reason)));

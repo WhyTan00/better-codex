@@ -2,7 +2,6 @@
 // This module never queues an execution or treats cached data as a write ACK.
 (()=>{
  const scope=window.__DSH_SCOPE__;if(!scope)return;
- let composerModel={model:'gpt-6.1-sol',model_reasoning_effort:'max'};
  // A task's read-only model label is separate from execution settings. Never
  // populate latestCollaborationMode from a history cache: turn/start consumes it.
  const readModels=new Map(),readModelListeners=new Map();
@@ -10,16 +9,22 @@
  const rememberReadModel=(id,thread)=>{
   if(thread?.id!==id||typeof thread.model!=='string'||!thread.model.trim()||thread.reasoningEffort!=null&&!['none','minimal','low','medium','high','xhigh','max','ultra','persistent'].includes(thread.reasoningEffort))return;
   const effort=thread.reasoningEffort??null,prior=readModels.get(id);if(prior?.model===thread.model&&prior?.reasoningEffort===effort)return;
-  readModels.set(id,{model:thread.model,reasoningEffort:effort});while(readModels.size>500){const oldest=readModels.keys().next().value;readModels.delete(oldest);for(const listener of readModelListeners.get(oldest)||[])listener();}for(const listener of readModelListeners.get(id)||[])listener();
+  readModels.set(id,{...prior,model:thread.model,reasoningEffort:effort});while(readModels.size>500){const oldest=readModels.keys().next().value;readModels.delete(oldest);for(const listener of readModelListeners.get(oldest)||[])listener();}for(const listener of readModelListeners.get(id)||[])listener();
  };
- const composerConfig=value=>value?.config?{...value,config:{...value.config,...composerModel}}:value;
+ // This small acknowledged projection is for immediate display only. Native
+ // resume/settings ACKs supersede it; execution never reads it as authority.
+ const threadTierRevision=new Map(),validThreadTier=value=>value===null||['priority','default'].includes(value);
+ const showThreadTier=(id,value)=>{const prior=readModels.get(id);if(prior&&Object.hasOwn(prior,'serviceTier')&&prior.serviceTier===value)return;readModels.set(id,{...prior,serviceTier:value});for(const listener of readModelListeners.get(id)||[])listener();};
+ function rememberThreadTier(id,value){if(!/^[0-9a-f-]{36}$/i.test(id||'')||!validThreadTier(value))return;threadTierRevision.set(id,(threadTierRevision.get(id)||0)+1);showThreadTier(id,value);saveMeta('thread-service-tier:'+id,{scope:scope.id,threadId:id,serviceTier:value,confirmedAt:Date.now()}).catch(()=>{});}
+ async function restoreThreadTier(id){if(!/^[0-9a-f-]{36}$/i.test(id||''))return;const revision=threadTierRevision.get(id)||0,saved=await meta('thread-service-tier:'+id).catch(()=>null);if((threadTierRevision.get(id)||0)!==revision||saved?.scope!==scope.id||saved.threadId!==id||!validThreadTier(saved.serviceTier))return;showThreadTier(id,saved.serviceTier);}
+ const composerConfig=value=>value;
  const refreshModelDirectory=()=>window.dispatchEvent(new MessageEvent('message',{data:{type:'ipc-broadcast',method:'query-cache-invalidate',params:{queryKey:['models','list']}}}));
  const refreshComposer=()=>{for(const key of ['user-saved-config','config'])window.dispatchEvent(new MessageEvent('message',{data:{type:'ipc-broadcast',method:'query-cache-invalidate',params:{queryKey:[key]}}}));refreshModelDirectory();};
  // The renderer can start from an offline model/list snapshot. Once Native
  // returns, invalidate that discovery query without changing a draft's choice.
  let modelDirectoryConnected=window.__DSH_EXECUTION_CONNECTED__===true;
  addEventListener('dsh:execution-state',()=>{const connected=window.__DSH_EXECUTION_CONNECTED__===true;if(connected&&!modelDirectoryConnected)refreshModelDirectory();modelDirectoryConnected=connected;});
- window.__DSH_RESET_NEW_CHAT_MODEL__=()=>{composerModel={model:'gpt-6.1-sol',model_reasoning_effort:'max'};window.__DSH_NEW_CHAT_MODEL_RESET_GENERATION__=(window.__DSH_NEW_CHAT_MODEL_RESET_GENERATION__??0)+1;window.dispatchEvent(new CustomEvent('dsh:new-chat-model-reset'));refreshComposer();};
+ window.__DSH_RESET_NEW_CHAT_MODEL__=()=>{invalidateReadChecks();refreshComposer();};
  const READS=new Set(['thread/read','thread/turns/list','thread/items/list']);
  const AUX=new Set(['getAuthStatus','config/read','model/list','modelProvider/capabilities/read','account/read','account/rateLimits/read','configRequirements/read','experimentalFeature/list','remoteControl/status/read','collaborationMode/list','permissionProfile/list','thread/list','thread/loaded/list','skills/list','app/list','mcpServerStatus/list']);
  const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().filter(k=>v[k]!==undefined).map(k=>[k,canonical(v[k])])):v;
@@ -54,15 +59,22 @@
   return bounded(opening,'初始化',timeoutMs,()=>{if(!openingState.ready)openingState.timedOutAt=Date.now();});
  }
  const cacheRequest=(request,tx,label,timeoutMs)=>bounded(requestValue(request),label,timeoutMs,()=>{try{tx?.abort?.();}catch{}});
- const cacheCompletion=(tx,label,timeoutMs)=>bounded(done(tx),label,timeoutMs,()=>{try{tx?.abort?.();}catch{}});
+ const cacheCompletion=(tx,label,timeoutMs)=>{const completion=bounded(done(tx),label,timeoutMs,()=>{try{tx?.abort?.();}catch{}});completion.catch(()=>{});return completion;};
  const readStoreValue=async(db,storeName,key,deadline,label)=>{const tx=db.transaction(storeName),request=tx.objectStore(storeName).get(key);return cacheRequest(request,tx,label,remaining(deadline));};
  const cacheCursor=(request,tx,label,timeoutMs,visit)=>bounded(new Promise((resolve,reject)=>{request.onerror=()=>reject(request.error);request.onsuccess=()=>{const cursor=request.result;if(!cursor)return resolve();try{if(visit(cursor)===false)return resolve();cursor.continue();}catch(error){reject(error);}};}),label,timeoutMs,()=>{try{tx?.abort?.();}catch{}});
+ let authenticationLockRevision=0;
  let memoryMeta=new Map(),volatileCatalog=null,catalogRevision=0,syncing=null,remoteServices=null,nativeClient=null,stopNativeAuthRecovery=null;
  let remoteReady=false,appHostGeneration=0,appHostError=null;const ipcReads=new Map(),rpcReads=new Map(),resumeReads=new Map();
  const appHostState=()=>{window.__DSH_APP_HOST_READY__=remoteReady;window.dispatchEvent(new CustomEvent('dsh:app-host-state'));};
  window.__DSH_RESET_APP_HOST__=()=>{appHostGeneration++;remoteReady=false;appHostError=null;resetAuxiliaryIpc();appHostState();};
- const hiddenThreads=new Set(),startedThreads=new Set();
+ const hiddenThreads=new Set(),startedThreads=new Set(),internalDirectoryThreads=new Set();
+ const subagentSources=new Set(['subagent','subAgent','subAgentReview','subAgentCompact','subAgentThreadSpawn','subAgentOther']);
+ const subagentSource=value=>{if(subagentSources.has(value))return true;if(typeof value==='string'&&value.length<8192&&value.startsWith('{'))try{return subagentSource(JSON.parse(value));}catch{return false;}return !!(value&&typeof value==='object'&&(Object.hasOwn(value,'subAgent')||Object.hasOwn(value,'subagent')));};
+ const internalDirectoryThread=thread=>thread?.ephemeral===true||thread?.threadSource==='thread_title'||!!thread?.parentThreadId&&thread?.canAcceptDirectInput===false||subagentSource(thread?.source)||subagentSource(thread?.sourceKind)||subagentSource(thread?.threadSource);
+ function hideInternalDirectoryThread(id){if(!id)return;internalDirectoryThreads.add(id);startedThreads.delete(id);const changed=!hiddenThreads.has(id);hiddenThreads.add(id);if(changed)queueMicrotask(()=>window.dispatchEvent(new Event('dsh:thread-list-visibility')));}
  function listableThread(thread){
+  if(internalDirectoryThread(thread)){hideInternalDirectoryThread(thread?.id);return false;}
+  if(internalDirectoryThreads.has(thread?.id))return false;
   if(!thread?.id)return true;
   const started=!!(thread.preview?.trim()||thread.name?.trim()||thread.turns?.length||thread.status?.type==='active');
   if(started)startedThreads.add(thread.id);
@@ -71,7 +83,7 @@
   if(changed)queueMicrotask(()=>window.dispatchEvent(new Event('dsh:thread-list-visibility')));
   return visible;
  }
- const listableEntry=entry=>!entry?.nativeThread||listableThread(entry.nativeThread);
+ const listableEntry=entry=>{if(internalDirectoryThread(entry)){hideInternalDirectoryThread(entry?.threadId);return false;}return !internalDirectoryThreads.has(entry?.threadId)&&(!entry?.nativeThread||listableThread(entry.nativeThread));};
  const listResult=(method,value)=>method==='thread/list'&&value?{...value,data:(value.data||[]).filter(listableThread)}:value;
  window.__DSH_THREAD_LIST_VISIBILITY__={isHidden:id=>hiddenThreads.has(id),listableEntry};
  const diagnostics={ipc:{},rpc:{},hits:0,misses:0,hostCreated:false,readMisses:[],coalesced:0,refreshSkipped:0,settingsRefreshes:0,auxRefreshes:0,ipcStableHits:0,catalogPollSkipped:0,localSharedNotifications:0};
@@ -80,7 +92,7 @@
  function refreshOnce(key,ttl,read,save){
   const active=refreshes.get(key);if(active?.epoch===readEpoch){diagnostics.coalesced++;return active.promise;}
   if(Date.now()-(checkedReads.get(key)||0)<ttl){diagnostics.refreshSkipped++;return Promise.resolve();}
-  const epoch=readEpoch,entry={epoch,promise:null};entry.promise=Promise.resolve().then(read).then(async value=>{if(epoch===readEpoch){await save(value);if(epoch===readEpoch)checkedReads.set(key,Date.now());}return value;}).finally(()=>{if(refreshes.get(key)===entry)refreshes.delete(key);});refreshes.set(key,entry);return entry.promise;
+  const epoch=readEpoch,entry={epoch,promise:null};entry.promise=Promise.resolve().then(read).then(value=>{if(epoch===readEpoch){checkedReads.set(key,Date.now());Promise.resolve().then(()=>save(value)).catch(()=>{diagnostics.auxCacheFailures=(diagnostics.auxCacheFailures||0)+1;});}return value;}).finally(()=>{if(refreshes.get(key)===entry)refreshes.delete(key);});refreshes.set(key,entry);return entry.promise;
  }
  const STABLE_IPC=new Set(['os-info','locale-info','codex-home','home-directory']);
  const stableIpcPending=new Map(),stableIpcChecked=new Map();
@@ -89,7 +101,7 @@
  function completeAuxiliaryIpc(id,message,hostId,payload){const key=auxiliaryIpcId(hostId,id),shared=auxiliaryIpcPending.get(key);if(!shared||payload&&shared.payload!==payload)return;auxiliaryIpcPending.delete(key);for(const waiter of shared.waiters){rpcReads.delete(waiter.id);waiter.emit('mcp-response',{hostId:shared.hostId,message:{...structuredClone(message),id:waiter.id}});}}
  // A replaced AppHost has a new RPC lifetime. Retire only these pending reads;
  // never replay them or allow an old invocation failure to release a new leader.
- function resetAuxiliaryIpc(){const entries=[...auxiliaryIpcPending.values()];auxiliaryIpcPending.clear();for(const entry of entries){rpcReads.delete(entry.payload.request.id);entry.controller?.abort();const waiters=entry.controller?[{id:entry.payload.request.id,emit:entry.emit},...entry.waiters]:entry.waiters;for(const waiter of waiters){rpcReads.delete(waiter.id);waiter.emit('mcp-response',{hostId:entry.hostId,message:{id:waiter.id,error:{code:-32000,message:'读取连接已更换，请重试',data:{status:503}}}});}}}
+ function resetAuxiliaryIpc(){appCatalogMemory.clear();const entries=[...auxiliaryIpcPending.values()];auxiliaryIpcPending.clear();for(const entry of entries){rpcReads.delete(entry.payload.request.id);entry.controller?.abort();const waiters=entry.controller?[{id:entry.payload.request.id,emit:entry.emit},...entry.waiters]:entry.waiters;for(const waiter of waiters){rpcReads.delete(waiter.id);waiter.emit('mcp-response',{hostId:entry.hostId,message:{id:waiter.id,error:{code:-32000,message:'读取连接已更换，请重试',data:{status:503}}}});}}}
  function resetStableIpc(){for(const [id,entry]of stableIpcPending){ipcReads.delete(id);for(const waiter of entry.waiters)waiter.emit('fetch-response',{requestId:waiter.id,responseType:'error',status:503,error:'连接正在恢复，请重试'});}stableIpcPending.clear();stableIpcChecked.clear();}
  // A successful host path descriptor is constant for this front epoch. It
  // is not a cached worktree status or an execution/permission decision.
@@ -112,15 +124,112 @@
  const statusSubscribers=new Set(),observationSubscribers=new Set(),installed=new WeakSet(),pendingReads=new Map();
  const offlineHydrated=new Set(),offlineHydrations=new Map();
  const broadcast=typeof BroadcastChannel==='function'?new BroadcastChannel('dsh-native-cache:'+scope.id):null;
- async function meta(key,{timeoutMs=CACHE_IO_TIMEOUT_MS}={}){if(memoryMeta.has(key))return memoryMeta.get(key);const deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline)),r=await readStoreValue(db,'meta',key,deadline,'读取缓存元数据');if(r)memoryMeta.set(key,r.value);return r?.value;}
- async function saveMeta(key,value,{timeoutMs=CACHE_IO_TIMEOUT_MS}={}){const deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline)),tx=db.transaction('meta','readwrite'),completion=cacheCompletion(tx,'写入缓存元数据',remaining(deadline));try{tx.objectStore('meta').put({key,value});await completion;memoryMeta.set(key,value);}catch(error){try{tx.abort?.();}catch{}await completion.catch(()=>{});throw error;}}
+ async function meta(key,{timeoutMs=CACHE_IO_TIMEOUT_MS}={}){if(memoryMeta.has(key))return memoryMeta.get(key);const authRevision=authenticationLockRevision,deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline)),r=await readStoreValue(db,'meta',key,deadline,'读取缓存元数据');if(key==='auth-locked'&&authRevision!==authenticationLockRevision)return memoryMeta.get(key);if(r)memoryMeta.set(key,r.value);return r?.value;}
+ async function saveMeta(key,value,{timeoutMs=CACHE_IO_TIMEOUT_MS}={}){const authRevision=key==='auth-locked'?++authenticationLockRevision:null;if(authRevision!==null)memoryMeta.set(key,value);const deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline)),tx=db.transaction('meta','readwrite'),completion=cacheCompletion(tx,'写入缓存元数据',remaining(deadline));try{tx.objectStore('meta').put({key,value});await completion;if(authRevision===null||authRevision===authenticationLockRevision)memoryMeta.set(key,value);}catch(error){try{tx.abort?.();}catch{}await completion.catch(()=>{});throw error;}}
+ // Full display snapshots are optional: one active write and one latest
+ // replacement per key. Native results never await this projection writer.
+ const displayProjectionWrites=new Map();
+ function pumpDisplayProjection(key,entry){
+  if(entry.work)return;
+  entry.work=Promise.resolve().then(async()=>{while(entry.pending){const next=entry.pending;entry.pending=null;if(!next.current())continue;try{await saveMeta(key,next.value);}catch(error){next.failed?.(error);}}}).finally(()=>{entry.work=null;if(entry.pending)pumpDisplayProjection(key,entry);else if(displayProjectionWrites.get(key)===entry)displayProjectionWrites.delete(key);});entry.work.catch(()=>{});
+ }
+ function cacheDisplayProjection(key,value,failed,current=()=>true){
+  let entry=displayProjectionWrites.get(key);if(!entry){entry={pending:null,work:null};displayProjectionWrites.set(key,entry);}
+  entry.pending={value:structuredClone(value),failed,current};pumpDisplayProjection(key,entry);
+ }
+ // Local-only replicas of process items the official renderer has displayed.
+ // Keep per-turn bodies outside the compact first-paint/native read projection.
+ // These objects never supply ownership, execution settings, status or ACKs.
+ const visibleProcessIdentities=new Map(),pendingProcessCapture=new Set(),visibleProcessBodies=new Map(),visibleProcessWrites=new Map(),visibleProcessTimers=new Map(),visibleProcessEpochs=new Map();
+ const visibleProcessKey=(id,turnId)=>'visible-process-v1:'+id+':'+turnId;
+ const visibleProcessItem=item=>item&&typeof item.id==='string'&&item.type!=='userMessage'&&!window.__DSH_FINAL_IDENTITY__?.(item);
+ function processTurns(client,id){const conversation=client.getConversation?.(id);return conversation?(client.getLoadedConversationHistoryTurns?.(conversation)??conversation.turns??[]):[];}
+ function captureVisibleProcesses(client,id,flush=false){
+  if(nativeClient!==client||client.disposed||memoryMeta.get('auth-locked')||internalDirectoryThreads.has(id))return;
+  const witness=confirmedUserHeads.get(id)??visibleProcessIdentities.get(id),sourceGeneration=witness?.sourceGeneration??memoryMeta.get('catalog-generation');if(!sourceGeneration){pendingProcessCapture.add(id);return;}
+  const generation=witness?.sourceGeneration===sourceGeneration?witness.generation:sourceGeneration,epoch=visibleProcessEpochs.get(id)||0;
+  for(const turn of processTurns(client,id)){
+   if(!turn.turnId||!Number.isFinite(turn.turnStartedAtMs)||!Array.isArray(turn.items))continue;
+   const items=turn.items.filter(visibleProcessItem);if(!items.length)continue;
+   const key=visibleProcessKey(id,turn.turnId),old=visibleProcessBodies.get(key),value={schemaVersion:1,scope:scope.id,threadId:id,turnId:turn.turnId,sourceGeneration,generation,turnStartedAtMs:turn.turnStartedAtMs,order:turn.items.map(item=>item.id),items:structuredClone(items)};
+   if(JSON.stringify(old?.value&&{...old.value,savedAt:undefined})===JSON.stringify(value))continue;value.savedAt=Date.now();
+   visibleProcessBodies.set(key,{id,epoch,value,dirty:true});
+  }
+  if(flush){flushVisibleProcesses(id);return;}
+  if(!visibleProcessTimers.has(id))visibleProcessTimers.set(id,setTimeout(()=>{visibleProcessTimers.delete(id);flushVisibleProcesses(id);},800));
+ }
+ function flushVisibleProcesses(id){
+  clearTimeout(visibleProcessTimers.get(id));visibleProcessTimers.delete(id);
+  for(const [key,entry] of visibleProcessBodies){
+   if(entry.id!==id||!entry.dirty||visibleProcessWrites.has(key))continue;
+   entry.dirty=false;const work=Promise.resolve().then(async()=>{
+    const previous=await meta(key).catch(()=>null),invalidated=await meta('visible-process-invalid:'+id).catch(()=>null);
+    if(entry.epoch!==(visibleProcessEpochs.get(id)||0))return;
+    const value=entry.value;
+    if(previous&&['scope','threadId','turnId','sourceGeneration','generation','turnStartedAtMs'].every(field=>previous[field]===value[field])&&Array.isArray(previous.items)&&Array.isArray(previous.order)&&(!invalidated||previous.savedAt>invalidated)){
+     const present=new Set(value.items.map(item=>item.id));
+     for(const item of previous.items){if(!visibleProcessItem(item)||present.has(item.id))continue;value.items.push(structuredClone(item));present.add(item.id);}
+     const currentOrder=value.order;value.order=previous.order.slice();const order=new Set(value.order);for(const itemId of currentOrder){if(order.has(itemId))continue;const anchor=currentOrder.slice(currentOrder.indexOf(itemId)+1).find(next=>order.has(next)),at=anchor==null?-1:value.order.indexOf(anchor);value.order.splice(at<0?value.order.length:at,0,itemId);order.add(itemId);}
+     value.items.sort((a,b)=>value.order.indexOf(a.id)-value.order.indexOf(b.id));
+    }
+    // Android SQLite survives WebView replacement/quota eviction. Either
+    // durable store may succeed; an optional IndexedDB failure cannot prevent
+    // the independent native copy from being written.
+    const saved=await Promise.allSettled([saveMeta(key,value),...(typeof window.__DSH_ANDROID_BRIDGE__?.saveVisibleProcesses==='function'?[window.__DSH_ANDROID_BRIDGE__.saveVisibleProcesses(value).then(receipt=>{if(receipt?.saved!==true)throw Error('本机过程记录未确认保存');})]:[])]);
+    if(!saved.some(result=>result.status==='fulfilled'))throw Error('过程记录未保存');memoryMeta.delete(key);if(entry.epoch!==(visibleProcessEpochs.get(id)||0))await saveMeta(key,null);
+   }).catch(()=>{if(visibleProcessBodies.get(key)===entry)entry.dirty=true;diagnostics.processCacheFailures=(diagnostics.processCacheFailures||0)+1;}).finally(()=>{visibleProcessWrites.delete(key);if(visibleProcessBodies.get(key)!==entry&&visibleProcessBodies.get(key)?.dirty)flushVisibleProcesses(id);});visibleProcessWrites.set(key,work);
+  }
+ }
+ function forgetVisibleProcesses(id){
+  visibleProcessIdentities.delete(id);pendingProcessCapture.delete(id);
+  visibleProcessEpochs.set(id,(visibleProcessEpochs.get(id)||0)+1);clearTimeout(visibleProcessTimers.get(id));visibleProcessTimers.delete(id);
+  // A persistent tombstone also fences bodies this document has never loaded.
+  const invalidatedAt=Date.now();memoryMeta.set('visible-process-invalid:'+id,invalidatedAt);saveMeta('visible-process-invalid:'+id,invalidatedAt).catch(()=>{});
+  window.__DSH_ANDROID_BRIDGE__?.invalidateVisibleProcesses?.(id,invalidatedAt)?.catch(()=>{});
+  for(const [key,entry] of visibleProcessBodies)if(entry.id===id){visibleProcessBodies.delete(key);memoryMeta.set(key,null);saveMeta(key,null).catch(()=>{});}
+ }
+ async function prepareVisibleProcesses(id,snapshot){
+  const epoch=visibleProcessEpochs.get(id)||0,invalidated=await meta('visible-process-invalid:'+id).catch(()=>null),values=new Map();
+  // Read the selected view's two newest local turns before its first hydrate.
+  // No network/preload of other conversations, and no execution/state claims.
+  await Promise.all((snapshot.page?.data||[]).slice(0,2).filter(turn=>turn.id).map(async turn=>{
+   const key=visibleProcessKey(id,turn.id),native=await window.__DSH_ANDROID_BRIDGE__?.readVisibleProcesses?.(id,turn.id)?.catch(()=>null),value=visibleProcessBodies.get(key)?.value??(native?.scope===scope.id&&native.threadId===id&&native.turnId===turn.id?native.value:null)??await meta(key).catch(()=>null);
+   values.set(turn.id,value);memoryMeta.delete(key);
+  }));
+  return {id,epoch,invalidated,values};
+ }
+ async function restoreVisibleProcesses(client,id,snapshot,guard=()=>true,prepared=null){
+  if(nativeClient!==client||client.disposed||!guard()||memoryMeta.get('auth-locked')||snapshot.response?.thread?.id!==id)return;
+  if(snapshot.sourceGeneration&&snapshot.generation)visibleProcessIdentities.set(id,{sourceGeneration:snapshot.sourceGeneration,generation:snapshot.generation});
+  pendingProcessCapture.delete(id);
+  const eventEpoch=nativeEventEpoch.get(id)||0,epoch=visibleProcessEpochs.get(id)||0;
+  if(prepared&&(prepared.id!==id||prepared.epoch!==epoch))return;
+  const invalidated=prepared?prepared.invalidated:await meta('visible-process-invalid:'+id).catch(()=>null);
+  const turns=processTurns(client,id),values=prepared?turns.filter(turn=>prepared.values.has(turn.turnId)).map(turn=>({turn,value:prepared.values.get(turn.turnId)})):await Promise.all(turns.filter(turn=>turn.turnId).map(async turn=>{
+   const key=visibleProcessKey(id,turn.turnId),native=await window.__DSH_ANDROID_BRIDGE__?.readVisibleProcesses?.(id,turn.turnId)?.catch(()=>null),value=visibleProcessBodies.get(key)?.value??(native?.scope===scope.id&&native.threadId===id&&native.turnId===turn.turnId?native.value:null)??await meta(key).catch(()=>null);memoryMeta.delete(key);return {turn,value};
+  }));
+  if(nativeClient!==client||client.disposed||!guard()||eventEpoch!==(nativeEventEpoch.get(id)||0)||epoch!==(visibleProcessEpochs.get(id)||0)||memoryMeta.get('auth-locked'))return;
+  for(const {turn,value} of values){
+   if(value?.schemaVersion!==1||value.scope!==scope.id||value.threadId!==id||value.turnId!==turn.turnId||value.sourceGeneration!==snapshot.sourceGeneration||value.generation!==snapshot.generation||value.turnStartedAtMs!==turn.turnStartedAtMs||!Array.isArray(value.items)||!Array.isArray(value.order)||invalidated&&(!value.savedAt||value.savedAt<=invalidated))continue;
+   client.updateTurnState?.(id,turn.turnId,current=>{
+    if(current.turnStartedAtMs!==value.turnStartedAtMs||!Array.isArray(current.items))return;
+    const present=new Set(current.items.map(item=>item.id));
+    // Existing Native/live objects always win. Insert missing process items
+    // before their next retained anchor, preserving original timeline order.
+    for(const item of value.items){if(!visibleProcessItem(item)||present.has(item.id))continue;const index=value.order.indexOf(item.id),anchor=value.order.slice(index+1).find(next=>present.has(next)),at=anchor==null?-1:current.items.findIndex(next=>next.id===anchor);current.items.splice(at<0?current.items.length:at,0,structuredClone(item));present.add(item.id);}
+   });
+  }
+ }
+ const flushAllVisibleProcesses=()=>{if(nativeClient){const id=location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(id)captureVisibleProcesses(nativeClient,id,true);}for(const entry of visibleProcessBodies.values())if(entry.dirty)flushVisibleProcesses(entry.id);};
+ addEventListener('pagehide',flushAllVisibleProcesses);document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')flushAllVisibleProcesses();});
+ addEventListener('dsh:native-route',()=>{flushAllVisibleProcesses();for(const [key,entry] of visibleProcessBodies)if(!entry.dirty&&!visibleProcessWrites.has(key)&&location.pathname!=='/local/'+entry.id){visibleProcessBodies.delete(key);memoryMeta.delete(key);}});
  // Only a server-confirmed ETag can make an online catalogue read a cache hit.
  // Keep the full Native page; none of these fields grants execution permission.
- const appCatalogWrites=new Map();
+ const appCatalogWrites=new Map(),appCatalogMemory=new Map();
  const appCatalogKey=params=>{const p={...params};delete p.forceRefetch;return 'app-catalog-http-v1:'+JSON.stringify(['local',canonical(p)]);};
  const appCatalogHash=async value=>{if(!crypto.subtle?.digest)return null;return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)))),n=>n.toString(16).padStart(2,'0')).join('');};
  async function savedAppCatalog(params,deadlineAt){
-  const value=await meta(appCatalogKey(params),deadlineAt?{timeoutMs:Math.min(CACHE_IO_TIMEOUT_MS,Math.max(1,deadlineAt-Date.now()))}:{}).catch(()=>null);
+  const key=appCatalogKey(params),value=appCatalogMemory.get(key)??(displayProjectionWrites.has(key)?memoryMeta.get(key):await meta(key,deadlineAt?{timeoutMs:Math.min(CACHE_IO_TIMEOUT_MS,Math.max(1,deadlineAt-Date.now()))}:{}).catch(()=>null));
   if(!value||value.schemaVersion!==1||!/^"[a-f0-9]{64}"$/.test(value.etag)||!Array.isArray(value.result?.data)||typeof value.sha256!=='string')return null;
   return await appCatalogHash(value.result)===value.sha256?value:null;
  }
@@ -134,29 +243,30 @@
   if(response?.status!==200||!/^"[a-f0-9]{64}"$/.test(response.etag)||!Array.isArray(response.result?.data))throw Error('目录读取响应格式无效');
   const value=structuredClone(response.result),digest=await appCatalogHash(value);
   current();
-  if(digest&&appCatalogWrites.get(key)===write)await saveMeta(key,{schemaVersion:1,etag:response.etag,sha256:digest,result:value},{timeoutMs:Math.min(CACHE_IO_TIMEOUT_MS,Math.max(1,deadlineAt-Date.now()))}).catch(()=>{diagnostics.catalogCacheFailures=(diagnostics.catalogCacheFailures||0)+1;});current();
+  if(digest&&appCatalogWrites.get(key)===write){const hostEpoch=appHostGeneration,snapshot={schemaVersion:1,etag:response.etag,sha256:digest,result:value};appCatalogMemory.delete(key);appCatalogMemory.set(key,snapshot);while(appCatalogMemory.size>8)appCatalogMemory.delete(appCatalogMemory.keys().next().value);cacheDisplayProjection(key,snapshot,()=>{diagnostics.catalogCacheFailures=(diagnostics.catalogCacheFailures||0)+1;},()=>hostEpoch===appHostGeneration&&!signal.aborted&&!memoryMeta.get('auth-locked'));}current();
   return structuredClone(value);
   }finally{if(appCatalogWrites.get(key)===write)appCatalogWrites.delete(key);}
  }
  async function get(key,{touch=true,timeoutMs=CACHE_IO_TIMEOUT_MS}={}){const deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline));let record=await readStoreValue(db,'records',key,deadline,'读取本机缓存');if(!record&&(key.startsWith('read:')||key.startsWith('stable-item-head:'))){const alias=await readStoreValue(db,'aliases',key,deadline,'读取缓存别名');if(alias)record=await readStoreValue(db,'records',alias.target,deadline,'读取缓存别名目标');}if(touch&&record?.kind==='history'&&!record.deleted){try{const tx=db.transaction('usage','readwrite');tx.objectStore('usage').put({key:record.key,bytes:record.bytes||0,threadId:record.threadId,accessedAt:Date.now()});cacheCompletion(tx,'更新缓存访问记录',Math.min(CACHE_IO_TIMEOUT_MS,remaining(deadline))).catch(()=>{});}catch{}}return record;}
  const IMPORT_KINDS=new Set(['catalog','history','turn','item','readAlias']),HISTORY_KINDS=new Set(['history','turn','item']);
  function stored(record){return {...record,recency:record.payload?.sourceRecencyAt||0,createdAt:record.payload?.sourceCreatedAt||0,updatedAt:record.payload?.sourceUpdatedAt||0,accessedAt:Date.now()};}
- const canReplace=(old,value)=>Number.isSafeInteger(value?.revision)&&(!old||!Number.isSafeInteger(old.revision)||old.revision<=value.revision);
- function entities(record){const result=record.payload?.result,params=record.payload?.params,method=record.payload?.method;if(!result||!params)return [];const values=[],id=params.threadId;
+ // Commit counters are comparable only within one source lifetime. A new
+ // source may replace a retired source only after the transaction validates
+ // its generation; an unfenced late callback retains the monotonic rule.
+ const canReplace=(old,value,generationFence=null)=>Number.isSafeInteger(value?.revision)&&(!old||generationFence&&value.sourceGeneration===generationFence&&old.sourceGeneration!==generationFence||!Number.isSafeInteger(old.revision)||old.revision<=value.revision);
+ function entities(record,{includeCatalog=false}={}){const result=record.payload?.result,params=record.payload?.params,method=record.payload?.method;if(!result||!params)return [];const values=[],id=params.threadId;
   const add=(key,kind,payload)=>values.push({...record,key,kind,payload,bytes:new TextEncoder().encode(JSON.stringify(payload)).length});
+  if(includeCatalog&&method==='thread/read'&&!record.deleted&&result.thread?.id===id)add('thread:'+id,'catalog',toEntry(result.thread));
   for(const turn of (method==='thread/turns/list'?result.data:result.thread?.turns)||[]){const {items,...metadata}=turn;add('turn:'+id+':'+turn.id,'turn',{turn:metadata,itemsView:turn.itemsView||params.itemsView||(method==='thread/read'?'full':'summary')});if((turn.itemsView||params.itemsView||(method==='thread/read'?'full':'summary'))==='full')for(const item of items||[])add('item:'+id+':'+turn.id+':'+item.id,'item',{turnId:turn.id,item});}
   if(method==='thread/items/list')for(const value of result.data||[]){const item=value.item||value,turnId=value.turnId||params.turnId;if(turnId&&typeof item.id==='string')add('item:'+id+':'+turnId+':'+item.id,'item',{turnId,item});}return values;
  }
- async function putValues(tx,record,storeName='records',{deadline=Date.now()+CACHE_IO_TIMEOUT_MS,generationFence=null}={}){
+ let cacheMaintenanceDirty=true;
+ async function putValues(tx,record,storeName='records',{deadline=Date.now()+CACHE_IO_TIMEOUT_MS,generationFence=null,includeCatalog=false}={}){
   const store=tx.objectStore(storeName),usage=tx.objectStore('usage');
-  for(const value of [record,...entities(record)]){
+  for(const value of [record,...entities(record,{includeCatalog})]){
    if(value?.scope!==scope.id||!value?.key||!IMPORT_KINDS.has(value.kind)||typeof value.sourceGeneration!=='string'||!value.sourceGeneration||generationFence&&value.sourceGeneration!==generationFence)continue;
    const old=await cacheRequest(store.get(value.key),tx,'读取待写缓存记录',remaining(deadline));
-   // `revision` is the server's monotonic commit order, including across a
-   // thread rewrite. A late response from an older generation must therefore
-   // lose to an already committed value even when its source generation is
-   // otherwise valid for this cache.
-   if(canReplace(old,value)){store.put(stored(value));if(HISTORY_KINDS.has(value.kind)){if(value.deleted)usage.delete(value.key);else usage.put({key:value.key,bytes:value.bytes||0,threadId:value.threadId,accessedAt:Date.now()});}}
+   if(canReplace(old,value,generationFence)){cacheMaintenanceDirty=true;store.put(stored(value));if(HISTORY_KINDS.has(value.kind)){if(value.deleted)usage.delete(value.key);else usage.put({key:value.key,bytes:value.bytes||0,threadId:value.threadId,accessedAt:Date.now()});}}
   }
  }
  async function terminalItems(params,record,{timeoutMs=CACHE_IO_TIMEOUT_MS}={}){if(!record||!params.turnId)return false;const deadline=Date.now()+timeoutMs,generation=await meta('catalog-generation',{timeoutMs:remaining(deadline)});if(generation&&record.sourceGeneration!==generation)return false;const turn=await get('turn:'+params.threadId+':'+params.turnId,{touch:false,timeoutMs:remaining(deadline)});return turn?.payload?.turn?.status==='completed'&&turn.sourceGeneration===record.sourceGeneration&&turn.generation===record.generation;}
@@ -167,7 +277,7 @@
    const current=(await cacheRequest(tx.objectStore('meta').get('catalog-generation'),tx,'读取写入代际',remaining(deadline)))?.value||null;
    if(current&&expectedGeneration&&current!==expectedGeneration){await completion;return false;}
    const generationFence=expectedGeneration||current||record.sourceGeneration;
-   await putValues(tx,record,'records',{deadline,generationFence});if(stable&&generationFence===record.sourceGeneration)tx.objectStore('aliases').put({key:stable,target:record.key});await completion;return true;
+   await putValues(tx,record,'records',{deadline,generationFence,includeCatalog:true});if(stable&&generationFence===record.sourceGeneration)tx.objectStore('aliases').put({key:stable,target:record.key});await completion;return true;
   }catch(error){try{tx.abort?.();}catch{}await completion.catch(()=>{});throw error;}
  }
 
@@ -184,7 +294,7 @@
    if(update.deleted)store.delete(key);else store.put({key,value,at:Date.now()});await completion;return true;
   }catch(error){try{tx.abort?.();}catch{}await completion.catch(()=>{});throw error;}
  }
- async function restoreAtoms({timeoutMs=CACHE_IO_TIMEOUT_MS}={}){const deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline)),tx=db.transaction('drafts'),rows=await cacheRequest(tx.objectStore('drafts').getAll(),tx,'读取草稿',remaining(deadline));const atoms=Object.fromEntries(rows.filter(r=>r.key.startsWith('atom:')).map(r=>[r.key.slice(5),r.value]));if(Number.isFinite(atoms[warningDismissKey]))localWarningDismissedAt=Math.max(localWarningDismissedAt||0,atoms[warningDismissKey]);localSeenModels=[...new Set([...localSeenModels,...seenModels(atoms[seenModelsKey])||[]])];if(localSeenModels.length)atoms[seenModelsKey]=localSeenModels;return atoms;}
+ async function restoreAtoms({timeoutMs=CACHE_IO_TIMEOUT_MS}={}){const deadline=Date.now()+timeoutMs,db=await cacheDb(remaining(deadline)),tx=db.transaction('drafts'),rows=await cacheRequest(tx.objectStore('drafts').getAll(IDBKeyRange.bound('atom:','atom:\uffff')),tx,'读取草稿',remaining(deadline));const atoms=Object.fromEntries(rows.filter(r=>r.key.startsWith('atom:')).map(r=>[r.key.slice(5),r.value]));if(Number.isFinite(atoms[warningDismissKey]))localWarningDismissedAt=Math.max(localWarningDismissedAt||0,atoms[warningDismissKey]);localSeenModels=[...new Set([...localSeenModels,...seenModels(atoms[seenModelsKey])||[]])];if(localSeenModels.length)atoms[seenModelsKey]=localSeenModels;return atoms;}
  const composerViews=new Map(),viewFields=['imageAttachments','imageCommentDrafts','fileAttachments','pastedTextAttachments','addedFiles','appshotContexts','mcpAppModelContextAttachments','selectedTextAttachments','responseTextAnnotations'];
  window.__DSH_CACHE_COMPOSER_VIEW__=(key,value,restore)=>{
   const fields=Object.fromEntries(viewFields.filter(k=>value[k]!==undefined).map(k=>[k,value[k]])),fingerprint=JSON.stringify(fields);let view=composerViews.get(key);
@@ -194,7 +304,13 @@
   const changed=view.fingerprint!==fingerprint;view.fingerprint=fingerprint;if(!view.loaded||view.restoring||!changed)return;
   cacheDb().then(async db=>{const tx=db.transaction('drafts','readwrite'),completion=cacheCompletion(tx,'保存编辑器附件草稿',CACHE_IO_TIMEOUT_MS);try{tx.objectStore('drafts').put({key:'view:'+key,value:fields,at:Date.now()});await completion;}catch{try{tx.abort?.();}catch{}await completion.catch(()=>{});}}).catch(()=>{});
  };
- async function evict(){const estimate=await navigator.storage?.estimate?.().catch(()=>null),budget=Math.min(androidReader?4*1024*1024*1024:128*1024*1024,Math.max(16*1024*1024,(estimate?.quota||512*1024*1024)*(androidReader?0.5:0.15))),deadline=Date.now()+CACHE_IO_TIMEOUT_MS,db=await cacheDb(remaining(deadline)),tx=db.transaction(['records','usage'],'readwrite'),completion=cacheCompletion(tx,'清理本机缓存',remaining(deadline)),store=tx.objectStore('records'),usage=tx.objectStore('usage');let total=0;const candidates=[];
+ function localCacheStoragePolicy(estimate){
+  const configuredBudgetBytes=androidReader?10*1024*1024*1024:128*1024*1024;
+  const storageQuotaBytes=Number.isFinite(estimate?.quota)&&estimate.quota>0?estimate.quota:null;
+  const availableBudget=storageQuotaBytes?storageQuotaBytes*(androidReader?0.75:0.15):androidReader?configuredBudgetBytes:512*1024*1024*0.15;
+  return {configuredBudgetBytes,effectiveBudgetBytes:Math.min(configuredBudgetBytes,Math.max(16*1024*1024,availableBudget)),storageQuotaBytes};
+ }
+ async function evict(){if(!cacheMaintenanceDirty||document.visibilityState!=='visible')return;cacheMaintenanceDirty=false;const estimate=await navigator.storage?.estimate?.().catch(()=>null),budget=localCacheStoragePolicy(estimate).effectiveBudgetBytes,deadline=Date.now()+CACHE_IO_TIMEOUT_MS,db=await cacheDb(remaining(deadline)),tx=db.transaction(['records','usage'],'readwrite'),completion=cacheCompletion(tx,'清理本机缓存',remaining(deadline)),store=tx.objectStore('records'),usage=tx.objectStore('usage');let total=0;const candidates=[];
   try{
    await cacheCursor(usage.index('accessedAt').openCursor(),tx,'读取缓存清理候选',remaining(deadline),cursor=>{const v=cursor.value;total+=v.bytes||0;candidates.push(v);});
    if(total>budget){const active=location.pathname.split('/')[2];for(const candidate of candidates.sort((a,b)=>Number(priorityPinned.has(a.threadId))-Number(priorityPinned.has(b.threadId)))){if(total<=budget*0.75)break;if(candidate.threadId===active)continue;if(priorityPinned.has(candidate.threadId)&&candidate.key.startsWith('read:')){try{const [method,params]=JSON.parse(candidate.key.slice(5));if(method==='thread/read'||method==='thread/turns/list'&&!params.cursor)continue;}catch{}}store.delete(candidate.key);usage.delete(candidate.key);total-=candidate.bytes;}}
@@ -310,8 +426,8 @@
     for(const record of checked.records){
      if(record.kind==='readAlias'){
       const old=await cacheRequest(aliases.get(record.key),tx,'读取导入别名',remaining(deadline));
-      if(record.deleted){if(canReplace(old,record))aliases.delete(record.key);}
-      else if(canReplace(old,record))aliases.put({key:record.key,target:record.payload.targetKey,sourceGeneration:record.sourceGeneration,generation:record.generation,revision:record.revision});
+      if(record.deleted){if(canReplace(old,record,checked.generation))aliases.delete(record.key);}
+      else if(canReplace(old,record,checked.generation))aliases.put({key:record.key,target:record.payload.targetKey,sourceGeneration:record.sourceGeneration,generation:record.generation,revision:record.revision});
      }else if(record.kind==='catalog'){
       if(preserveCatalog)continue;
       const target=staging?stage:records,old=await cacheRequest(target.get(record.key),tx,'读取导入目录记录',remaining(deadline));if(canReplace(old,record))target.put(stored(record));
@@ -352,11 +468,13 @@
   return status();
  }).finally(()=>{syncing=null;});return syncing;}
  async function status(){const value=await meta('catalog-status'),generation=await meta('catalog-generation'),revision=Math.max(catalogRevision,await meta('catalog-cursor')||0,value?.revision||0),complete=!!(value?.payload?.complete??value?.complete??value?.bootstrapComplete);return {hosts:[{hostId:'local',isComplete:complete,revision:generation+':'+revision+':'+catalogDisplayRevision}],revision,isComplete:complete};}
- function notifyStatus(){status().then(value=>{for(const callback of statusSubscribers)callback(value);}).catch(()=>{});}
+ let notifiedCatalogStatus='';
+ function notifyStatus(){status().then(value=>{const signature=JSON.stringify(value);if(signature===notifiedCatalogStatus){diagnostics.catalogNotificationsSkipped=(diagnostics.catalogNotificationsSkipped||0)+1;return;}notifiedCatalogStatus=signature;for(const callback of statusSubscribers)callback(value);}).catch(()=>{});}
  function matches(entry,filter){if(!filter)return true;if(filter.excludeThreadIds?.includes(entry.threadId))return false;if(filter.projectId!=null&&filter.projectId!==entry.projectId)return false;if(filter.conversationOrigin!=null&&filter.conversationOrigin!==entry.conversationOrigin)return false;
   return filter.includeAll||filter.includeThreadIds?.includes(entry.threadId)||filter.cwdValues?.includes(entry.cwd)||filter.cwdPrefixes?.some(prefix=>entry.cwd?.startsWith(prefix));}
  async function cachedCatalogRecord(id){
   const record=volatileCatalog?.get('thread:'+id)||await get('thread:'+id);if(record?.deleted)return record;
+  if(record&&(internalDirectoryThreads.has(id)||internalDirectoryThread(record.payload)||internalDirectoryThread(record.payload?.nativeThread))){hideInternalDirectoryThread(id);return record;}
   if(record&&listableEntry(record.payload))return record;
   const head=await get(readKey('thread/read',{threadId:id,includeTurns:false})),generation=await meta('catalog-generation');
   if(head&&!head.deleted&&(!generation||head.sourceGeneration===generation)&&head.payload?.result?.thread?.id===id&&listableThread(head.payload.result.thread))return {...head,payload:toEntry(head.payload.result.thread)};
@@ -387,16 +505,32 @@
   if(missingCatalogReads.has(threadId)||!navigator.onLine||window.__DSH_EXECUTION_CONNECTED__!==true)return;
   const work=fetchRead('thread/read',{threadId,includeTurns:false},true).then(async record=>{
    const thread=record?.payload?.result?.thread;if(thread?.id!==threadId)return;
+   // Notify only an adopted directory entry. Otherwise every successful but
+   // rejected cache write triggers another readEntries -> head-read cycle.
+   const adopted=await cachedCatalogRecord(threadId);if(!adopted||adopted.deleted||adopted.sourceGeneration!==record.sourceGeneration)return;
    await rememberPinnedEntries([toEntry(thread)]);catalogDisplayRevision++;notifyStatus();
    for(const callback of observationSubscribers)callback(rendererThreadObservation([thread]));
    pinnedEmit?.('pinned-threads-updated',{});
   }).catch(()=>{}).finally(()=>missingCatalogReads.delete(threadId));missingCatalogReads.set(threadId,work);
  }
- async function readEntries(keys){
+ async function readEntries(keys,{directoryOnly=false}={}){
   const requested=keys.filter(key=>key.hostId==='local');
   const records=await Promise.all(requested.map(({threadId})=>cachedCatalogRecord(threadId).catch(()=>null)));
   const entries=[];
-  records.forEach((record,index)=>{if(!record)prepareMissingCatalogEntry(requested[index].threadId);else if(!record.deleted&&listableEntry(record.payload))entries.push(record.payload);});
+  for(let index=0;index<records.length;index++){
+   const record=records[index],id=requested[index].threadId;
+   if(record&&!record.deleted&&listableEntry(record.payload)){entries.push(record.payload);continue;}
+   // readPage is a directory; readEntries is an explicit ID lookup also used
+   // by the subagent details loader. Hiding an agent from the directory must
+   // not turn a scoped, readable detail into an empty successful response.
+   if(!directoryOnly&&!memoryMeta.get('auth-locked')&&(internalDirectoryThreads.has(id)||requested.length===1&&!record)){
+    let head=await get(readKey('thread/read',{threadId:id,includeTurns:false})).catch(()=>null);
+    if((!head||head.deleted)&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true)head=await fetchRead('thread/read',{threadId:id,includeTurns:false},true);
+    const thread=head&&!head.deleted?head.payload?.result?.thread:null;
+    if(head?.scope===scope.id&&thread?.id===id){if(internalDirectoryThread(thread))hideInternalDirectoryThread(id);entries.push(toEntry(thread));continue;}
+   }
+   if(!record&&!internalDirectoryThreads.has(id))prepareMissingCatalogEntry(id);
+  }
   rememberPinnedEntries(entries).catch(()=>{});
   window.__DSH_CLIENT_LOG__?.event('client_health',{stage:'received',source:'indexeddb',count:entries.length,itemCount:requested.length,cacheReady:entries.length===requested.length});
   return entries;
@@ -405,7 +539,7 @@
  async function rememberPinnedEntries(entries){
   return withWriter('pinned-sidebar',async()=>{
    const pins=await meta(ipcReadKey('list-pinned-threads',{}));if(!pins?.threadIds||await meta('auth-locked'))return false;
-   const previous=await meta('pinned-sidebar-v1'),kept=Object.fromEntries(Object.entries(previous?.scope===scope.id?previous.entries||{}:{}).filter(([id])=>pins.threadIds.includes(id)));
+   const previous=await meta('pinned-sidebar-v1'),kept=Object.fromEntries(Object.entries(previous?.scope===scope.id?previous.entries||{}:{}).filter(([id,entry])=>pins.threadIds.includes(id)&&listableEntry(entry)));
    for(const entry of entries){if(entry.hostId!=='local'||!pins.threadIds.includes(entry.threadId)||entry.nativeThread?.id!==entry.threadId||!listableEntry(entry))continue;
     const {turns,...thread}=entry.nativeThread;kept[entry.threadId]={...entry,nativeThread:thread};
    }
@@ -423,6 +557,7 @@
     if(epoch!==pinnedEpoch)break;
     const batch=await Promise.allSettled(ids.slice(i,i+4).map(async id=>{
      const cached=await cachedCatalogRecord(id);if(cached?.deleted)return null;
+     if(internalDirectoryThreads.has(id))return null;
      if(cached&&listableEntry(cached.payload))return cached.payload;
      if(!navigator.onLine||window.__DSH_EXECUTION_CONNECTED__!==true)return null;
      const record=await fetchRead('thread/read',{threadId:id,includeTurns:false},true);return record?.payload?.result?.thread?.id===id?toEntry(record.payload.result.thread):null;
@@ -435,33 +570,146 @@
   })().finally(()=>{pinnedSidebarPreparing=null;const next=pinnedSidebarNext;pinnedSidebarNext=null;if(next)preparePinnedSidebar(next).catch(()=>{});});return pinnedSidebarPreparing;
  }
  async function prepareSidebarBootstrap(config){
-  const [pins,locked]=await Promise.all([meta(ipcReadKey('list-pinned-threads',{})).catch(()=>null),meta('auth-locked').catch(()=>true)]);
+  const keys=['local-projects','selected-project','project-order','electron-saved-workspace-roots','electron-workspace-root-labels'];
+  const [pins,locked,plugins,saved]=await Promise.all([meta(ipcReadKey('list-pinned-threads',{})).catch(()=>null),meta('auth-locked').catch(()=>true),meta('plugin-definitions').catch(()=>null),Promise.all(keys.map(key=>meta(ipcReadKey('get-global-state',{key})).catch(()=>undefined)))]);
   if(locked||!config?.initialSidebarBootstrap)return config;
+  // Join the scoped directory to this same authenticated cache read, before
+  // loading sidebar chrome. No network or second IndexedDB round trip is needed.
+  window.__DSH_NATIVE_WORKBENCH__?.seedCachedDefinitions?.(plugins);
   // The boot configuration is a point-in-time snapshot. Project changes read
   // during the previous visit are newer and must join pins in the FIRST render.
   const initial=config.initialSidebarBootstrap,globals=new Map((initial.globalStateEntries||[]).map(entry=>[entry.key,entry.value]));
-  const keys=['local-projects','selected-project','project-order','electron-saved-workspace-roots','electron-workspace-root-labels'];
-  const saved=await Promise.all(keys.map(key=>meta(ipcReadKey('get-global-state',{key})).catch(()=>undefined)));
   for(let i=0;i<keys.length;i++)if(saved[i]&&Object.hasOwn(saved[i],'value'))globals.set(keys[i],saved[i].value);
-  const ids=Array.isArray(pins?.threadIds)?pins.threadIds:null,entries=ids?await readEntries(ids.map(threadId=>({hostId:'local',threadId}))):[];
-  const pinSet=new Set(ids||[]),byId=new Map((initial.catalogEntries||[]).filter(entry=>!pinSet.has(entry.threadId)).map(entry=>[entry.hostId+':'+entry.threadId,entry]));
+  const ids=Array.isArray(pins?.threadIds)?pins.threadIds:null,cachedIds=[...new Set([...(ids||[]),...(initial.catalogEntries||[]).filter(entry=>entry.hostId==='local').map(entry=>entry.threadId)])],entries=await readEntries(cachedIds.map(threadId=>({hostId:'local',threadId})),{directoryOnly:true});
+  const pinSet=new Set(ids||[]),byId=new Map((initial.catalogEntries||[]).filter(entry=>!pinSet.has(entry.threadId)&&listableEntry(entry)).map(entry=>[entry.hostId+':'+entry.threadId,entry]));
   for(const entry of entries)byId.set(entry.hostId+':'+entry.threadId,entry);
-  if(ids)globals.set('pinned-thread-ids',ids.slice());
+  if(ids)globals.set('pinned-thread-ids',ids.filter(id=>!internalDirectoryThreads.has(id)));
   const roots=globals.get('electron-saved-workspace-roots'),labels=globals.get('electron-workspace-root-labels');
   const workspaceRootOptions=Array.isArray(roots)?{...initial.workspaceRootOptions,roots:roots.slice(),canonicalPathByRoot:Object.fromEntries(roots.map(root=>[root,root])),...(labels&&typeof labels==='object'?{labels}:{} )}:initial.workspaceRootOptions;
   return {...config,...(Array.isArray(roots)?{workspaceRoots:roots.slice()}:{}),initialSidebarBootstrap:{...initial,workspaceRootOptions,catalogEntries:[...byId.values()],globalStateEntries:[...globals].map(([key,value])=>({key,value}))}};
  }
+ // Full user DTOs from confirmed Native history/notifications, for display only.
+ // A summary omits steer inputs; it must not erase already confirmed inputs.
+ const confirmedUserMirrors=new Map(),confirmedUserLoads=new Map(),confirmedUserWrites=new Map(),confirmedUserWitnesses=new Map(),confirmedUserEpochs=new Map(),confirmedUserHeads=new Map(),confirmedUserSummaries=new Map(),confirmedUserBackfills=new Map(),confirmedUserTimers=new Map();let confirmedUserClosed=false;
+ const confirmedUserKey=id=>'confirmed-user-items-v1:'+id;
+ async function loadConfirmedUsers(id,timeoutMs=CACHE_IO_TIMEOUT_MS){
+  if(confirmedUserMirrors.has(id))return confirmedUserMirrors.get(id);
+  if(confirmedUserLoads.has(id))return confirmedUserLoads.get(id);
+  const epoch=confirmedUserEpochs.get(id)||0,work=meta(confirmedUserKey(id),{timeoutMs}).then(value=>{if(epoch!==(confirmedUserEpochs.get(id)||0))return null;if(value?.scope===scope.id&&value.threadId===id&&typeof value.sourceGeneration==='string'&&typeof value.generation==='string'&&Array.isArray(value.turns))confirmedUserMirrors.set(id,value);return confirmedUserMirrors.get(id)||null;}).catch(()=>null).finally(()=>confirmedUserLoads.delete(id));confirmedUserLoads.set(id,work);return work;
+ }
+ function queueConfirmedUserWrite(id,mutate){
+  const epoch=confirmedUserEpochs.get(id)||0,prior=confirmedUserWrites.get(id)||Promise.resolve();
+  const work=prior.catch(()=>{}).then(async()=>{await loadConfirmedUsers(id);if(epoch!==(confirmedUserEpochs.get(id)||0))return;const previous=confirmedUserMirrors.get(id),value=mutate(previous);if(!value||value.sourceGeneration!==memoryMeta.get('catalog-generation')||JSON.stringify(value)===JSON.stringify(previous))return;confirmedUserMirrors.set(id,value);await saveMeta(confirmedUserKey(id),value);if(epoch===(confirmedUserEpochs.get(id)||0)&&value.sourceGeneration===memoryMeta.get('catalog-generation')&&typeof CustomEvent==='function')window.dispatchEvent?.(new CustomEvent('dsh:user-input-saved',{detail:{threadId:id}}));}).catch(()=>{diagnostics.userCacheFailures=(diagnostics.userCacheFailures||0)+1;}).finally(()=>{if(confirmedUserWrites.get(id)===work)confirmedUserWrites.delete(id);});confirmedUserWrites.set(id,work);return work;
+ }
+ function forgetConfirmedUsers(id){
+  clearTimeout(confirmedUserTimers.get(id));confirmedUserTimers.delete(id);if(typeof CustomEvent==='function')window.dispatchEvent?.(new CustomEvent('dsh:user-history-invalidated',{detail:{threadId:id}}));
+  confirmedUserEpochs.set(id,(confirmedUserEpochs.get(id)||0)+1);confirmedUserMirrors.delete(id);confirmedUserWitnesses.delete(id);confirmedUserHeads.delete(id);confirmedUserSummaries.delete(id);memoryMeta.delete(confirmedUserKey(id));
+  const prior=confirmedUserWrites.get(id)||Promise.resolve(),work=prior.catch(()=>{}).then(()=>saveMeta(confirmedUserKey(id),null)).catch(()=>{diagnostics.userCacheFailures=(diagnostics.userCacheFailures||0)+1;}).finally(()=>{if(confirmedUserWrites.get(id)===work)confirmedUserWrites.delete(id);});confirmedUserWrites.set(id,work);
+ }
+ const fullNativeUser=item=>item?.type==='userMessage'&&typeof item.id==='string'&&Array.isArray(item.content);
+ const userDetailsVisible=id=>!confirmedUserClosed&&!!nativeClient&&!nativeClient.disposed&&navigator.onLine&&document.visibilityState==='visible'&&location.pathname==='/local/'+id&&!window.__DSH_NATIVE_SIDEBAR__?.isList;
+ function currentUserWitness(id,turn,sourceGeneration,generation,epoch){const witness=confirmedUserWitnesses.get(id),current=witness?.turns.get(turn.id);return epoch===(confirmedUserEpochs.get(id)||0)&&memoryMeta.get('catalog-generation')===sourceGeneration&&witness?.sourceGeneration===sourceGeneration&&witness.generation===generation&&current?.startedAt===turn.startedAt&&current.openingId===turn.openingId&&current.contentWitness===turn.contentWitness;}
+ function mergeUserScan(saved,scan,complete,anchorFound){
+  let ordered=scan.users;
+  if(scan.direction==='desc'&&(!complete||anchorFound)){const index=saved.items.findIndex(item=>item.id===scan.anchorId),found=ordered.findIndex(item=>item.id===scan.anchorId);ordered=[...saved.items.slice(0,index+1),...(found<0?ordered:ordered.slice(found+1))];}
+  const byId=new Map();for(const item of ordered)byId.set(item.id,structuredClone(item));
+  // Only a complete Native walk can replace its old baseline. A callback
+  // received during that walk remains visible until the next verified walk.
+  const fullWalk=complete&&(scan.direction==='asc'||!anchorFound);
+  for(const item of saved.items)if(!byId.has(item.id)&&(!fullWalk||!scan.baseIds.includes(item.id)))byId.set(item.id,item);
+  saved.items=[...byId.values()];
+ }
+ function prepareConfirmedUsers(id){
+  if(!userDetailsVisible(id)||confirmedUserBackfills.has(id))return;
+  clearTimeout(confirmedUserTimers.get(id));confirmedUserTimers.delete(id);let failed=false;
+  const work=(async()=>{
+   // A selected detail is repaired in small low-priority batches. Its local
+   // first paint and all sends are independent of this Native-only reader.
+   for(let page=0;page<3&&userDetailsVisible(id);page++){
+    const witness=confirmedUserWitnesses.get(id),turn=witness?.turns.values().next().value,epoch=confirmedUserEpochs.get(id)||0;if(!turn)return;
+    const {sourceGeneration,generation}=witness;if(!currentUserWitness(id,turn,sourceGeneration,generation,epoch))return;
+    await queueConfirmedUserWrite(id,previous=>{
+     if(!currentUserWitness(id,turn,sourceGeneration,generation,epoch)||previous?.sourceGeneration!==sourceGeneration||previous.generation!==generation)return null;
+     const value=structuredClone(previous),saved=value.turns.find(t=>t.id===turn.id&&t.startedAt===turn.startedAt&&t.openingId===turn.openingId);if(!saved||saved.preparedWitness===turn.contentWitness)return null;
+     if(saved.userScan?.contentWitness!==turn.contentWitness){saved.userScan={contentWitness:turn.contentWitness,direction:saved.scanAnchorId?'desc':'asc',anchorId:saved.scanAnchorId||null,cursor:null,seenCursors:[],users:[],baseIds:saved.items.map(item=>item.id)};delete saved.headPagePrepared;}
+     return value;
+    });
+    const saved=confirmedUserMirrors.get(id)?.turns.find(t=>t.id===turn.id),scan=saved?.userScan;if(!scan||saved.preparedWitness===turn.contentWitness||scan.contentWitness!==turn.contentWitness)return;
+    const params={threadId:id,turnId:turn.id,limit:100,sortDirection:scan.direction,...(scan.cursor?{cursor:scan.cursor}:{})};
+    const record=await fetchRead('thread/items/list',params,true,'low');
+    if(!userDetailsVisible(id)||!currentUserWitness(id,turn,sourceGeneration,generation,epoch))return;
+    if(!record||record.deleted||record.source!=null&&record.source!=='native'||record.sourceGeneration!==sourceGeneration||record.generation!==generation||record.payload?.method!=='thread/items/list'||record.payload.params?.turnId!==turn.id)throw Error('Native 输入分页身份不匹配');
+    const result=record.payload.result,data=result?.data,next=result?.nextCursor??null;if(!Array.isArray(data)||next!==null&&(typeof next!=='string'||!next)||next!==null&&(next===scan.cursor||scan.seenCursors.includes(next)))throw Error('Native 输入分页游标无效');
+    const items=data.map(value=>value.item||value),users=items.filter(fullNativeUser);if(scan.direction==='asc'&&!scan.cursor&&users[0]?.id!==turn.openingId)throw Error('Native 输入分页起点不匹配');
+    const anchorFound=scan.direction==='desc'&&items.some(item=>item.id===scan.anchorId),complete=anchorFound||next===null;
+    if(complete&&!anchorFound&&![...scan.users,...users].some(item=>item.id===turn.openingId))throw Error('Native 输入分页不完整');
+    await queueConfirmedUserWrite(id,previous=>{
+     if(!currentUserWitness(id,turn,sourceGeneration,generation,epoch)||previous?.sourceGeneration!==sourceGeneration||previous.generation!==generation)return null;
+     const value=structuredClone(previous),saved=value.turns.find(t=>t.id===turn.id&&t.startedAt===turn.startedAt&&t.openingId===turn.openingId),progress=saved?.userScan;if(!progress||progress.contentWitness!==turn.contentWitness||progress.cursor!==scan.cursor)return null;
+     progress.users=progress.direction==='asc'?[...progress.users,...structuredClone(users)]:[...structuredClone(users).reverse(),...progress.users];
+     mergeUserScan(saved,progress,complete,anchorFound);
+     if(complete){saved.preparedWitness=turn.contentWitness;saved.scanAnchorId=progress.users.at(-1)?.id||turn.openingId;delete saved.userScan;delete saved.headPagePrepared;}
+     else{progress.cursor=next;progress.seenCursors.push(next);}
+     return value;
+    });
+    scheduleCommitted();
+   }
+  })().catch(()=>{failed=true;diagnostics.userCacheFailures=(diagnostics.userCacheFailures||0)+1;}).finally(()=>{
+   if(confirmedUserBackfills.get(id)!==work)return;confirmedUserBackfills.delete(id);
+   const turn=confirmedUserWitnesses.get(id)?.turns.values().next().value,saved=confirmedUserMirrors.get(id)?.turns.find(t=>t.id===turn?.id);
+   if(!failed&&turn&&saved?.preparedWitness!==turn.contentWitness&&userDetailsVisible(id))confirmedUserTimers.set(id,setTimeout(()=>{confirmedUserTimers.delete(id);prepareConfirmedUsers(id);},1000));
+  });confirmedUserBackfills.set(id,work);
+ }
+ function rememberConfirmedUsers(record,captureEpoch=confirmedUserEpochs.get(record?.threadId)||0,captureItemWitness){
+  const id=record?.threadId,method=record?.payload?.method,params=record?.payload?.params;if(!id||record.deleted||record.source!=null&&record.source!=='native')return;if(captureEpoch!==(confirmedUserEpochs.get(id)||0)||memoryMeta.get('catalog-generation')!==record.sourceGeneration)return;
+  if(method==='thread/read'&&record.payload.result?.thread?.id===id){confirmedUserHeads.set(id,{sourceGeneration:record.sourceGeneration,generation:record.generation,updatedAt:record.payload.result.thread.updatedAt??null});const summary=confirmedUserSummaries.get(id);if(summary&&summary.sourceGeneration===record.sourceGeneration&&summary.generation===record.generation)rememberConfirmedUsers(summary,captureEpoch);}
+  if(method==='thread/turns/list')confirmedUserSummaries.set(id,record);
+  const head=confirmedUserHeads.get(id);if(head?.sourceGeneration!==record.sourceGeneration||head.generation!==record.generation)return;
+  if(method==='thread/items/list'&&params?.sortDirection==='asc'&&!params.cursor){const witness=confirmedUserWitnesses.get(id),turn=witness?.turns.get(params.turnId);if(witness?.sourceGeneration!==record.sourceGeneration||witness.generation!==record.generation||!turn||captureItemWitness!==undefined&&(!captureItemWitness.turn||!currentUserWitness(id,captureItemWitness.turn,captureItemWitness.sourceGeneration,captureItemWitness.generation,captureEpoch)))return;const users=(record.payload.result?.data||[]).map(value=>value.item||value).filter(fullNativeUser);if(users[0]?.id!==turn.openingId)return;queueConfirmedUserWrite(id,previous=>{if(!currentUserWitness(id,turn,witness.sourceGeneration,witness.generation,captureEpoch)||previous?.sourceGeneration!==witness.sourceGeneration||previous.generation!==witness.generation)return null;const value=structuredClone(previous),saved=value.turns.find(t=>t.id===turn.id&&t.startedAt===turn.startedAt&&t.openingId===turn.openingId);if(!saved)return null;const present=new Set(users.map(item=>item.id));saved.items=[...structuredClone(users),...saved.items.filter(item=>!present.has(item.id))];return value;});return;}
+  if(method!=='thread/turns/list'&&!(method==='thread/read'&&params?.includeTurns))return;
+  const turns=method==='thread/turns/list'?record.payload.result?.data:record.payload.result?.thread?.turns;if(!Array.isArray(turns))return;
+  const witnesses=new Map();for(const turn of turns){const opening=(turn.items||[]).find(fullNativeUser);if(typeof turn.id==='string'&&turn.startedAt!=null&&opening)witnesses.set(turn.id,{id:turn.id,startedAt:turn.startedAt,openingId:opening.id,contentWitness:JSON.stringify([head.updatedAt,turn])});}
+  if(!witnesses.size)return;confirmedUserWitnesses.set(id,{sourceGeneration:record.sourceGeneration,generation:record.generation,turns:witnesses});
+  queueConfirmedUserWrite(id,previous=>{
+   const value=previous?.sourceGeneration===record.sourceGeneration&&previous.generation===record.generation?structuredClone(previous):{scope:scope.id,threadId:id,sourceGeneration:record.sourceGeneration,generation:record.generation,turns:[]};
+   for(const turn of turns){const witness=witnesses.get(turn.id);if(!witness)continue;let saved=value.turns.find(t=>t.id===turn.id);if(!saved||saved.startedAt!==witness.startedAt||saved.openingId!==witness.openingId){value.turns=value.turns.filter(t=>t.id!==turn.id);saved={id:witness.id,startedAt:witness.startedAt,openingId:witness.openingId,items:[]};value.turns.push(saved);}for(const item of (turn.items||[]).filter(fullNativeUser)){const index=saved.items.findIndex(v=>v.id===item.id);if(index<0)saved.items.push(structuredClone(item));else saved.items[index]=structuredClone(item);}if(saved.items[0]?.id!==witness.openingId){const index=saved.items.findIndex(v=>v.id===witness.openingId);if(index>=0)saved.items.unshift(...saved.items.splice(index,1));}}
+   return value;
+  }).then(()=>prepareConfirmedUsers(id)).catch(()=>{diagnostics.userCacheFailures=(diagnostics.userCacheFailures||0)+1;});
+ }
+ function rememberConfirmedUserEvent(params){
+  const id=params.threadId,witness=confirmedUserWitnesses.get(id),turn=witness?.turns.get(params.turnId),item=params.item;if(!turn||!fullNativeUser(item)||memoryMeta.get('catalog-generation')&&memoryMeta.get('catalog-generation')!==witness.sourceGeneration)return;
+  queueConfirmedUserWrite(id,previous=>{if(previous?.sourceGeneration!==witness.sourceGeneration||previous.generation!==witness.generation)return null;const value=structuredClone(previous),saved=value.turns.find(t=>t.id===turn.id&&t.startedAt===turn.startedAt&&t.openingId===turn.openingId);if(!saved)return null;const index=saved.items.findIndex(v=>v.id===item.id);if(index<0)saved.items.push(structuredClone(item));else saved.items[index]=structuredClone(item);return value;});
+ }
+ async function restoreConfirmedUsers(id,page,record){
+  const value=await loadConfirmedUsers(id,80);if(value?.sourceGeneration!==record.sourceGeneration||value.generation!==record.generation)return false;let changed=false;
+  for(const turn of page.data||[]){if(turn.itemsView==='full'||!Array.isArray(turn.items))continue;const opening=turn.items.find(fullNativeUser),saved=value.turns.find(t=>t.id===turn.id&&t.startedAt===turn.startedAt&&t.openingId===opening?.id);if(!saved||!saved.items.every(fullNativeUser)||saved.items[0]?.id!==opening?.id)continue;const present=new Set(turn.items.map(i=>i.id)),missing=saved.items.filter(i=>!present.has(i.id));if(!missing.length)continue;
+   // This remains a partial summary. Native pagination retains the full process
+   // ordering; only its confirmed input rows are added before its latest reply.
+   const users=saved.items.map(item=>structuredClone(turn.items.find(v=>v.id===item.id)||item));for(const item of turn.items.filter(fullNativeUser))if(!users.some(v=>v.id===item.id))users.push(item);turn.items=[...users,...turn.items.filter(i=>i.type!=='userMessage')];changed=true;
+  }return changed;
+ }
  const validated=new Map(),foregroundFreshReads=new Set(),nativeActivity=new Map(),nativeEventEpoch=new Map();let lastForeground=Date.now();
+ const savedReadVersions=new Map();
  const validNativeRecord=(record,key)=>!!record&&record.scope===scope.id&&record.key===key&&!record.deleted&&typeof record.sourceGeneration==='string'&&record.sourceGeneration.length>0&&typeof record.generation==='string'&&record.generation.length>0&&Number.isSafeInteger(record.revision)&&record.revision>=1&&record.payload&&typeof record.payload==='object';
- async function fetchRead(method,params,fresh,priority='auto'){params=normalize(method,params);const key=readKey(method,params),pendingKey=key+(fresh?':fresh':':cached');if(pendingReads.has(key+':fresh'))return pendingReads.get(key+':fresh');if(pendingReads.has(pendingKey))return pendingReads.get(pendingKey);
-  const viewStamp=historyViewEpoch,statusStamp=window.__DSH_NATIVE_STATUS_RECOVERY__?.beginRead(params.threadId,{fresh});
+ async function fetchRead(method,params,fresh,priority='auto'){params=normalize(method,params);if(method==='thread/items/list')params.limit=Math.min(8,params.limit);const key=readKey(method,params),pendingKey=key+(fresh?':fresh':':cached');if(pendingReads.has(key+':fresh'))return pendingReads.get(key+':fresh');if(pendingReads.has(pendingKey))return pendingReads.get(pendingKey);
+  const userWitness=confirmedUserWitnesses.get(params.threadId),captureItemWitness=method==='thread/items/list'?{sourceGeneration:userWitness?.sourceGeneration,generation:userWitness?.generation,turn:userWitness?.turns.get(params.turnId)}:undefined;
+  const captureUserEpoch=confirmedUserEpochs.get(params.threadId)||0,viewStamp=historyViewEpoch,statusStamp=window.__DSH_NATIVE_STATUS_RECOVERY__?.beginRead(params.threadId,{fresh});
   const work=(async()=>{let record=await api('/native-read',{method,params,fresh},priority);if(!validNativeRecord(record,key))throw Error('历史缓存身份或版本不匹配');let generation=null,cacheHealthy=true;try{
     generation=await meta('catalog-generation');
     if(generation&&generation!==record.sourceGeneration){try{await bounded(syncCatalog(),'同步本机目录',CACHE_IO_TIMEOUT_MS);}catch{}generation=await meta('catalog-generation');if(generation&&generation!==record.sourceGeneration)throw Error('历史来源已更新，请重新读取');}
    }catch(error){if(error?.message==='历史来源已更新，请重新读取')throw error;cacheHealthy=false;}
    if(cacheHealthy){let stored=false;try{stored=await put(record,{expectedGeneration:generation||record.sourceGeneration});}catch{}if(stored){const committed=await get(key,{touch:false}).catch(()=>null);if(validNativeRecord(committed,key)&&committed.sourceGeneration===record.sourceGeneration&&committed.generation===record.generation&&committed.revision>record.revision)record={...committed,source:'indexeddb'};}}
-   if(viewStamp===historyViewEpoch)window.__DSH_NATIVE_STATUS_RECOVERY__?.acceptRead(method,params,record,statusStamp);if(fresh&&(record.source==null||record.source==='native'))validated.set(key,Date.now());window.__DSH_CLIENT_LOG__?.event('history_read',{method,threadId:params.threadId,revision:record.revision,source:record.source||'native',fresh:!!fresh});if(validated.size>512)validated.delete(validated.keys().next().value);return record;})().finally(()=>{if(pendingReads.get(pendingKey)===work)pendingReads.delete(pendingKey);});pendingReads.set(pendingKey,work);return work;}
+   if(record.source==null||record.source==='native'||record.source==='cloud-cache'||record.source==='mac-cache')window.__DSH_ANDROID_BRIDGE__?.saveReadRecord?.(record)?.catch(()=>{});window.__DSH_NATIVE_STATUS_RECOVERY__?.acceptRead(method,params,record,statusStamp);rememberConfirmedUsers(record,captureUserEpoch,captureItemWitness);if(fresh&&(record.source==null||record.source==='native'))validated.set(key,Date.now());window.__DSH_CLIENT_LOG__?.event('history_read',{method,threadId:params.threadId,revision:record.revision,source:record.source||'native',fresh:!!fresh});if(validated.size>512)validated.delete(validated.keys().next().value);return record;})().finally(()=>{if(pendingReads.get(pendingKey)===work)pendingReads.delete(pendingKey);});pendingReads.set(pendingKey,work);return work;}
  async function read(method,params){const key=readKey(method,params),normalized=normalize(method,params);let cached=await get(key).catch(()=>null);
+  const savedVersion=savedReadVersions.get(normalized.threadId);
+  if(androidReader&&(!cached||cached.deleted&&cached.payload?.cacheEvicted===true||savedVersion&&(cached.sourceGeneration!==savedVersion.sourceGeneration||cached.generation!==savedVersion.generation))){
+   const saved=await window.__DSH_ANDROID_BRIDGE__?.readSavedRecord?.(key,savedVersion||{})?.catch(()=>null),record=saved?.record;
+   if(saved?.scope===scope.id&&validNativeRecord(record,key)&&(!savedVersion||record.sourceGeneration===savedVersion.sourceGeneration&&record.generation===savedVersion.generation)){cached={...record,savedArchive:true};if(!savedVersion)savedReadVersions.set(normalized.threadId,{sourceGeneration:record.sourceGeneration,generation:record.generation});}
+   else if(savedVersion)cached=null;
+  }
+  // Keep existing complete local pages usable. Only a missing network page
+  // uses a small Native page; its real cursor retains access to older items.
+  if((!cached||cached.deleted)&&method==='thread/items/list'&&normalized.limit>8)return read(method,{...normalized,limit:8});
   // A background freshness check must not force the visible reader past its cache.
   const historyCursor=normalized.turnId?await meta('history-cursors:'+normalized.threadId).catch(()=>null):null;
   if(!cached&&method==='thread/items/list'&&normalized.turnId&&normalized.cursor&&historyCursor?.itemsBackwardsCursor===normalized.cursor){const stable=await get(stableItemHead(normalized),{touch:false}).catch(()=>null);if(stable&&!stable.deleted)try{if(await terminalItems(normalized,stable))cached=stable;}catch{}}
@@ -469,35 +717,64 @@
   if(immutable&&normalized.cursor&&historyCursor?.itemsBackwardsCursor===normalized.cursor){const deadline=Date.now()+CACHE_IO_TIMEOUT_MS,key=stableItemHead(normalized);try{const db=await cacheDb(remaining(deadline)),readTx=db.transaction('aliases'),prior=await cacheRequest(readTx.objectStore('aliases').get(key),readTx,'读取稳定分页别名',remaining(deadline));if(prior?.target!==cached.key&&canReplace(prior,{revision:cached.revision})){const tx=db.transaction('aliases','readwrite'),completion=cacheCompletion(tx,'保存稳定分页别名',remaining(deadline));try{tx.objectStore('aliases').put({key,target:cached.key,sourceGeneration:cached.sourceGeneration,generation:cached.generation,revision:cached.revision});await completion;}catch(error){try{tx.abort?.();}catch{}await completion.catch(()=>{});}}}catch{}}
 
 
-  if(cached&&!cached.deleted){window.__DSH_PERF__?.event('native_history_read',{source:'indexeddb'});if(navigator.onLine&&!immutable&&Date.now()-(validated.get(key)||0)>2000)fetchRead(method,params,true).then(record=>{if(record.revision>cached.revision){broadcast?.postMessage({type:'history',threadId:params.threadId});window.dispatchEvent(new CustomEvent('dsh:history-updated',{detail:{threadId:params.threadId}}));}}).catch(()=>{});return {result:structuredClone(cached.payload.result),cached:true,confirmedAt:cached.confirmedAt};}
-  diagnostics.readMisses.push({method,limit:params?.limit,itemsView:params?.itemsView,sortDirection:params?.sortDirection,hasCursor:!!params?.cursor});if(diagnostics.readMisses.length>20)diagnostics.readMisses.shift();foregroundFreshReads.add(key);let record;try{record=await fetchRead(method,params,false);}finally{foregroundFreshReads.delete(key);}window.__DSH_PERF__?.event('native_history_read',{source:record.source||'cloud'});return {result:record.payload.result,cached:false};
+  if(cached&&!cached.deleted){window.__DSH_PERF__?.event('native_history_read',{source:'indexeddb'});const selectedSummary=androidReader&&location.pathname==='/local/'+normalized.threadId&&method==='thread/turns/list'&&!normalized.cursor;if(selectedSummary)queueMicrotask(()=>refreshForeground().catch(()=>{}));if(navigator.onLine&&!immutable&&!selectedSummary&&Date.now()-(validated.get(key)||0)>2000)fetchRead(method,params,true).then(record=>{if(record.sourceGeneration!==cached.sourceGeneration||record.generation!==cached.generation||record.revision>cached.revision){broadcast?.postMessage({type:'history',threadId:params.threadId});window.dispatchEvent(new CustomEvent('dsh:history-updated',{detail:{threadId:params.threadId}}));}}).catch(()=>{});return {result:structuredClone(cached.payload.result),cached:true,confirmedAt:cached.confirmedAt};}
+  diagnostics.readMisses.push({method,limit:params?.limit,itemsView:params?.itemsView,sortDirection:params?.sortDirection,hasCursor:!!params?.cursor});if(diagnostics.readMisses.length>20)diagnostics.readMisses.shift();foregroundFreshReads.add(key);let record;try{record=await fetchRead(method,params,false);}finally{foregroundFreshReads.delete(key);}if(savedVersion&&(record.sourceGeneration!==savedVersion.sourceGeneration||record.generation!==savedVersion.generation))throw Error('历史已更新，正在同步会话');window.__DSH_PERF__?.event('native_history_read',{source:record.source||'cloud'});return {result:record.payload.result,cached:false};
  }
  // Background cache refresh never resumes, subscribes or executes a thread.
- const PREWARM_TURNS=(!!window.DSHAndroid||/DSHAndroid/i.test(navigator.userAgent))?12:6,PREWARM_RECENT=(!!window.DSHAndroid||/DSHAndroid/i.test(navigator.userAgent))?60:20;
+ const PREWARM_TURNS=(!!window.DSHAndroid||/DSHAndroid/i.test(navigator.userAgent))?12:6,PREWARM_RECENT=20;
+ const nativeOwnsHistoryWarm=()=>androidReader&&window.__DSH_ANDROID_BRIDGE__?.ownsHistoryWarm?.()===true;
  let priorityPinned=new Set();
- const backgroundErrors=new Map(),backgroundHeads=new Set(),backgroundQueue=new Set(),backgroundFresh=new Map(),backgroundLast=new Map(),knownRunning=new Set(),recentWarmed=new Map();let backgroundBusy=false,backgroundTimer=null,scanning=false;
- diagnostics.background={completed:0,failed:0,lastThread:null,turnsPerThread:PREWARM_TURNS,recentThreads:PREWARM_RECENT};
- function enqueueBackground(id,{fresh=true}={}){if(!/^[0-9a-f-]{36}$/i.test(id||''))return;queueCachedPreparation(id);backgroundQueue.add(id);backgroundFresh.set(id,fresh||backgroundFresh.get(id)||false);scheduleBackground();}
- async function warmPinned(value){priorityPinned=new Set(value?.threadIds||[]);preparePinnedSidebar(value).catch(()=>{});for(const id of value?.threadIds||[]){if(pinnedWarmed.has(id))continue;pinnedWarmed.add(id);enqueueBackground(id,{fresh:false});}}
- async function warmRecent(){const page=await catalogPage({limit:PREWARM_RECENT,sortKey:'updated_at'});for(const entry of page.entries){const version=entry.sourceUpdatedAt||entry.sourceRecencyAt||0;if(recentWarmed.get(entry.threadId)===version)continue;recentWarmed.set(entry.threadId,version);enqueueBackground(entry.threadId,{fresh:false});}if(recentWarmed.size>100)for(const id of [...recentWarmed.keys()].slice(0,recentWarmed.size-100))recentWarmed.delete(id);}
- function scheduleBackground(){if(backgroundTimer)return;backgroundTimer=setTimeout(()=>{backgroundTimer=null;runBackground().catch(()=>{});},1200);}
+ const backgroundErrors=new Map(),backgroundHeads=new Set(),backgroundQueue=new Set(),backgroundFresh=new Map(),backgroundLast=new Map(),knownRunning=new Set(),recentWarmed=new Map();let backgroundBusy=false,backgroundTimer=null,scanning=false,startupFrameReady=false,startupFramePending=false;
+ // Native already prepares durable history in the background. WebView work
+ // must yield until the official shell's first frame, then to current reading.
+ function markStartupFrame(){if(startupFrameReady||startupFramePending||document.visibilityState!=='visible'||!document.querySelector('#root #app-shell-sidebar'))return;startupFramePending=true;requestAnimationFrame(()=>{startupFramePending=false;if(document.visibilityState!=='visible')return;startupFrameReady=true;lastForeground=Date.now();startupFrameObserver.disconnect();scheduleCachedPreparation();scheduleBackground();});}
+ const startupFrameObserver=new MutationObserver(markStartupFrame);startupFrameObserver.observe(document.documentElement,{subtree:true,childList:true});markStartupFrame();
+ document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){markStartupFrame();scheduleCachedPreparation();scheduleBackground();}});
+ diagnostics.background={completed:0,reused:0,failed:0,lastThread:null,turnsPerThread:PREWARM_TURNS,recentThreads:PREWARM_RECENT};
+ function enqueueBackground(id,{fresh=true}={}){if(!/^[0-9a-f-]{36}$/i.test(id||'')||internalDirectoryThreads.has(id))return;queueCachedPreparation(id);if(nativeOwnsHistoryWarm())return;backgroundQueue.add(id);backgroundFresh.set(id,fresh||backgroundFresh.get(id)||false);scheduleBackground();}
+ async function reusablePrewarm(entry){
+  if(!entry||entry.nativeThread?.status?.type==='active')return false;
+  const version=entry.sourceUpdatedAt||entry.sourceRecencyAt||0;
+  const [saved,generation]=await Promise.all([meta('history-prewarmed:'+entry.threadId).catch(()=>null),meta('catalog-generation').catch(()=>null)]);
+  if(!saved?.complete||saved.sourceGeneration!==generation||saved.sourceUpdatedAt!==version)return false;
+  const head=await get(readKey('thread/read',{threadId:entry.threadId,includeTurns:false}),{touch:false}).catch(()=>null);
+  if(!head||head.deleted||head.sourceGeneration!==generation||head.generation!==saved.generation)return false;
+  diagnostics.background.reused++;return true;
+ }
+ async function warmPinned(value){priorityPinned=new Set((value?.threadIds||[]).filter(id=>!internalDirectoryThreads.has(id)));preparePinnedSidebar(value).catch(()=>{});if(nativeOwnsHistoryWarm())return;for(const id of value?.threadIds||[]){if(pinnedWarmed.has(id))continue;const record=await cachedCatalogRecord(id).catch(()=>null);if(internalDirectoryThreads.has(id)||record&&!record.deleted&&!listableEntry(record.payload)){priorityPinned.delete(id);continue;}pinnedWarmed.add(id);if(record&&!record.deleted&&await reusablePrewarm(record.payload))continue;enqueueBackground(id,{fresh:false});}}
+ async function warmRecent(){const page=await catalogPage({limit:PREWARM_RECENT,sortKey:'updated_at'});for(const entry of page.entries){const version=entry.sourceUpdatedAt||entry.sourceRecencyAt||0;if(recentWarmed.get(entry.threadId)===version)continue;recentWarmed.set(entry.threadId,version);
+   // Durable, unchanged bodies need neither a download nor a background
+   // renderer rebuild after reopening. The selected view restores on demand.
+   if(nativeOwnsHistoryWarm()||await reusablePrewarm(entry))continue;
+   enqueueBackground(entry.threadId,{fresh:false});}if(recentWarmed.size>100)for(const id of [...recentWarmed.keys()].slice(0,recentWarmed.size-100))recentWarmed.delete(id);}
+ function scheduleBackground(){if(backgroundTimer||!backgroundQueue.size||document.visibilityState!=='visible'||!navigator.onLine||window.__DSH_NATIVE_ONLINE__===false)return;backgroundTimer=setTimeout(()=>{backgroundTimer=null;runBackground().catch(()=>{});},1200);}
  async function prewarmRead(method,params,fresh){
-  if(!fresh){const cached=await get(readKey(method,params)).catch(()=>null),generation=await meta('catalog-generation').catch(()=>null),invalid=await meta('invalid:invalidate:'+params.threadId).catch(()=>null);if(cached&&!cached.deleted&&(!generation||cached.sourceGeneration===generation)&&(!invalid||invalid.revision<=cached.revision))return cached;}
+  if(!fresh){const key=readKey(method,params),generation=await meta('catalog-generation').catch(()=>null),invalid=await meta('invalid:invalidate:'+params.threadId).catch(()=>null);let cached=await get(key).catch(()=>null);
+   if(androidReader&&(!cached||cached.deleted||generation&&cached.sourceGeneration!==generation)){
+    const saved=await window.__DSH_ANDROID_BRIDGE__?.readSavedRecord?.(key)?.catch(()=>null);
+    if(saved?.scope===scope.id&&validNativeRecord(saved.record,key)&&(!generation||saved.record.sourceGeneration===generation))cached=saved.record;
+   }
+   if(cached&&!cached.deleted&&(!generation||cached.sourceGeneration===generation)&&(!invalid||invalid.sourceGeneration===generation&&invalid.revision<=cached.revision))return cached;}
   return fetchRead(method,params,fresh,'low');
  }
  async function runBackground(){
   if(backgroundBusy||!backgroundQueue.size)return;
+  for(const id of backgroundQueue)if(internalDirectoryThreads.has(id)){backgroundQueue.delete(id);backgroundFresh.delete(id);backgroundHeads.delete(id);backgroundErrors.delete(id);}
+  if(!backgroundQueue.size)return;
+  if(document.visibilityState!=='visible'||!startupFrameReady)return;
   if(document.visibilityState!=='visible'||!navigator.onLine||window.__DSH_NATIVE_ONLINE__===false||navigator.connection?.saveData||Date.now()-lastForeground<1800||foregroundFreshReads.size){scheduleBackground();return;}
   const visible=window.__DSH_NATIVE_SIDEBAR__?.isList?null:location.pathname.split('/')[2];
   const rank=id=>priorityPinned.has(id)?0:knownRunning.has(id)?1:recentWarmed.has(id)?2:3;
-  const id=[...backgroundQueue].filter(id=>id!==visible&&Date.now()-(backgroundLast.get(id)||0)>10000).sort((a,b)=>Number(backgroundHeads.has(a))-Number(backgroundHeads.has(b))||rank(a)-rank(b))[0];
+  const id=[...backgroundQueue].filter(id=>id!==visible&&Date.now()-(backgroundLast.get(id)||0)>10000).sort((a,b)=>rank(a)-rank(b)||Number(backgroundHeads.has(a))-Number(backgroundHeads.has(b)))[0];
   if(!id){scheduleBackground();return;}backgroundQueue.delete(id);const fresh=backgroundFresh.get(id)!==false;backgroundFresh.delete(id);backgroundBusy=true;backgroundLast.set(id,Date.now());diagnostics.background.currentThread=id;diagnostics.background.stage=backgroundHeads.has(id)?'history':'head';
   try{
    if(!backgroundHeads.has(id)){
    const head=await prewarmRead('thread/read',{threadId:id,includeTurns:false},fresh);
+   if(internalDirectoryThread(head.payload?.result?.thread)){hideInternalDirectoryThread(id);backgroundHeads.delete(id);backgroundErrors.delete(id);priorityPinned.delete(id);recentWarmed.delete(id);return;}
    if(head.payload?.result?.thread?.historyMode==='legacy'){
     // Legacy threads expose full turns, not the durable item-page API.
     await prewarmRead('thread/turns/list',{threadId:id,limit:2,sortDirection:'desc',itemsView:'full'},fresh);
+    await saveMeta('history-prewarmed:'+id,{at:Date.now(),complete:true,sourceUpdatedAt:recentWarmed.get(id)??head.payload?.result?.thread?.updatedAt??0,sourceGeneration:head.sourceGeneration,generation:head.generation,pinned:priorityPinned.has(id)}).catch(()=>{});
     queueCachedPreparation(id);backgroundErrors.delete(id);diagnostics.background.completed++;diagnostics.background.lastThread=id;return;
    }
    // Share the exact first-paint shape used by Android's durable history reader.
@@ -515,6 +792,8 @@
     await prewarmRead('thread/items/list',{threadId:id,turnId:turn.id,limit:window.__DSH_HISTORY_POLICY__?.initialTurnItems||20,sortDirection:'desc'},fresh);
    }
    if(androidReader)queueCachedPreparation(id);else if(fresh&&Date.now()-lastForeground>=1800)await nativeClient?.hydrateBackgroundThreads?.([id],{includeTurns:true,maxTurns:PREWARM_TURNS});backgroundHeads.delete(id);
+   const head=await get(readKey('thread/read',{threadId:id,includeTurns:false}),{touch:false}).catch(()=>null);
+   if(head&&!head.deleted)await saveMeta('history-prewarmed:'+id,{at:Date.now(),complete:true,sourceUpdatedAt:recentWarmed.get(id)??head.payload?.result?.thread?.updatedAt??0,sourceGeneration:head.sourceGeneration,generation:head.generation,pinned:priorityPinned.has(id)}).catch(()=>{});
    backgroundErrors.delete(id);diagnostics.background.completed++;diagnostics.background.lastThread=id;
    window.__DSH_PERF__?.event('prewarm',{bodyCount:diagnostics.background.completed,background:true});
   }catch{backgroundErrors.set(id,{at:Date.now()});if(backgroundErrors.size>100)backgroundErrors.delete(backgroundErrors.keys().next().value);backgroundHeads.delete(id);diagnostics.background.failed++;pinnedWarmed.delete(id);recentWarmed.delete(id);if(priorityPinned.has(id))enqueueBackground(id,{fresh:false});}finally{backgroundBusy=false;diagnostics.background.currentThread=null;diagnostics.background.stage=null;if(backgroundQueue.size)scheduleBackground();}
@@ -523,7 +802,7 @@
  document.addEventListener('input',()=>{lastForeground=Date.now();},true);
  addEventListener('dsh:native-route',()=>{lastForeground=Date.now();});
  addEventListener('dsh:session-ready',()=>scanRunning().catch(()=>{}));
- const backgroundScanTimer=setInterval(()=>scanRunning().catch(()=>{}),15000);setTimeout(()=>scanRunning().catch(()=>{}),5000);
+ const backgroundScanTimer=setInterval(()=>{if(document.visibilityState==='visible'&&navigator.onLine)scanRunning().catch(()=>{});},120000);setTimeout(()=>scanRunning().catch(()=>{}),5000);
  function hydrateCachedThread(id){if(androidReader)return refreshCommitted();if(!id||!nativeClient||window.__DSH_EXECUTION_CONNECTED__===true||offlineHydrated.has(id))return Promise.resolve();if(offlineHydrations.has(id))return offlineHydrations.get(id);const work=nativeClient.hydrateBackgroundThreads([id],{includeTurns:true,maxTurns:androidReader?6:1,...(androidReader?{refreshTurns:true,refreshGuard:()=>location.pathname==='/local/'+id}:{})}).then(async()=>{
    if(androidReader){offlineHydrated.add(id);window.__DSH_PERF__?.ready(id);return;}
    // Background hydration deliberately omits normal-page pagination in the
@@ -547,7 +826,7 @@
  addEventListener('dsh:authentication-required',window.__DSH_STOP_EVENT_CONNECTION__);
  addEventListener('offline',yieldEventHandshake);
  addEventListener('dsh:execution-state',()=>{if(window.__DSH_EXECUTION_CONNECTED__===true){eventsControlPending=false;connectEvents().catch(()=>{});}else yieldEventHandshake();});
- function replicaChanged(event){if(event?.type==='host'){window.__DSH_NATIVE_ONLINE__=!!event.online;window.dispatchEvent(new Event('dsh:connection-state'));}if(event?.type==='nativeChanged'){if(/^(thread:|catalog-)/.test(event.cacheKey||''))syncCatalog().catch(()=>{});const id=event.threadId,invalid=event.cacheKey?.startsWith('invalidate:');if(id&&invalid){for(const key of validated.keys())if(key.includes(id))validated.delete(key);if(location.pathname!=='/local/'+id||window.__DSH_NATIVE_SIDEBAR__?.isList)enqueueBackground(id);}if(id&&invalid&&location.pathname==='/local/'+id){if(androidReader){refreshForeground().catch(()=>{});return;}fetchRead('thread/read',{threadId:id,includeTurns:false},true).then(()=>nativeClient?.hydrateBackgroundThreads?.([id],{includeTurns:true,maxTurns:1})).catch(()=>{});}}}
+ function replicaChanged(event){if(event?.type==='host'){window.__DSH_NATIVE_ONLINE__=!!event.online;window.dispatchEvent(new Event('dsh:connection-state'));}if(event?.type==='nativeChanged'){if(/^(thread:|catalog-)/.test(event.cacheKey||''))syncCatalog().catch(()=>{});const id=event.threadId,invalid=event.cacheKey?.startsWith('invalidate:');if(id&&invalid){for(const key of validated.keys())if(key.includes(id))validated.delete(key);if(location.pathname!=='/local/'+id||window.__DSH_NATIVE_SIDEBAR__?.isList)enqueueBackground(id);}if(id&&invalid&&location.pathname==='/local/'+id){if(androidReader){refreshForeground(true).catch(()=>{});return;}fetchRead('thread/read',{threadId:id,includeTurns:false},true).then(()=>nativeClient?.hydrateBackgroundThreads?.([id],{includeTurns:true,maxTurns:1})).catch(()=>{});}}}
  async function connectEvents(){if(eventsSocket||eventsStarting||!mayConnectEvents())return;eventsStarting=true;try{if(navigator.locks?.request)await navigator.locks.request('dsh-native:'+scope.id+':events',{ifAvailable:true},lock=>lock?openEvents():undefined);else await openEvents();}finally{eventsStarting=false;}}
  async function openEvents(){if(eventsSocket||!mayConnectEvents())return;const openingGeneration=eventsGeneration,cursor=await meta('event-cursor').catch(()=>null)||{};if(openingGeneration!==eventsGeneration||eventsSocket||!mayConnectEvents())return;const u=new URL('/sync/v1/w/'+scope.id+'/events',location.href);u.protocol=location.protocol==='https:'?'wss:':'ws:';u.searchParams.set('epoch',cursor.epoch||'');u.searchParams.set('after',cursor.seq||0);const connectionId=crypto.randomUUID(),startedAt=Date.now();u.searchParams.set('dshDiag',connectionId);const socket=new WebSocket(u.href);eventsSocket=socket;let lastMessageAt=0;const trace=(stage,fields={})=>window.__DSH_CLIENT_LOG__?.event('transport',{component:'cloud-events',connectionId,stage,...fields});trace('attempt');const handshake=setTimeout(()=>{if(eventsSocket!==socket||socket.readyState!==0)return;trace('failed',{reason:'timeout',socketState:socket.readyState,durationMs:Date.now()-startedAt});socket.close();},15000);socket.addEventListener('open',()=>{clearTimeout(handshake);trace('connected',{durationMs:Date.now()-startedAt});});socket.addEventListener('error',()=>trace('failed',{reason:'socket_error',socketState:socket.readyState}));socket.addEventListener('close',event=>trace('closed',{reason:'socket_closed',closeCode:event.code,wasClean:event.wasClean,durationMs:Date.now()-startedAt,lastMessageAgeMs:Date.now()-(lastMessageAt||startedAt)}));
   socket.addEventListener('message',event=>{lastMessageAt=Date.now();eventChain=eventChain.then(async()=>{const value=JSON.parse(event.data);
@@ -570,12 +849,13 @@
  // Catalog rows intentionally omit history. Adapt only the renderer-facing shape.
  function rendererThreadObservation(threads){return {hostId:'local',threads:threads.map(thread=>Array.isArray(thread.turns)?thread:{...thread,turns:[]})};}
  const catalog={readPage:catalogPage,readEntries,readStatus:status,setSourceEnabled:async()=>{},
-  async requestSync(){const cached=await status();syncCatalog(true).catch(()=>{});return cached;},async requestStartupSync(){const generation=await meta('catalog-generation').catch(()=>null);if(generation){const cached=await status();syncCatalog(true).catch(()=>{});return cached;}return syncCatalog(true).catch(()=>status());},
+  async requestSync(){const cached=await status();syncCatalog(true).catch(()=>{});return cached;},async requestStartupSync(){const cached=await status();syncCatalog(true).catch(()=>{});return cached;},
   subscribeStatus(callback){statusSubscribers.add(callback);status().then(callback).catch(()=>{});},unsubscribeStatus(){statusSubscribers.clear();},
   subscribeThreadObservations(callback){observationSubscribers.add(callback);catalogPage({limit:50}).then(p=>callback(rendererThreadObservation(p.entries.map(e=>e.nativeThread).filter(Boolean)))).catch(()=>{});},unsubscribeThreadObservations(){observationSubscribers.clear();},
   notifyThread:()=>syncCatalog(true).catch(()=>{}),invalidateSource:()=>syncCatalog(true).catch(()=>{}),removeMissingEntry:async()=>false};
  function rememberHistoryCursors(id,result){if(!id||result?.thread?.id!==id||typeof result.itemsBackwardsCursor!=='string')return;saveMeta('history-cursors:'+id,{itemsBackwardsCursor:result.itemsBackwardsCursor,turnsBackwardsCursor:result.turnsBackwardsCursor??null,confirmedAt:Date.now()}).catch(()=>{});}
  window.__DSH_IPC_CACHE_RESPONSE__=payload=>{
+  if(payload?.type==='mcp-notification'&&['app/list/updated','account/updated','account/login/completed'].includes(payload.method))appCatalogMemory.clear();
   // Seen introductions are durable per device, including cached/offline starts.
   if(payload?.type==='persisted-atom-sync'||payload?.type==='persisted-atom-updated'&&payload.key===seenModelsKey){const remote=seenModels(payload.type==='persisted-atom-sync'?(payload.atoms||payload.state)?.[seenModelsKey]:payload.value);if(remote)localSeenModels=[...new Set([...localSeenModels,...remote])];if(localSeenModels.length){const value=[...localSeenModels];persistAtom({key:seenModelsKey,value}).catch(()=>{});if(payload.type==='persisted-atom-sync'){payload.state={...payload.state,[seenModelsKey]:value};payload.atoms={...payload.atoms,[seenModelsKey]:value};}else{payload.value=value;payload.deleted=false;}}}
   // Persist only the user's dismissal timestamp; execution permissions do not change.
@@ -603,7 +883,7 @@
   if(params?.hostId&&params.hostId!=='local')return null;
   const path=params?.path||params?.filePath;if(typeof path!=='string'||!path.startsWith('/'))return null;
   const bridge=window.__DSH_ANDROID_BRIDGE__;if(typeof bridge?.resolveDeliverable!=='function')return null;
-  try{const value=await bridge.resolveDeliverable(path);return value?.available===true?value:null;}catch{return null;}
+  try{const value=await bounded(Promise.resolve().then(()=>bridge.resolveDeliverable(path)),'读取本机附件缓存',CACHE_IO_TIMEOUT_MS);return value?.available===true?value:null;}catch{return null;}
  }
  window.__DSH_LOCAL_DELIVERABLE__=localDeliverable;
  const localFileMetadata=d=>({isFile:true,isDirectory:false,sizeBytes:d.size,mtimeMs:d.mtimeMs,createdAtMs:d.createdAtMs,contentKind:d.contentKind});
@@ -618,6 +898,14 @@
   return {...(text===undefined?{blob:base64(bytes)}:{text}),etag:d.sourceVersion};
  }
  window.__DSH_IPC_CACHE__=async(channel,payload,emit)=>{
+  // The official optional prewarm creates an unmaterialized Native thread.
+  // Desktop observes its global started event and wrongly persists it as a
+  // resumable history entry. Decline only the speculative start; the actual
+  // first submission still creates its normal Native conversation.
+  if(channel==='codex_desktop:message-from-view'&&payload?.type==='thread-prewarm-start'){
+   emit('mcp-response',{hostId:payload.hostId||'local',message:{id:payload.request?.id,error:{code:-32000,message:'会话将在首次发送时创建',data:{status:409,notSubmitted:true}}}});
+   return {handled:true,value:null};
+  }
   if(channel==='open-file'){const d=await localDeliverable(payload);if(d)return {handled:true,value:{url:d.url}};}
   if(payload?.type==='fetch'){
    const method=String(payload.url||'').replace(/^vscode:\/\/codex\//,'');
@@ -740,7 +1028,7 @@
  const proxy=name=>new Proxy({},{get:(_,method)=>method==='then'?undefined:method===Symbol.dispose?()=>{}:(...args)=>remote(name,method,args)});
  window.__DSH_LOCAL_APP_HOST__=async remotePromise=>{
   diagnostics.hostCreated=true;const hostGeneration=++appHostGeneration;remoteReady=false;appHostError=null;appHostState();
-  remoteServices=Promise.resolve(remotePromise).then(value=>{if(hostGeneration===appHostGeneration){remoteReady=true;appHostState();}return value;},error=>{if(hostGeneration===appHostGeneration){remoteReady=false;appHostError=Error('DSH_APP_HOST_UNAVAILABLE: 页面服务尚未恢复，操作未发送；草稿已保留');window.__DSH_CLIENT_LOG__?.reportError('transport',error,{component:'page-ws',stage:'failed',reason:'upstream_failure'});appHostState();}throw error;});remoteServices.catch(()=>{});try{await meta('catalog-generation');}catch{return remoteServices;}
+  remoteServices=Promise.resolve(remotePromise).then(value=>{if(hostGeneration===appHostGeneration){remoteReady=true;appHostState();}return value;},error=>{if(hostGeneration===appHostGeneration){remoteReady=false;appHostError=Error('DSH_APP_HOST_UNAVAILABLE: 页面服务尚未恢复，操作未发送；草稿已保留');window.__DSH_CLIENT_LOG__?.reportError('transport',error,{component:'page-ws',stage:'failed',reason:'upstream_failure'});appHostState();}throw error;});remoteServices.catch(()=>{});
   const services=Object.fromEntries(['threadArchive','httpFetch','threadProjectAssignments','clipboard','workspaceFiles','fileAttachments','dynamicToolCalls','clientCoordination'].map(name=>[name,proxy(name)]));
   const remoteFiles=services.workspaceFiles;
   services.workspaceFiles=new Proxy({},{get:(_,method)=>method==='then'?undefined:method===Symbol.dispose?()=>{}:(...args)=>{
@@ -755,22 +1043,31 @@
    else if((u.hostname==='ab.chatgpt.com'&&u.pathname==='/v1/rgstr')||(u.hostname==='chatgpt.com'&&['/ces/v1/rgstr','/ces/v1/log_event'].includes(u.pathname)))data={};
    return disposable(Promise.resolve(disposable(data?{response:new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}})}:{error:'此工作台未开放云端 ChatGPT HTTP 通道',status:403})));
   }};
-  services.localThreadCatalog=catalog;services.startup={whenReady:async()=>{},reach:()=>{}};services.appInfo={get:async()=>({version:'26.901.51231',buildFlavor:'prod',buildNumber:null})};
+  // Creating the control facade is independent of optional IndexedDB health.
+  // Individual catalog reads degrade to the existing host when storage fails.
+  const cacheFailure=error=>error?.code==='CACHE_TIMEOUT'||['AbortError','InvalidStateError','TransactionInactiveError','NotFoundError','UnknownError','SecurityError','QuotaExceededError'].includes(error?.name);
+  services.localThreadCatalog={...catalog};for(const method of ['readPage','readEntries','readStatus','requestSync','requestStartupSync'])services.localThreadCatalog[method]=(...args)=>Promise.resolve().then(()=>catalog[method](...args)).catch(error=>{if(!cacheFailure(error)||!navigator.onLine||window.__DSH_EXECUTION_CONNECTED__!==true)throw error;return remote('localThreadCatalog',method,args);});services.startup={whenReady:async()=>{},reach:()=>{}};services.appInfo={get:async()=>({version:'26.901.51231',buildFlavor:'prod',buildNumber:null})};
   services.clientCoordination=new Proxy({},{get:(_,method)=>method==='then'?undefined:method===Symbol.dispose?()=>{}:(...args)=>{
    if(remoteReady)return remote('clientCoordination',method,args);
    const value=method==='findThreadOwner'?null:method==='getIdeContext'?{ideContext:null}:method==='requestThreadFollower'?{type:'response',resultType:'error',requestId:'',error:'native-offline'}:undefined;
    return disposable(Promise.resolve(rpcValue(value)));
   }});
-  const settingListeners=new Map();
+  const settingListeners=new Map(),liveSettings=new Map(),settingsCurrent=()=>hostGeneration===appHostGeneration;
+  const settingDisplay=(key,value)=>{if(key!=='enabled-reasoning-efforts')return structuredClone(value);const levels=value.effective||['low','medium','high','xhigh','ultra','persistent'];return {...structuredClone(value),effective:[...new Set([...levels.filter(x=>!['ultra','persistent'].includes(x)),'max',...levels.filter(x=>['ultra','persistent'].includes(x))])]};};
   let settingsEpoch=0,settingsCacheWrites=Promise.resolve();
   const cacheSettings=fn=>{const task=settingsCacheWrites.catch(()=>{}).then(fn);settingsCacheWrites=task;return task;};
-  const cacheSetting=(key,value)=>cacheSettings(async()=>{const all=structuredClone(await meta('settings')||{values:{},configuredValues:{}});all.values={...all.values,[key]:value.effective};all.configuredValues={...all.configuredValues,[key]:value.configured};await saveMeta('settings',all);});
+  const pendingSettingChanges=new Map();let settingWriter=null;
+  function pumpSettingChanges(){
+   if(settingWriter||!pendingSettingChanges.size)return;
+   settingWriter=cacheSettings(async()=>{while(pendingSettingChanges.size){const batch=new Map(pendingSettingChanges);pendingSettingChanges.clear();const all=structuredClone(await meta('settings')||{values:{},configuredValues:{}});if(!settingsCurrent())return;all.values={...all.values};all.configuredValues={...all.configuredValues};for(const [key,value]of batch){all.values[key]=value.effective;all.configuredValues[key]=value.configured;}await saveMeta('settings',all);}}).finally(()=>{settingWriter=null;if(pendingSettingChanges.size)pumpSettingChanges();});settingWriter.catch(()=>{});
+  }
+  const cacheSetting=(key,value)=>{pendingSettingChanges.set(key,structuredClone(value));pumpSettingChanges();return settingWriter||Promise.resolve();};
   const notifySetting=(key,value)=>{for(const callback of settingListeners.get(key)||[])Promise.resolve().then(()=>callback(value)).catch(()=>{});};
   services.settings={
-   async readAll(){const cached=await meta('settings').catch(()=>remote('settings','readAll',[]))||{values:{followUpQueueMode:'steer',...window.__CODEX_WEB_CONFIG__?.dshSettings},configuredValues:{...window.__CODEX_WEB_CONFIG__?.dshSettings}};refreshOnce('settings',30000,async()=>{diagnostics.settingsRefreshes++;const epoch=settingsEpoch;return {epoch,value:await remote('settings','readAll',[])};},result=>cacheSettings(async()=>{if(result.epoch===settingsEpoch)await saveMeta('settings',result.value);})).catch(()=>{});const key='enabled-reasoning-efforts',levels=cached.values?.[key]||['low','medium','high','xhigh','ultra','persistent'];return {...cached,values:{...cached.values,[key]:[...new Set([...levels.filter(x=>!['ultra','persistent'].includes(x)),'max',...levels.filter(x=>['ultra','persistent'].includes(x))])]}};},
-   async read(key){const value=(await services.settings.readAll());return {effective:value.values[key],configured:value.configuredValues[key]};},
-   async write(key,value){settingsEpoch++;await remote('settings','write',[key,value]);settingsEpoch++;invalidateReadChecks();await cacheSetting(key,{effective:value,configured:value}).catch(()=>{});notifySetting(key,{effective:value,configured:value});},
-   async subscribe(key,callback){let subscription=null,closed=false;let listeners=settingListeners.get(key);if(!listeners){listeners=new Set();settingListeners.set(key,listeners);}const localCallback=value=>{if(!closed)return callback(value);};listeners.add(localCallback);await callback(await services.settings.read(key));remote('settings','subscribe',[key,async value=>{settingsEpoch++;invalidateReadChecks();await cacheSetting(key,value).catch(()=>{});if(!closed){if(key==='enabled-reasoning-efforts')callback(await services.settings.read(key));else callback(value);}}]).then(s=>{subscription=s;if(closed)s.dispose();}).catch(()=>{});return {dispose(){closed=true;listeners.delete(localCallback);if(!listeners.size)settingListeners.delete(key);subscription?.dispose();},unsubscribe(){this.dispose();},[Symbol.dispose](){this.dispose();}};}
+   async readAll(){let cached=await meta('settings').catch(()=>remote('settings','readAll',[]))||{values:{followUpQueueMode:'steer',...window.__CODEX_WEB_CONFIG__?.dshSettings},configuredValues:{...window.__CODEX_WEB_CONFIG__?.dshSettings}};refreshOnce('settings',30000,async()=>{diagnostics.settingsRefreshes++;const epoch=settingsEpoch;return {epoch,value:await remote('settings','readAll',[])};},result=>{if(!settingsCurrent()||result.epoch!==settingsEpoch)return;for(const key of liveSettings.keys())if(Object.hasOwn(result.value.values||{},key))liveSettings.set(key,{effective:result.value.values[key],configured:result.value.configuredValues?.[key]});return cacheSettings(async()=>{if(settingsCurrent()&&result.epoch===settingsEpoch)await saveMeta('settings',result.value);});}).catch(()=>{});cached={...cached,values:{...cached.values},configuredValues:{...cached.configuredValues}};for(const [key,value]of liveSettings){cached.values[key]=value.effective;cached.configuredValues[key]=value.configured;}const key='enabled-reasoning-efforts',levels=cached.values?.[key]||['low','medium','high','xhigh','ultra','persistent'];return {...cached,values:{...cached.values,[key]:[...new Set([...levels.filter(x=>!['ultra','persistent'].includes(x)),'max',...levels.filter(x=>['ultra','persistent'].includes(x))])]}};},
+   async read(key){if(liveSettings.has(key))return settingDisplay(key,liveSettings.get(key));const value=(await services.settings.readAll());return {effective:value.values[key],configured:value.configuredValues[key]};},
+   async write(key,value){settingsEpoch++;await remote('settings','write',[key,value]);settingsEpoch++;invalidateReadChecks();if(!settingsCurrent())return;const confirmed={effective:value,configured:value};liveSettings.set(key,structuredClone(confirmed));cacheSetting(key,confirmed).catch(()=>{});notifySetting(key,settingDisplay(key,confirmed));},
+   async subscribe(key,callback){let subscription=null,closed=false;let listeners=settingListeners.get(key);if(!listeners){listeners=new Set();settingListeners.set(key,listeners);}const localCallback=value=>{if(!closed)return callback(value);};listeners.add(localCallback);await callback(await services.settings.read(key));remote('settings','subscribe',[key,async value=>{if(!settingsCurrent())return;settingsEpoch++;invalidateReadChecks();liveSettings.set(key,structuredClone(value));cacheSetting(key,value).catch(()=>{});if(!closed)callback(settingDisplay(key,value));}]).then(s=>{subscription=s;if(closed)s.dispose();}).catch(()=>{});return {dispose(){closed=true;listeners.delete(localCallback);if(!listeners.size)settingListeners.delete(key);subscription?.dispose();},unsubscribe(){this.dispose();},[Symbol.dispose](){this.dispose();}};}
   };
   services.requestUserInputAutoResolution={async setConversationPresented(p){if(p.hostId!=='local')throw Error('工作区宿主不匹配');if(p.presented&&/^[0-9a-f-]{36}$/i.test(p.conversationId)){const path='/local/'+p.conversationId;if(window.__DSH_NAVIGATION__?.acceptRoute(path)===false)return;const url=new URL(location.href);url.pathname=path;url.searchParams.set('workspace',scope.id);if(window.__DSH_NATIVE_SIDEBAR__?.isList)url.searchParams.set('nativeList','1');const routeChanged=location.pathname!==path;history.replaceState(history.state,'',url.href);if(routeChanged)window.dispatchEvent(new CustomEvent('dsh:native-route',{detail:{path}}));window.__DSH_NAVIGATION__?.presented(p.conversationId);hydrateCachedThread(p.conversationId).catch(()=>{});}if(window.__DSH_EXECUTION_CONNECTED__===true)remote('requestUserInputAutoResolution','setConversationPresented',[p]).catch(()=>{});},async recordConversationActivity(p){if(window.__DSH_EXECUTION_CONNECTED__===true)remote('requestUserInputAutoResolution','recordConversationActivity',[p]).catch(()=>{});}};
   for(const name of ['localThreadCatalog','startup','appInfo','settings','httpFetch','requestUserInputAutoResolution'])rpcLocal(services[name]);
@@ -802,6 +1099,26 @@
  }
  window.__DSH_INSTALL_NATIVE_READ_CACHE__=client=>{
   const target=client.requestClient;if(client.hostId!=='local'||!target||installed.has(target))return;installed.add(target);nativeClient=client;window.__DSH_NATIVE_STATUS_RECOVERY__?.register(client);const original=target.sendRequest.bind(target);
+  // Ordinary Jsn preparation reaches the filesystem initializer through this
+  // manager method; managed-worktree queries already use the same descriptor.
+  // Keep the real manager/private-field identity and RpcTarget prototype rule.
+  if(typeof client.getCodexHome==='function'){
+   const readHome=client.getCodexHome.bind(client),methods=Object.create(Object.getPrototypeOf(client));
+   Object.defineProperty(methods,'getCodexHome',{value:function(){return window.__DSH_READ_CODEX_HOME__('local',()=>Promise.resolve(readHome()).then(codexHome=>({codexHome}))).then(value=>value.codexHome);}});
+   Object.setPrototypeOf(client,methods);
+  }
+  const restoreSelectedTier=()=>{const id=location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(id)restoreThreadTier(id).catch(()=>{});};
+  restoreSelectedTier();addEventListener('dsh:native-route',restoreSelectedTier);
+  const executionRead=async(method,params,options)=>{
+   if(window.__DSH_EXECUTION_METADATA_CONTROL_READY__?.()===true)return original(method,params,{...options,priority:'critical'});
+   if(typeof window.__DSH_READ_EXECUTION_RPC__==='function'){
+    const response=await window.__DSH_READ_EXECUTION_RPC__(method,params,{signal:options?.signal});
+    if(response){if(response.status!==200||!Object.hasOwn(response,'result'))throw Error('执行元数据读取响应无效');return response.result;}
+   }
+   return original(method,params,options);
+  };
+  client.dshReadResumeMetadata=(id,options)=>executionRead('thread/read',{threadId:id,includeTurns:false},options);
+
   // Authentication is a current Native fact. A stale logged-out snapshot must
   // not win a live read and strand the official AuthProvider on onboarding.
   const isAuthRead=method=>method==='account/read'||method==='getAuthStatus';
@@ -833,13 +1150,14 @@
   // A fresh Native head belongs to the current transport lifetime, even when
   // another surviving socket keeps the aggregate "connected" boolean true.
   let submissionGeneration=0;
-  const invalidateSubmissionHead=()=>{submissionGeneration++;};
+  const submissionReads=new Set();
+  const invalidateSubmissionHead=()=>{submissionGeneration++;for(const retire of [...submissionReads])retire();};
   // A route change selects a view; it does not retire the execution connection
   // or the explicit submission already bound to another conversation.
   const submissionEvents=['dsh:execution-state','dsh:app-host-state','dsh:authentication-required'];
   for(const event of submissionEvents)addEventListener(event,invalidateSubmissionHead);
-  client.dshDisposeSubmissionHead=()=>{submissionGeneration++;for(const event of submissionEvents)removeEventListener(event,invalidateSubmissionHead);};
-  const stopAuthRecovery=stopNativeAuthRecovery;stopNativeAuthRecovery=()=>{client.dshDisposeSubmissionHead();stopAuthRecovery?.();};
+  client.dshDisposeSubmissionHead=()=>{invalidateSubmissionHead();for(const event of submissionEvents)removeEventListener(event,invalidateSubmissionHead);};
+  const stopAuthRecovery=stopNativeAuthRecovery;stopNativeAuthRecovery=()=>{removeEventListener('dsh:native-route',restoreSelectedTier);client.dshDisposeSubmissionHead();stopAuthRecovery?.();};
   const stoppingError=()=>{const error=Error('上一条消息仍在停止，请稍后再发送；草稿已保留');error.code='DSH_TURN_STOPPING';return error;};
   const stopOutcomeUnknown=(intent,error)=>{
    if(!intent.dispatched)return false;
@@ -853,12 +1171,36 @@
   // turn before the official coordinator chooses queue, steer, or start.
   client.dshReadExecutionHead=async id=>{
    await waitForExecution();
-   const stamp=executionEpoch.get(id)||0,generation=submissionGeneration,frontEpoch=hostPathEpoch,services=remoteServices;
-   const [head,page,policyRead]=await Promise.all([original('thread/read',{threadId:id,includeTurns:false}),original('thread/turns/list',{threadId:id,limit:1,sortDirection:'desc',itemsView:'notLoaded'}),original('config/read',{includeLayers:false})]);
-   if(head?.thread?.id!==id||!Array.isArray(page?.data))throw Error('当前轮次尚未核实，草稿已保留');
-   const latest=page.data[0],activeTurnId=latest?.status==='inProgress'?latest.id:null;
+   const stamp=executionEpoch.get(id)||0,generation=submissionGeneration,frontEpoch=hostPathEpoch,services=remoteServices,stoppingAtRead=userStopIntents.get(id);
+   // A retired read is not an unknown write. End this consumer immediately,
+   // release only its own read RPC slots and let the caller prepare against the
+   // new connection. Do not retain a zero-timeout old promise across sockets.
+   const requests=client.requestClient,ownedReads=new Map(),controller=typeof AbortController==='function'?new AbortController():null;
+   let retire;
+   const retired=new Promise(resolve=>{retire=()=>{resolve(null);controller?.abort();for(const [requestId,entry]of ownedReads){if(requests?.requestPromises?.get(requestId)!==entry)continue;try{requests.onError?.(requestId,Object.assign(Error('读取连接已更换，操作尚未提交'),{code:'DSH_EXECUTION_READ_RETIRED'}));}catch{}}};});
+   const read=(method,params)=>{const before=new Set(requests?.requestPromises?.keys?.()||[]),work=executionRead(method,params,{source:'dsh-submit-head:'+generation,signal:controller?.signal});for(const [requestId,entry]of requests?.requestPromises||[])if(!before.has(requestId)&&entry.method===method)ownedReads.set(requestId,entry);return work;};
+   submissionReads.add(retire);
+   let values,page=null;
+   try{
+    values=await Promise.race([Promise.all([read('thread/read',{threadId:id,includeTurns:false}),read('config/read',{includeLayers:false})]),retired]);
+    if(values===null)return {isCurrent:()=>false};
+    const head=values[0];
+    if(head?.thread?.id!==id||typeof head.thread.status?.type!=='string')throw Error('当前轮次尚未核实，草稿已保留');
+    // An idle/notLoaded Native status already proves there is no active turn
+    // for this decision. Do not couple it to a rollout/history page. Active,
+    // error/unknown states and stop recovery still need the exact turn ID.
+    const needsLatest=!['idle','notLoaded'].includes(head.thread.status.type)||!!head.thread.status.activeFlags?.length||userStopIntents.has(id);
+    if(needsLatest){
+     page=await Promise.race([read('thread/turns/list',{threadId:id,limit:1,sortDirection:'desc',itemsView:'notLoaded'}),retired]);
+     if(page===null)return {isCurrent:()=>false};
+     if(!Array.isArray(page?.data))throw Error('当前轮次尚未核实，草稿已保留');
+    }
+   }finally{submissionReads.delete(retire);}
+   const [head,policyRead]=values;
+   const latest=page?.data?.[0],activeTurnId=latest?.status==='inProgress'?latest.id:null;
    if(head.thread.status?.type==='active'&&!activeTurnId)throw Error('当前轮次正在变化，请稍后重试；草稿已保留');
    const stopping=userStopIntents.get(id);
+   if(stopping&&stopping!==stoppingAtRead)throw stoppingError();
    if(client.disposed||nativeClient!==client||generation!==submissionGeneration||frontEpoch!==hostPathEpoch||services!==remoteServices||!navigator.onLine||window.__DSH_EXECUTION_CONNECTED__!==true||stamp!==(executionEpoch.get(id)||0)){if(stopping)throw stoppingError();return {isCurrent:()=>false};}
    if(stopping){
     // Interrupt acceptance does not mean Native has released this turn. Do not
@@ -883,7 +1225,7 @@
   // Read-only quota facade; persist only display fields, never account or reset-credit IDs.
   let quotaPending=null;
   const quotaDisplay=result=>({buckets:Object.values({...((result.rateLimits)?{[result.rateLimits.limitId||'codex']:result.rateLimits}:{}),...result.rateLimitsByLimitId}).map(b=>({id:b.limitId,name:b.limitName||'Codex',plan:b.planType,primary:b.primary,secondary:b.secondary,credits:b.credits?{unlimited:b.credits.unlimited,balance:b.credits.balance}:null})),resetsAvailable:result.rateLimitResetCredits?.availableCount});
-  const rememberQuota=async result=>{const snapshot={data:quotaDisplay(result),checkedAt:Date.now()};await saveMeta('account-quota-v1',snapshot).catch(()=>{diagnostics.quotaCacheFailures=(diagnostics.quotaCacheFailures||0)+1;});window.dispatchEvent(new CustomEvent('dsh:quota-updated',{detail:snapshot}));return snapshot;};
+  const rememberQuota=result=>{const snapshot={data:quotaDisplay(result),checkedAt:Date.now()},current=()=>nativeClient===client&&!client.disposed;if(current()){cacheDisplayProjection('account-quota-v1',snapshot,()=>{diagnostics.quotaCacheFailures=(diagnostics.quotaCacheFailures||0)+1;},()=>current()&&!memoryMeta.get('auth-locked'));window.dispatchEvent(new CustomEvent('dsh:quota-updated',{detail:snapshot}));}return snapshot;};
   window.__DSH_READ_ACCOUNT_LIMITS__=async()=>{
    if(!navigator.onLine||window.__DSH_EXECUTION_CONNECTED__!==true)throw Error('连接恢复后可刷新额度');
    if(!quotaPending)quotaPending=original('account/rateLimits/read',{}).then(rememberQuota).finally(()=>{quotaPending=null;});
@@ -892,11 +1234,11 @@
   client.addNotificationCallback?.('account/rateLimits/updated',()=>window.dispatchEvent(new Event('dsh:quota-invalidated')));
   client.addNotificationCallback?.('thread/started',({params})=>listableThread(params.thread));
   client.addNotificationCallback?.('turn/started',({params})=>{if(params.threadId)listableThread({id:params.threadId,status:{type:'active'}});});
-  for(const method of ['item/started','item/completed','item/agentMessage/delta','item/reasoning/textDelta','item/commandExecution/outputDelta','turn/started','turn/completed','thread/reverted','thread/compacted'])client.addNotificationCallback?.(method,({params})=>{if(params.threadId){if(method==='thread/reverted'||method==='thread/compacted'){recoveryEpoch.set(params.threadId,(recoveryEpoch.get(params.threadId)||0)+1);finalRecovery.delete(params.threadId);restoredFinal.delete(params.threadId);memoryMeta.set(recoveryKey(params.threadId),null);saveMeta(recoveryKey(params.threadId),null).catch(()=>{});}nativeActivity.set(params.threadId,Date.now());nativeEventEpoch.set(params.threadId,(nativeEventEpoch.get(params.threadId)||0)+1);}});
+  for(const method of ['item/started','item/completed','item/agentMessage/delta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded','item/commandExecution/outputDelta','item/fileChange/outputDelta','turn/started','turn/completed','thread/reverted','thread/compacted'])client.addNotificationCallback?.(method,({params})=>{if(params.threadId){if(nativeClient===client&&!client.disposed&&(method==='item/started'||method==='item/completed'))rememberConfirmedUserEvent(params);if(nativeClient===client&&!client.disposed){if(method==='thread/reverted'||method==='thread/compacted')forgetVisibleProcesses(params.threadId);else queueMicrotask(()=>captureVisibleProcesses(client,params.threadId,method==='turn/completed'));}if(method==='thread/reverted'||method==='thread/compacted'){if(nativeClient===client&&!client.disposed)forgetConfirmedUsers(params.threadId);recoveryEpoch.set(params.threadId,(recoveryEpoch.get(params.threadId)||0)+1);finalRecovery.delete(params.threadId);restoredFinal.delete(params.threadId);memoryMeta.set(recoveryKey(params.threadId),null);saveMeta(recoveryKey(params.threadId),null).catch(()=>{});}nativeActivity.set(params.threadId,Date.now());nativeEventEpoch.set(params.threadId,(nativeEventEpoch.get(params.threadId)||0)+1);}});
   // RpcTarget exposes prototype methods only; instance functions are rejected before dispatch.
   const rendererMethods=Object.create(Object.getPrototypeOf(client));Object.setPrototypeOf(client,rendererMethods);
   const hydrateModel=client.hydrateBackgroundThreads?.bind(client);
-  if(hydrateModel)Object.defineProperty(rendererMethods,'hydrateBackgroundThreads',{value:async function(ids,options){const result=await hydrateModel(ids,options);if(nativeClient===client)for(const id of ids)rememberReadModel(id,client.threadStore?.threadsById?.get(id));return result;}});
+  if(hydrateModel)Object.defineProperty(rendererMethods,'hydrateBackgroundThreads',{value:async function(ids,options){const prepared=new Map();if(options?.cachedSnapshot)for(const id of ids){if(options.refreshGuard&&!options.refreshGuard())break;prepared.set(id,await prepareVisibleProcesses(id,options.cachedSnapshot));}const result=await hydrateModel(ids,options);if(nativeClient===client)for(const id of ids){if(options?.cachedSnapshot?.applied)await restoreVisibleProcesses(client,id,options.cachedSnapshot,options.refreshGuard,prepared.get(id));if(options?.cachedSnapshot?.applied)captureVisibleProcesses(client,id,true);rememberReadModel(id,client.threadStore?.threadsById?.get(id));}return result;}});
   client.addNotificationCallback?.('turn/completed',({params})=>{const stopping=userStopIntents.get(params.threadId);if(stopping?.turnId===params.turn?.id&&['completed','failed','interrupted'].includes(params.turn.status))userStopIntents.delete(params.threadId);});
   const older=client.loadOlderConversationHistoryPage?.bind(client);
   if(older)Object.defineProperty(rendererMethods,'loadOlderConversationHistoryPage',{value:async function(id,related=[],options={}){
@@ -930,7 +1272,7 @@
    // history or a time-based cache as proof that a thread is loaded.
    const verified=client.dshSubmissionHead?.(id);
    if(verified?.threadId===id&&verified.loaded&&verified.isCurrent())return;
-   const result=await original('thread/read',{threadId:id,includeTurns:false},options);
+   const result=await executionRead('thread/read',{threadId:id,includeTurns:false},options);
    checkCancelled();
    if(result?.thread?.id!==id)throw Error('宿主返回的会话不匹配，操作尚未发送');
    const status=result.thread.status?.type;
@@ -953,15 +1295,26 @@
    if(READS.has(method))await protocolReady;
    diagnostics.rpc[method]=(diagnostics.rpc[method]||0)+1;
    if(method==='config/batchWrite'){
-    const edits=params.edits;if(params.filePath!=null||params.expectedVersion!=null||!Array.isArray(edits)||!edits.length||edits.length>2||edits.some(e=>!['model','model_reasoning_effort'].includes(e.keyPath)||!['upsert','replace'].includes(e.mergeStrategy)||typeof e.value!=='string'||!e.value.trim()||e.value.length>256))throw Error('这里只允许调整本次新会话的模型与推理强度');
-    const next={...composerModel};for(const edit of edits)next[edit.keyPath]=edit.value;composerModel=next;invalidateReadChecks();return {status:'ok',version:'dsh-composer-local-v1',filePath:null};
+    const edits=params.edits;if(params.filePath!=null||params.expectedVersion!=null||!Array.isArray(edits)||!edits.length||edits.length>3||edits.some(e=>!['model','model_reasoning_effort','service_tier'].includes(e.keyPath)||!['upsert','replace'].includes(e.mergeStrategy)||(e.keyPath==='service_tier'?!['priority','default','fast',null].includes(e.value):typeof e.value!=='string'||!e.value.trim()||e.value.length>256)))throw Error('这里只允许保存新任务的默认模型、推理强度与速度');
+    if(!navigator.onLine||window.__DSH_EXECUTION_CONNECTED__!==true)throw Error('Mac 暂未连接，默认设置尚未保存');
+    const result=await original(method,params,options);invalidateReadChecks();refreshComposer();return result;
    }
    if(READS.has(method))return (await read(method,params)).result;
+   // Goals are a mandatory resume check in some official flows. A fast Native
+   // reply must not wait behind replayed history or unrelated AppHost frames.
+   if(method==='thread/goal/get'&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true)return executionRead(method,params,options);
    if(isAuthRead(method)&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true)return liveAuthRead(method,params,options);
+   if(['config/read','configRequirements/read'].includes(method)&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true){const value=await executionRead(method,params,options);saveMeta('aux:'+JSON.stringify([method,canonical(params)]),value).catch(()=>{});return value;}
    // The picker must receive the live catalog. Persisted discovery is offline-only;
    // saving that projection must not delay the model response or a send.
    if(method==='model/list'&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true){const key='aux:'+JSON.stringify([method,canonical(params)]);return refreshOnce('live-models:'+key,0,()=>original(method,params,options),value=>{saveMeta(key,value).catch(()=>{});});}
    if(method==='app/list'&&navigator.onLine&&typeof window.__DSH_WAIT_BULK_READ_HTTP__==='function')return original(method,params,options);
+   // Foreground preparation must keep its own priority/deadline. A display
+   // refresh can already be waiting without a timeout; joining it discards the
+   // send caller's critical options and strands Fast/config preparation.
+   if(['config/read','configRequirements/read'].includes(method)&&options?.priority==='critical'){
+    const value=await executionRead(method,params,options);return method==='config/read'?composerConfig(value):value;
+   }
    if(AUX.has(method)){const key='aux:'+JSON.stringify([method,canonical(params)]),cached=await meta(key).catch(()=>undefined)??(window.__DSH_NATIVE_ONLINE__===false?window.__CODEX_WEB_CONFIG__?.dshReadDefaults?.[method]:undefined),ttl=['model/list','modelProvider/capabilities/read','collaborationMode/list','permissionProfile/list','configRequirements/read'].includes(method)?30000:2000;
     const refresh=()=>refreshOnce(key,cached===undefined?0:ttl,()=>{diagnostics.auxRefreshes++;return original(method,params,options);},value=>saveMeta(key,value));
     if(cached!==undefined){if(navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true)refresh().catch(()=>{});return method==='config/read'?composerConfig(structuredClone(cached)):listResult(method,structuredClone(cached));}const value=await refresh();return method==='config/read'?composerConfig(value):listResult(method,value);}
@@ -971,7 +1324,7 @@
     // The fixed host owns policy. Reuse only this submission's live config
     // read, parallel with its head lookup; never trust cached composer hints.
     const head=method==='turn/start'?client.dshSubmissionHead?.(params.threadId):null;
-    const c=head?.isCurrent()&&head.hostPolicy?head.hostPolicy:(await original('config/read',{includeLayers:false},options))?.config;
+    const c=head?.isCurrent()&&head.hostPolicy?head.hostPolicy:(await executionRead('config/read',{includeLayers:false},options))?.config;
     if(!['danger-full-access','workspace-write','read-only'].includes(c?.sandbox_mode)||c.approval_policy==null)throw Error('无法核实当前宿主执行策略，草稿已保留');
     params={...params,approvalPolicy:c.approval_policy};delete params.sandbox;delete params.sandboxPolicy;delete params.permissions;
     if(method==='thread/start')params.sandbox=c.sandbox_mode;
@@ -985,7 +1338,7 @@
    if(['turn/start','turn/steer'].includes(method)&&userStopIntents.has(params.threadId))throw stoppingError();
    if(['turn/start','turn/steer'].includes(method)){const head=client.dshSubmissionHead?.(params.threadId);if(head&&!head.isCurrent())throw Error('发送准备期间会话或连接已变化，消息尚未发送；草稿已保留');}
    if(method==='turn/interrupt'){const stopping=userStopIntents.get(params.threadId);if(stopping?.turnId===params.turnId)stopping.dispatched=true;}
-   let result;try{result=await original(method,params,options);if(method==='turn/interrupt'){const stopping=userStopIntents.get(params.threadId);if(stopping?.turnId===params.turnId)stopping.accepted=true;}if(['turn/interrupt','thread/stop'].includes(method))window.__DSH_CLIENT_LOG__?.event('execution_control',{method,threadId:params.threadId,turnId:params.turnId,reason:'accepted'});}catch(error){if(['turn/interrupt','thread/stop'].includes(method))window.__DSH_CLIENT_LOG__?.event('execution_control',{method,threadId:params.threadId,turnId:params.turnId,reason:'failed'});if(['thread/resume','thread/start'].includes(method)){const text=String(error?.message||''),failureClass=/沙箱策略|执行策略|权限配置/.test(text)?'policy_mismatch':/too many open files|os error 24/i.test(text)?'host_resources':/writer|owner|already.*use|占用/i.test(text)?'writer_busy':/timeout|timed out|超时/i.test(text)?'timeout':/connect|socket|连接/i.test(text)?'connection':'native_rejected';diagnostics.executionFailure={at:Date.now(),method,failureClass,uiVersion:window.__DSH_UI_RELEASE__?.version};saveMeta('last-execution-failure',diagnostics.executionFailure).catch(()=>{});window.__DSH_CLIENT_LOG__?.event('execution_failed',{method,failureClass,threadId:params.threadId});}throw error;}invalidateReadChecks();if(method==='thread/resume')rememberHistoryCursors(params.threadId,result);return result;
+   let result;try{result=await original(method,params,options);if(method==='turn/interrupt'){const stopping=userStopIntents.get(params.threadId);if(stopping?.turnId===params.turnId)stopping.accepted=true;}if(['turn/interrupt','thread/stop'].includes(method))window.__DSH_CLIENT_LOG__?.event('execution_control',{method,threadId:params.threadId,turnId:params.turnId,reason:'accepted'});}catch(error){if(['turn/interrupt','thread/stop'].includes(method))window.__DSH_CLIENT_LOG__?.event('execution_control',{method,threadId:params.threadId,turnId:params.turnId,reason:'failed'});if(['thread/resume','thread/start'].includes(method)){const text=String(error?.message||''),failureClass=/沙箱策略|执行策略|权限配置/.test(text)?'policy_mismatch':/too many open files|os error 24/i.test(text)?'host_resources':/writer|owner|already.*use|占用/i.test(text)?'writer_busy':/timeout|timed out|超时/i.test(text)?'timeout':/connect|socket|连接/i.test(text)?'connection':'native_rejected';diagnostics.executionFailure={at:Date.now(),method,failureClass,uiVersion:window.__DSH_UI_RELEASE__?.version};saveMeta('last-execution-failure',diagnostics.executionFailure).catch(()=>{});window.__DSH_CLIENT_LOG__?.event('execution_failed',{method,failureClass,threadId:params.threadId});}throw error;}invalidateReadChecks();if(['thread/start','thread/resume'].includes(method)&&Object.hasOwn(result||{},'serviceTier'))rememberThreadTier(result.thread?.id??params.threadId,result.serviceTier);if(method==='thread/settings/update'&&Object.hasOwn(params,'serviceTier'))rememberThreadTier(params.threadId,params.serviceTier);if(method==='thread/resume')rememberHistoryCursors(params.threadId,result);return result;
   };
   const disposeCapacity=installCapacityRetryUI(client,original),disposeRecovery=stopNativeAuthRecovery;stopNativeAuthRecovery=()=>{disposeCapacity();disposeRecovery?.();};
   let refreshTimer;for(const method of ['turn/completed','thread/reverted','thread/compacted'])client.addNotificationCallback?.(method,({params})=>{if(location.pathname!=='/local/'+params.threadId)return;clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{if(androidReader){refreshForeground(true).catch(()=>{});return;}for(const key of pendingReads.keys())if(key.includes(params.threadId))return;fetchRead('thread/read',{threadId:params.threadId,includeTurns:false},true).then(()=>client.hydrateBackgroundThreads?.([params.threadId],{includeTurns:true,maxTurns:1})).catch(()=>{});},300);});
@@ -1035,8 +1388,11 @@
  addEventListener('dsh:native-route',()=>{const id=location.pathname.split('/')[2];if(paintEntry.id!==id)window.__DSH_BEGIN_CONTENT_ENTRY__(id);});
  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')window.__DSH_BEGIN_CONTENT_ENTRY__(location.pathname.split('/')[2]);});
  const rendererPrepared=new Map(),rendererPending=new Map(),rendererQueue=new Set(),rendererErrors=new Map();let rendererTimer=null,rendererBusy=false;
- function queueCachedPreparation(id){if(!androidReader)return;rendererQueue.add(id);scheduleCachedPreparation();}
- function scheduleCachedPreparation(){if(rendererTimer||rendererBusy||!rendererQueue.size)return;rendererTimer=setTimeout(async()=>{rendererTimer=null;if(!nativeClient||(document.visibilityState==='visible'&&Date.now()-lastForeground<1800)||foregroundFreshReads.size){scheduleCachedPreparation();return;}const id=[...rendererQueue].sort((a,b)=>Number(priorityPinned.has(b))-Number(priorityPinned.has(a)))[0];rendererQueue.delete(id);rendererBusy=true;try{await prepareCachedConversation(id);rendererErrors.delete(id);}catch{const at=Date.now();diagnostics.rendererPrepareFailedAt=at;rendererErrors.set(id,{at});if(rendererErrors.size>100)rendererErrors.delete(rendererErrors.keys().next().value);}finally{rendererBusy=false;}scheduleCachedPreparation();},200);}
+ // A saved body is ready to open even when this document has no renderer
+ // object yet. Rebuild only the selected view; never replay the recent list
+ // into the official conversation manager merely to fill a memory counter.
+ function queueCachedPreparation(id){if(internalDirectoryThreads.has(id)||!androidReader||document.visibilityState!=='visible'||!startupFrameReady||window.__DSH_NATIVE_SIDEBAR__?.isList||location.pathname!=='/local/'+id)return;scheduleCommitted();}
+ function scheduleCachedPreparation(){if(rendererTimer||rendererBusy||!rendererQueue.size||document.visibilityState!=='visible'||!startupFrameReady)return;rendererTimer=setTimeout(async()=>{rendererTimer=null;if(document.visibilityState!=='visible'||!startupFrameReady)return;if(!nativeClient||Date.now()-lastForeground<1800||foregroundFreshReads.size){scheduleCachedPreparation();return;}const selected=window.__DSH_NATIVE_SIDEBAR__?.isList?null:location.pathname.split('/')[2];if(selected)rendererQueue.delete(selected);const id=[...rendererQueue].sort((a,b)=>Number(priorityPinned.has(b))-Number(priorityPinned.has(a)))[0];if(!id)return;rendererQueue.delete(id);rendererBusy=true;try{await prepareCachedConversation(id);rendererErrors.delete(id);}catch{const at=Date.now();diagnostics.rendererPrepareFailedAt=at;rendererErrors.set(id,{at});if(rendererErrors.size>100)rendererErrors.delete(rendererErrors.keys().next().value);}finally{rendererBusy=false;}scheduleCachedPreparation();},200);}
  async function prepareCachedConversation(id){
   if(!androidReader||!nativeClient||window.__DSH_NAVIGATION__?.notificationTarget?.()?.threadId===id)return;if(rendererPending.has(id))return rendererPending.get(id);
   const prepareEpoch=readEpoch,viewEpoch=historyViewEpoch,adoptionEpoch=visibleAdoptionEpoch,deadline=Date.now()+CACHE_IO_TIMEOUT_MS;let retired=false;
@@ -1045,6 +1401,21 @@
   })();const work=bounded(build,'准备显示',remaining(deadline),()=>{retired=true;}).finally(()=>{if(rendererPending.get(id)===work)rendererPending.delete(id);});rendererPending.set(id,work);return work;
  }
  window.__DSH_PREPARE_CACHED_CONVERSATION__=prepareCachedConversation;
+ const firstPaintImage=item=>item?.type==='imageView'||item?.type==='imageGeneration';
+ function firstPaintItems(id,turn,record){
+  const items=(turn.items||[]).filter(item=>item.type==='userMessage'||window.__DSH_FINAL_IDENTITY__?.(item)||firstPaintImage(item));
+  const saved=currentRecovery(id),prior=saved?.page?.data?.find(value=>value.id===turn.id);
+  if(!prior||saved.sourceGeneration!==record.sourceGeneration||saved.generation!==record.generation||turn.status!=='completed'||['id','status','startedAt','completedAt','error'].some(key=>JSON.stringify(prior[key]??null)!==JSON.stringify(turn[key]??null)))return items;
+  const final=values=>[...values].reverse().map(item=>window.__DSH_FINAL_IDENTITY__?.(item)).find(Boolean);
+  if(!final(items)||final(items)!==final(prior.items||[]))return items;
+  const previous=prior.items||[],previousIds=new Set(previous.map(item=>item.id));
+  // Reuse references only when Native's unchanged summary is a subset of the
+  // saved ordered items. New identities cannot borrow an old turn's pictures.
+  if(items.some(item=>!previousIds.has(item.id)))return items;
+  let position=-1;for(const item of items){const next=previous.findIndex((value,index)=>index>position&&value.id===item.id);if(next<0)return items;position=next;}
+  const current=new Map(items.map(item=>[item.id,item]));
+  return previous.filter(item=>current.has(item.id)||firstPaintImage(item)).map(item=>current.get(item.id)||structuredClone(item));
+ }
  function summaryPagination(turn,previous={}){
   const opening=(turn.items||[]).find(item=>item.type!=='contextCompaction');
   return {...previous,olderCursor:null,isLoadingOlder:false,hasLoadedOldest:false,
@@ -1072,17 +1443,18 @@
   return true;
  }
  const committedApplied=new Map();let committedTimer=null,committedPending=false,committedRefresh=null,committedRefreshId='';
-  window.__DSH_READ_COMMITTED_HISTORY__=async(id,{touch=true,headRecord,turnRecord,itemRecords,streamRecord,eventEpoch,targetTurnId,preferSummary=false}={})=>{
+  window.__DSH_READ_COMMITTED_HISTORY__=async(id,{touch=true,headRecord,turnRecord,itemRecords,streamRecord,eventEpoch,targetTurnId,preferSummary=false,savedArchive=false,completedImageCache=false}={})=>{
   if(!headRecord&&!turnRecord&&preferSummary&&window.__DSH_ANDROID_BRIDGE__?.readThreadRecords){
-   const local=await window.__DSH_ANDROID_BRIDGE__.readThreadRecords(id).catch(()=>null);
-   if(local?.scope===scope.id&&local.threadId===id&&local.generation&&(!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===local.generation)){
+   let local=await window.__DSH_ANDROID_BRIDGE__.readThreadRecords(id).catch(()=>null);
+   if(!local?.records?.some(r=>!r.deleted&&r.key?.startsWith('read:["thread/read"'))||!local?.records?.some(r=>!r.deleted&&r.key?.startsWith('read:["thread/turns/list"')))local=await window.__DSH_ANDROID_BRIDGE__?.readSavedThreadRecords?.(id)?.catch(()=>null)||local;
+   if(local?.scope===scope.id&&local.threadId===id&&local.generation&&(local.saved||!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===local.generation)){
     const records=(local.records||[]).map(r=>importRecord(r,local.generation)).filter(r=>r&&!r.deleted&&r.threadId===id).sort((a,b)=>b.revision-a.revision);
     const head=records.find(r=>r.key===readKey('thread/read',{threadId:id,includeTurns:false}));
     const turn=records.find(r=>{try{const [method,p]=JSON.parse(r.key.slice(5));return method==='thread/turns/list'&&p.itemsView==='summary'&&p.sortDirection==='desc'&&!p.cursor&&r.generation===head?.generation;}catch{return false;}});
     const latest=turn?.payload?.result?.data?.[0];
     const stream=latest?.status==='inProgress'?await window.__DSH_ANDROID_BRIDGE__?.readStream?.(id)?.catch(()=>null):null;
-    if(head&&turn&&((latest?.items||[]).some(item=>window.__DSH_FINAL_IDENTITY__?.(item))||latest&&mergeCommittedCompletion(structuredClone(latest),stream,turn,id))){
-     const snapshot=await window.__DSH_READ_COMMITTED_HISTORY__(id,{headRecord:{...head,source:'android'},turnRecord:{...turn,source:'android'},streamRecord:stream,preferSummary:true,targetTurnId});
+    if(head&&turn&&((latest?.items||[]).some(item=>item.type==='userMessage'||item.type==='agentMessage')||latest&&mergeCommittedCompletion(structuredClone(latest),stream,turn,id))){
+     const snapshot=await window.__DSH_READ_COMMITTED_HISTORY__(id,{headRecord:{...head,source:'android'},turnRecord:{...turn,source:'android'},streamRecord:stream,preferSummary:true,targetTurnId,savedArchive:!!local.saved});
      if(snapshot)return snapshot;
     }
    }
@@ -1107,7 +1479,7 @@
    for(const [turnIndex,turn] of page.data.entries()){
     if(mergeCommittedCompletion(turn,stream,record,id)){completedFromStream=true;streamUsed=true;bodyLoadedTurnIds.push(turn.id);}
     if(preferSummary&&turn.status==='completed'&&(turn.items||[]).some(item=>window.__DSH_FINAL_IDENTITY__?.(item))){
-     turn.items=turn.items.filter(item=>item.type==='userMessage'||window.__DSH_FINAL_IDENTITY__?.(item));turn.itemsView='summary';
+     turn.items=firstPaintItems(id,turn,record);turn.itemsView='summary';
      pagination[turn.id]=summaryPagination(turn);bodyLoadedTurnIds.push(turn.id);continue;
     }
     if(turn.itemsView==='full'&&Array.isArray(turn.items)){bodyLoadedTurnIds.push(turn.id);continue;}
@@ -1116,11 +1488,22 @@
     // the foreground path. A notification additionally selects its exact turn.
     if(turnIndex>=2&&turn.id!==targetTurnId)continue;
     let items=itemRecords?.get(turn.id)||null;
-    const cachedItems=items||freshInput?[]:await Promise.all([...new Set([window.__DSH_HISTORY_POLICY__?.initialTurnItems||48,48,20,40,100])].map(limit=>readRecord(readKey('thread/items/list',{threadId:id,turnId:turn.id,limit,sortDirection:'desc'}))));
+    const cachedItems=items||freshInput?[]:await Promise.all([...new Set([window.__DSH_HISTORY_POLICY__?.initialTurnItems||48,48,20,40,100,8])].map(limit=>readRecord(readKey('thread/items/list',{threadId:id,turnId:turn.id,limit,sortDirection:'desc'}))));
     for(const value of cachedItems){
      if(value&&!value.deleted&&value.sourceGeneration===record.sourceGeneration&&value.generation===record.generation&&Array.isArray(value.payload?.result?.data)&&(!items||value.revision>items.revision)){items=value;}
     }
-    if(items&&!itemRecords?.has(turn.id)&&turn.itemsView!=='notLoaded'&&items.revision<record.revision)items=null;
+    if(items&&!itemRecords?.has(turn.id)&&turn.itemsView!=='notLoaded'&&items.revision<record.revision){
+     // A newer summary revision alone does not invalidate an unchanged
+     // completed image page. Only the local image backfill may use it, and
+     // only with the same Native final identity and existing generation fences.
+     if(!completedImageCache||turn.status!=='completed')items=null;
+     else{
+      const final=values=>[...values].reverse().map(item=>window.__DSH_FINAL_IDENTITY__?.(item)).find(Boolean),body=(items.payload?.result?.data||[]).slice().reverse().map(value=>value.item||value),current=new Map((turn.items||[]).map(item=>[item.id,item]));
+      let position=-1,ordered=true;for(const item of (turn.items||[]).filter(value=>value.type==='userMessage'||window.__DSH_FINAL_IDENTITY__?.(value)||firstPaintImage(value))){const next=body.findIndex((value,index)=>index>position&&value.id===item.id);if(next<0){ordered=false;break;}position=next;}
+      if(!ordered||!body.some(item=>firstPaintImage(item)||visibleProcessItem(item))||!final(turn.items||[])||final(turn.items||[])!==final(body))items=null;
+      else items={...items,payload:{...items.payload,result:{...items.payload.result,data:items.payload.result.data.map(value=>{const item=current.get((value.item||value).id);return item?(value.item?{...value,item:structuredClone(item)}:structuredClone(item)):value;})}}};
+     }
+    }
     if(!items){if(turn.itemsView==='notLoaded'){complete=false;break;}continue;}
     // The tail page can omit the opening prompt. Preserve the official
     // pagination metadata from Native's summary instead of losing that input.
@@ -1131,6 +1514,7 @@
     pagination[turn.id]={olderCursor:items.payload.result.nextCursor||null,isLoadingOlder:false,hasLoadedOldest:!items.payload.result.nextCursor,newestSnapshotItemId:turn.items.at(-1)?.id,...(opening?{oldestUserInput:opening.content,openingUserMessageId:opening.id,openingUserMessageClientId:opening.clientId}:{})};stamp+=':'+items.revision+':'+(opening?.id||'');
    }
    if(complete){
+    const restoredUsers=await restoreConfirmedUsers(id,page,record);if(restoredUsers)stamp+=':users:'+page.data.flatMap(t=>(t.items||[]).filter(fullNativeUser).map(i=>i.id)).join(',');
     if(stream?.available&&stream.scope===scope.id&&stream.threadId===id&&stream.sourceGeneration===record.sourceGeneration){
      for(const live of stream.turns||[]){const turn=page.data.find(t=>t.id===live.id);if(!turn||turn.status!=='inProgress'||!Array.isArray(turn.items)||!bodyLoadedTurnIds.includes(turn.id))continue;
       for(const value of live.items||[]){if(!value.seeded||value.type!=='agentMessage'||typeof value.text!=='string')continue;const old=turn.items.find(t=>t.id===value.id);if(old&&old.type!=='agentMessage')continue;if(old&&typeof old.text==='string'&&!value.text.startsWith(old.text))continue;
@@ -1139,14 +1523,17 @@
      }
      if(streamUsed)stamp+=':stream:'+stream.epoch+':'+stream.seq;
     }
-    const snapshot={finalFirst:preferSummary,completedFromStream,streamCursor:streamUsed?stream.seq:0,bodyLoadedTurnIds:[...new Set(bodyLoadedTurnIds)],verifiedNative:!!headRecord&&!!turnRecord&&[headRecord,turnRecord,...(itemRecords?.values()||[])].every(r=>(r.source==null||r.source==='native')&&r.sourceGeneration===record.sourceGeneration&&r.generation===record.generation),eventEpoch,sourceGeneration:record.sourceGeneration,applied:false,response:base,page,itemsPaginationByTurnId:pagination,stamp:stamp+(preferSummary?':final-first':''),revision:record.revision,generation:record.generation,confirmedAt:Math.max(typeof record.confirmedAt==='number'?record.confirmedAt:Date.parse(record.confirmedAt)||0,streamUsed?stream.updatedAt:0)};
-    if(!acceptRecoverySnapshot(id,snapshot))continue;return snapshot;
+    const snapshot={savedArchive,finalFirst:preferSummary,completedFromStream,streamCursor:streamUsed?stream.seq:0,bodyLoadedTurnIds:[...new Set(bodyLoadedTurnIds)],confirmedUsersRestored:restoredUsers,verifiedNative:!restoredUsers&&!!headRecord&&!!turnRecord&&[headRecord,turnRecord,...(itemRecords?.values()||[])].every(r=>(r.source==null||r.source==='native')&&r.sourceGeneration===record.sourceGeneration&&r.generation===record.generation),eventEpoch,sourceGeneration:record.sourceGeneration,applied:false,response:base,page,itemsPaginationByTurnId:pagination,stamp:stamp+(preferSummary?':final-first':''),revision:record.revision,generation:record.generation,confirmedAt:Math.max(typeof record.confirmedAt==='number'?record.confirmedAt:Date.parse(record.confirmedAt)||0,streamUsed?stream.updatedAt:0)};
+    if(!acceptRecoverySnapshot(id,snapshot))continue;
+    if(savedArchive)savedReadVersions.set(id,{sourceGeneration:record.sourceGeneration,generation:record.generation});
+    else if(freshInput)savedReadVersions.delete(id);
+    return snapshot;
    }
   }
   return null;
  };
 
- // A compact, read-only replica of official user/final items is the first paint
+ // A compact, read-only replica of official user/final and image items is the first paint
  // after a rebuild. Official summary pagination loads process items afterwards.
  const finalRecovery=new Map(),recoveryLoads=new Map(),recoverySaves=new Map(),reloadPreparing=new Map(),restoredFinal=new Map(),restoringFinal=new Map(),recoveryEpoch=new Map();
  const recoveryKey=id=>'final-recovery-v1:'+id;
@@ -1173,12 +1560,13 @@
   if(latest.id!==prior.id)return Number(latest.startedAt)>Number(prior.startedAt);
   const final=finalFromSnapshot(snapshot),known=finalFromSnapshot(saved);return latest.status==='completed'&&!!final&&(final.identity===known?.identity||snapshot.revision>=saved.revision);
  }
- window.__DSH_ACCEPT_HISTORY_SNAPSHOT__=(id,snapshot)=>!(restoringFinal.has(id+':'+historyViewEpoch)&&!finalFromSnapshot(snapshot))&&acceptRecoverySnapshot(id,snapshot);
+ const hasSnapshotContent=snapshot=>!!snapshot?.page?.data?.some(turn=>(turn.items||[]).some(item=>item.type==='userMessage'||item.type==='agentMessage'));
+ window.__DSH_ACCEPT_HISTORY_SNAPSHOT__=(id,snapshot)=>!(restoringFinal.has(id+':'+historyViewEpoch)&&!hasSnapshotContent(snapshot))&&acceptRecoverySnapshot(id,snapshot);
  async function saveFinalRecovery(id,snapshot){
   if(!finalFromSnapshot(snapshot))return null;
   const copy=structuredClone(snapshot);copy.verifiedNative=false;delete copy.completesVisibleTurn;delete copy.eventEpoch;copy.applied=false;copy.finalFirst=true;copy.stamp=copy.stamp.replace(/(?::recovery)+$/,'');if(!copy.stamp.endsWith(':final-first'))copy.stamp+=':final-first';
   copy.bodyLoadedTurnIds=[];copy.itemsPaginationByTurnId??={};
-  for(const turn of copy.page.data){turn.items=(turn.items||[]).filter(item=>item.type==='userMessage'||window.__DSH_FINAL_IDENTITY__?.(item));turn.itemsView='summary';copy.bodyLoadedTurnIds.push(turn.id);copy.itemsPaginationByTurnId[turn.id]=summaryPagination(turn,copy.itemsPaginationByTurnId[turn.id]);}
+  for(const turn of copy.page.data){turn.items=firstPaintItems(id,turn,copy);turn.itemsView='summary';copy.bodyLoadedTurnIds.push(turn.id);copy.itemsPaginationByTurnId[turn.id]=summaryPagination(turn,copy.itemsPaginationByTurnId[turn.id]);}
   // Keep the Native turns page and its cursor paired; only item bodies shrink.
   const epoch=recoveryEpoch.get(id)||0;
   // Fence replay immediately in memory; a slow durable write must not delay
@@ -1207,10 +1595,25 @@
   // The saved first paint can be from the previous visit. Prefer an already
   // committed newer completion; networking runs independently in refreshEntry.
   let snapshot=await window.__DSH_READ_COMMITTED_HISTORY__(id,{preferSummary:true});
-  if(!finalFromSnapshot(snapshot))snapshot=currentRecovery(id);
+  if(!hasSnapshotContent(snapshot)){snapshot=currentRecovery(id);if(!snapshot&&finalRecovery.has(id))snapshot={...finalRecovery.get(id),savedArchive:true};}
   if(historyViewEpoch!==epoch||location.pathname!=='/local/'+id)return;
-  if(finalFromSnapshot(snapshot)){saveFinalRecovery(id,snapshot).catch(()=>{});if(historyViewEpoch!==epoch||location.pathname!=='/local/'+id)return;await refreshCommitted(snapshot);if(snapshot.applied)await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}
+  if(hasSnapshotContent(snapshot)){if(finalFromSnapshot(snapshot))saveFinalRecovery(id,snapshot).catch(()=>{});if(historyViewEpoch!==epoch||location.pathname!=='/local/'+id)return;await refreshCommitted(snapshot);if(snapshot.applied)await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}
   if(historyViewEpoch===epoch&&snapshot?.applied)restoredFinal.set(id,epoch);
+ }
+ const cachedImageRecovery=new Map();
+ async function restoreCachedImages(id){
+  if(!androidReader||!nativeClient||document.visibilityState!=='visible'||location.pathname!=='/local/'+id||window.__DSH_NATIVE_SIDEBAR__?.isList)return;
+  const epoch=historyViewEpoch,key=id+':'+epoch;if(cachedImageRecovery.has(key))return cachedImageRecovery.get(key);
+  // The first frame is already visible. Inspect existing local item pages;
+  // a missing page never causes a network read or execution preparation.
+  const work=(async()=>{const snapshot=await window.__DSH_READ_COMMITTED_HISTORY__(id,{touch:false,preferSummary:false,completedImageCache:true});
+   const current=()=>historyViewEpoch===epoch&&location.pathname==='/local/'+id&&document.visibilityState==='visible'&&!window.__DSH_NATIVE_SIDEBAR__?.isList&&!memoryMeta.get('auth-locked')&&(!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===snapshot?.sourceGeneration);
+   if(!current()||!snapshot||!finalFromSnapshot(snapshot)||!snapshot.page.data.some(turn=>turn.status==='completed'&&(turn.items||[]).some(item=>firstPaintImage(item)||visibleProcessItem(item))))return;
+   const saved=currentRecovery(id),images=value=>JSON.stringify(value?.page?.data?.map(turn=>[turn.id,(turn.items||[]).filter(firstPaintImage)]));
+   const displayed=new Set(processTurns(nativeClient,id).flatMap(turn=>turn.items||[]).map(item=>item.id)),missingProcess=snapshot.page.data.some(turn=>(turn.items||[]).some(item=>visibleProcessItem(item)&&!displayed.has(item.id)));
+   if(!missingProcess&&saved?.sourceGeneration===snapshot.sourceGeneration&&saved.generation===snapshot.generation&&images(saved)===images(snapshot))return;
+   const compact=await saveFinalRecovery(id,snapshot);if(compact&&current())await refreshCommitted(missingProcess?snapshot:structuredClone(compact));
+  })().catch(()=>{});cachedImageRecovery.set(key,work);if(cachedImageRecovery.size>8)cachedImageRecovery.delete(cachedImageRecovery.keys().next().value);return work;
  }
  function finalFromSnapshot(snapshot,turnId){
   const turn=turnId?snapshot?.page.data.find(t=>t.id===turnId):snapshot?.page.data[0];
@@ -1280,7 +1683,7 @@
    window.__DSH_CLIENT_LOG__?.event('history_read',{threadId:id,turnId:snapshot.page.data[0]?.id,revision:snapshot.revision,cacheReady:!!finalFromSnapshot(snapshot),reason:'cache_import',source:snapshot.verifiedNative?'native':'indexeddb'});
    snapshot.completesVisibleTurn=completesVisibleTurn(id,snapshot);
    const fresh=!!snapshot.verifiedNative,epoch=snapshot.eventEpoch??(nativeEventEpoch.get(id)||0);
-   const guard=()=>visibleAdoptionEpoch===adoptionEpoch&&historyViewEpoch===viewEpoch&&location.pathname==='/local/'+id&&document.visibilityState==='visible'&&!window.__DSH_NATIVE_SIDEBAR__?.isList&&(nativeEventEpoch.get(id)||0)===epoch&&(fresh||snapshot.completesVisibleTurn||(nativeActivity.get(id)||0)<=snapshot.confirmedAt)&&(!snapshot.sourceGeneration||!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===snapshot.sourceGeneration);
+   const guard=()=>visibleAdoptionEpoch===adoptionEpoch&&historyViewEpoch===viewEpoch&&location.pathname==='/local/'+id&&document.visibilityState==='visible'&&!window.__DSH_NATIVE_SIDEBAR__?.isList&&(nativeEventEpoch.get(id)||0)===epoch&&(fresh||snapshot.completesVisibleTurn||(nativeActivity.get(id)||0)<=snapshot.confirmedAt)&&(snapshot.savedArchive?!knownRunning.has(id)&&!nativeActivity.has(id)&&!nativeClient.getConversation?.(id)?.turns?.some(turn=>turn.status==='inProgress'):(!snapshot.sourceGeneration||!memoryMeta.get('catalog-generation')||memoryMeta.get('catalog-generation')===snapshot.sourceGeneration));
    if(!guard()){window.__DSH_CLIENT_LOG__?.event('history_rejected',{threadId:id,revision:snapshot.revision,reason:'live_event_superseded'});return;}
    if(committedApplied.get(id)===snapshot.stamp&&nativeClient.getConversation?.(id)?.turnsPagination){window.__DSH_NAVIGATION__?.completedContentReady?.(id,finalFromSnapshot(snapshot));return;}
    const started=Date.now();snapshot.applied=false;
@@ -1289,29 +1692,48 @@
   })().catch(error=>{diagnostics.committedRefreshFailedAt=Date.now();window.__DSH_CLIENT_LOG__?.reportError('sync_failed',error,{threadId:id});}).finally(()=>{if(committedRefresh===work){committedRefresh=null;if(committedPending)scheduleCommitted();}});
   committedRefresh=work;return work;
  }
+ function sameHistoryWitness(snapshot,head,turns){
+  if([head,turns].some(record=>record?.source!=null&&record.source!=='native')||snapshot?.response?.thread?.id!==head?.payload?.result?.thread?.id)return false;
+  if(!snapshot||snapshot.sourceGeneration!==head?.sourceGeneration||snapshot.sourceGeneration!==turns?.sourceGeneration||snapshot.generation!==head?.generation||snapshot.generation!==turns?.generation)return false;
+  const old=snapshot.page?.data?.[0],latest=turns.payload?.result?.data?.[0];
+  if(!old||!latest||old.status!=='completed'||latest.status!=='completed')return false;
+  if(snapshot.response?.thread?.updatedAt!==head.payload?.result?.thread?.updatedAt)return false;
+  return ['id','status','startedAt','completedAt','error'].every(key=>JSON.stringify(old[key]??null)===JSON.stringify(latest[key]??null));
+ }
  async function refreshForeground(force=false){
   if(!androidReader||!nativeClient||document.visibilityState!=='visible'||!navigator.onLine||(window.__DSH_NATIVE_ONLINE__===false&&window.__DSH_EXECUTION_CONNECTED__!==true)||window.__DSH_NATIVE_SIDEBAR__?.isList)return;
   const id=location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(!id)return;
   if(window.__DSH_NAVIGATION__?.notificationTarget?.()?.threadId===id)return;
   if(foregroundRefresh&&foregroundId===id){if(force)foregroundAgain=true;return foregroundRefresh;}
-  if(!force&&id===foregroundId&&Date.now()-foregroundChecked<10000)return;
+  const freshnessInterval=knownRunning.has(id)?10000:30000;
+  if(!force&&id===foregroundId&&Date.now()-foregroundChecked<freshnessInterval)return;
   foregroundId=id;foregroundAgain=false;foregroundChecked=Date.now();const viewEpoch=historyViewEpoch;
   const work=(async()=>{
+   const eventEpoch=nativeEventEpoch.get(id)||0;
+   // Validate identity, source/history generation and the exact latest turn.
+   // Quiet re-entry does not need another summary or any process item body.
+   const local=window.__DSH_READ_COMMITTED_HISTORY__?.(id,{preferSummary:true});
+   const [saved,head,turns]=await Promise.all([local,fetchRead('thread/read',{threadId:id,includeTurns:false},true,'high'),fetchRead('thread/turns/list',{threadId:id,limit:1,sortDirection:'desc',itemsView:'notLoaded'},true,'high')]);
+   if(!knownRunning.has(id)&&finalFromSnapshot(saved)&&eventEpoch===(nativeEventEpoch.get(id)||0)&&(nativeActivity.get(id)||0)<=saved.confirmedAt&&sameHistoryWitness(saved,head,turns)){
+    diagnostics.foregroundValidatedAt=Date.now();diagnostics.foregroundThread=id;return;
+   }
    // A finished turn needs its final summary first, not every process item.
    const snapshot=await readFinalSummary(id)||await readFreshSnapshot(id);
-   if(!snapshot?.verifiedNative){window.__DSH_CLIENT_LOG__?.event('history_rejected',{threadId:id,reason:'freshness_unverified'});return;}
+   if(!snapshot?.verifiedNative&&!snapshot?.confirmedUsersRestored){window.__DSH_CLIENT_LOG__?.event('history_rejected',{threadId:id,reason:'freshness_unverified'});return;}
    if(historyViewEpoch===viewEpoch&&location.pathname==='/local/'+id){await refreshCommitted(snapshot);diagnostics.foregroundRefreshedAt=Date.now();diagnostics.foregroundThread=id;}
   })().catch(error=>{diagnostics.foregroundRefreshFailedAt=Date.now();window.__DSH_CLIENT_LOG__?.reportError('sync_failed',error,{threadId:id});}).finally(()=>{if(foregroundRefresh===work){foregroundRefresh=null;if(foregroundAgain&&location.pathname==='/local/'+id){foregroundAgain=false;queueMicrotask(()=>refreshForeground(true));}}});
   foregroundRefresh=work;return work;
  }
- function refreshEntry(force=false){queueMicrotask(()=>{
+ let entryScheduled=false,entryForce=false;
+ function refreshEntry(force=false){entryForce=entryForce||force;if(entryScheduled)return;entryScheduled=true;queueMicrotask(()=>{
+  entryScheduled=false;const fresh=entryForce;entryForce=false;
   const id=location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];
   // These are independent sources. A slow workspace-wide import must never
   // hold the selected conversation's fresh read or local first paint hostage.
-  if(id)restoreFinalFirst(id).then(()=>refreshCommitted()).catch(()=>{});
+  if(id)restoreFinalFirst(id).then(()=>restoreCachedImages(id)).then(()=>refreshCommitted()).catch(()=>{});
   else refreshCommitted().catch(()=>{});
   if(androidReader)window.__DSH_ANDROID_BRIDGE__?.refresh().then(()=>refreshCommitted()).catch(()=>{});
-  refreshForeground(force).catch(()=>{});
+  refreshForeground(fresh).catch(()=>{});
  });}
  for(const type of ['dsh:native-route','dsh:session-ready','dsh:conversation-ready','dsh:connection-state','dsh:execution-state','focus','pageshow','online'])addEventListener(type,()=>refreshEntry(type!=='dsh:conversation-ready'));
  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshEntry(true)});
@@ -1331,14 +1753,17 @@
  addEventListener('offline',()=>{resetPinnedReads();resetStableIpc();invalidateReadChecks();});
  addEventListener('dsh:session-ready',()=>{pinnedCheckedAt=0;pinnedEmit?.('pinned-threads-updated',{});});
  let lastCatalogPoll=0;
- const startSync=(event)=>{if(event?.type){invalidateReadChecks();stableIpcChecked.clear();}const interval=eventsSocket?.readyState===1?30000:5000;if(event?.type||Date.now()-lastCatalogPoll>=interval){lastCatalogPoll=Date.now();syncCatalog().catch(()=>{});}else diagnostics.catalogPollSkipped++;connectEvents().catch(()=>{});};addEventListener('online',startSync);addEventListener('focus',startSync);addEventListener('dsh:session-ready',startSync);addEventListener('pageshow',startSync);document.addEventListener('resume',startSync);document.addEventListener('visibilitychange',event=>{if(document.visibilityState==='visible')startSync(event);});
- const timer=setInterval(()=>{if(document.visibilityState==='visible'){startSync();refreshForeground();}},5000);
+ const syncInterval=()=>androidReader||eventsSocket?.readyState===1?(knownRunning.size?30000:120000):5000;
+ const startSync=(event)=>{if(maintenanceClosed||document.visibilityState==='hidden'||navigator.onLine===false)return;if(event?.type){invalidateReadChecks();stableIpcChecked.clear();}if(event?.type||Date.now()-lastCatalogPoll>=syncInterval()){lastCatalogPoll=Date.now();syncCatalog().catch(()=>{});}else diagnostics.catalogPollSkipped++;connectEvents().catch(()=>{});};addEventListener('online',startSync);addEventListener('focus',startSync);addEventListener('dsh:session-ready',startSync);addEventListener('pageshow',startSync);document.addEventListener('resume',startSync);document.addEventListener('visibilitychange',event=>{if(document.visibilityState==='visible')startSync(event);});
+ let timer=null,maintenanceClosed=false;
+ function armSync(){clearTimeout(timer);timer=null;if(maintenanceClosed||document.visibilityState!=='visible'||navigator.onLine===false)return;timer=setTimeout(()=>{timer=null;startSync();refreshForeground();armSync();},Math.min(syncInterval(),knownRunning.size?10000:30000));}
+ armSync();document.addEventListener('visibilitychange',armSync);for(const type of ['dsh:session-ready','online','offline'])addEventListener(type,armSync);
  const evictTimer=setInterval(()=>evict().catch(()=>{}),60000);
 
  // Read-only device inspection. Never fetch, hydrate, or touch eviction recency.
  function localCacheActivity(){
   const visible=window.__DSH_NATIVE_SIDEBAR__?.isList?null:location.pathname.split('/')[2];
-  const queued=[...backgroundQueue];let reason=null;
+  const queued=[...backgroundQueue].filter(id=>!internalDirectoryThreads.has(id));let reason=null;
   if(document.visibilityState!=='visible')reason='hidden';
   else if(!navigator.onLine)reason='offline';
   else if(window.__DSH_NATIVE_ONLINE__===false)reason='host_offline';
@@ -1353,11 +1778,12 @@
  }
  async function inspectLocalCache(){
   if(await meta('auth-locked'))throw Error('请先登录后查看本机缓存');
+  const storagePolicy=bounded(Promise.resolve().then(()=>navigator.storage?.estimate?.()),'读取存储配额',CACHE_IO_TIMEOUT_MS).then(localCacheStoragePolicy).catch(()=>localCacheStoragePolicy(null));
   const deadline=Date.now()+CACHE_IO_TIMEOUT_MS*4,db=await cacheDb(remaining(deadline)),generation=await meta('catalog-generation',{timeoutMs:remaining(deadline)}),entries=new Map(),usage=new Map();let bytes=0,turnCount=0,itemCount=0;
   const scan=(source,visit,range,tx,label)=>cacheCursor(source.openCursor(range),tx,label,remaining(deadline),cursor=>{visit(cursor.value);});
   await Promise.all([
    (()=>{const tx=db.transaction('records','readonly');return scan(tx.objectStore('records').index('kind'),record=>{
-    if(record.kind!=='catalog'||record.deleted||record.scope!==scope.id||hiddenThreads.has(record.payload?.threadId))return;
+    if(record.kind!=='catalog'||record.deleted||record.scope!==scope.id||!listableEntry(record.payload)||hiddenThreads.has(record.payload?.threadId))return;
     if(generation&&record.sourceGeneration!==generation)return;const entry=record.payload;if(entry?.threadId)entries.set(entry.threadId,entry);
    },IDBKeyRange.only('catalog'),tx,'扫描目录缓存');})(),
    (()=>{const tx=db.transaction('usage','readonly');return scan(tx.objectStore('usage'),value=>{
@@ -1368,14 +1794,14 @@
     else if(value.key.startsWith('read:'))try{const [method,params]=JSON.parse(value.key.slice(5));if(method==='thread/turns/list'||method==='thread/items/list'||method==='thread/read'&&params.includeTurns)row.hasHistory=true;}catch{}
    },undefined,tx,'扫描缓存使用记录');})()
   ]);
-  const recent=[...entries.values()].sort((a,b)=>(b.sourceUpdatedAt||b.sourceRecencyAt||0)-(a.sourceUpdatedAt||a.sourceRecencyAt||0)).slice(0,PREWARM_RECENT).map(entry=>entry.threadId);
-  const targets=[...new Set([...priorityPinned,...recent,...knownRunning,...backgroundQueue])].filter(id=>!hiddenThreads.has(id));
+  const recent=[...entries.values()].filter(entry=>!priorityPinned.has(entry.threadId)&&!hiddenThreads.has(entry.threadId)&&!internalDirectoryThreads.has(entry.threadId)).sort((a,b)=>(b.sourceUpdatedAt||b.sourceRecencyAt||0)-(a.sourceUpdatedAt||a.sourceRecencyAt||0)).slice(0,PREWARM_RECENT).map(entry=>entry.threadId);
+  const targets=[...new Set([...priorityPinned,...recent,...knownRunning,...backgroundQueue])].filter(id=>!hiddenThreads.has(id)&&!internalDirectoryThreads.has(id));
   const rows=targets.map(id=>{const entry=entries.get(id),saved=usage.get(id);return {id,title:entry?.displayTitle||entry?.nativeThread?.name||'未命名会话',pinned:priorityPinned.has(id),stored:!!saved?.hasHistory,turns:saved?.turns||0,items:saved?.items||0,bytes:saved?.bytes||0,headChecked:false,headReady:false,renderReady:false,confirmedAt:0};});
   let index=0;
   await Promise.all(Array.from({length:Math.min(2,rows.length)},async()=>{while(index<rows.length&&Date.now()<deadline){const row=rows[index++];let snapshot;try{snapshot=await bounded(window.__DSH_READ_COMMITTED_HISTORY__(row.id,{touch:false,preferSummary:true}),'读取缓存首屏统计',remaining(deadline));}catch{continue;}row.headChecked=true;row.headReady=!!snapshot;row.confirmedAt=snapshot?.confirmedAt||0;row.localNewer=!!snapshot&&(nativeActivity.get(row.id)||0)>snapshot.confirmedAt;if(snapshot&&nativeClient?.getConversation?.(row.id)?.turnsPagination){row.renderReady=(rendererPrepared.get(row.id)===snapshot.stamp||committedApplied.get(row.id)===snapshot.stamp)&&(nativeActivity.get(row.id)||0)<=snapshot.confirmedAt;}}}));
-  return {scope:scope.id,at:Date.now(),catalogCount:entries.size,historyThreadCount:[...usage.values()].filter(row=>row.hasHistory).length,bytes,turnCount,itemCount,
-   recentLimit:PREWARM_RECENT,targets:rows,headReady:rows.filter(row=>row.headReady).length,renderReady:rows.filter(row=>row.renderReady).length,
+  return {scope:scope.id,at:Date.now(),catalogCount:entries.size,historyThreadCount:[...usage].filter(([id,row])=>row.hasHistory&&!internalDirectoryThreads.has(id)).length,bytes,turnCount,itemCount,
+   storagePolicy:await storagePolicy,recentLimit:PREWARM_RECENT,targets:rows,headReady:rows.filter(row=>row.headReady).length,renderReady:rows.filter(row=>row.renderReady).length,
    androidImportedCursor:await meta('android-replica-read-cursor-v1:'+scope.id)||0,androidImportedGeneration:await meta('android-replica-source-generation-v1:'+scope.id)||'',activity:localCacheActivity()};
  }
- window.__DSH_NATIVE_CACHE__={prepareSidebarBootstrap,inspectLocalCache,localCacheActivity,canReload:()=>!window.__DSH_PREVIEW__?.isOpen?.()&&!window.__DSH_NAVIGATION__?.notificationTarget?.()&&recoveryReloadReady()&&![...composerViews.values()].some(view=>Object.values(JSON.parse(view.fingerprint)).some(value=>Array.isArray(value)?value.length:value&&typeof value==='object'?Object.keys(value).length:!!value)),opening,meta,saveMeta,get,put,read,catalog,syncCatalog,readKey,recordCommand,pendingCommands,persistAtom,restoreAtoms,importSnapshot,diagnostics:()=>{const id=location.pathname.split('/')[2],c=nativeClient?.getConversation?.(id);return {...diagnostics,background:{...diagnostics.background,pending:backgroundQueue.size,busy:backgroundBusy},nativeClient:!!nativeClient,remoteReady,online:window.__DSH_NATIVE_ONLINE__,executionConnected:window.__DSH_EXECUTION_CONNECTED__,nativeVersion:nativeClient?.requestClient?.getAppServerVersion?.(),turns:c?.turns?.length,historyKind:c?.turnHistory?.kind,historyEntities:Object.keys(c?.turnHistory?.history?.entitiesByKey||{}).length,resumeState:c?.resumeState,statusRecovery:window.__DSH_NATIVE_STATUS_RECOVERY__?.diagnostics()};},async close(){stopNativeAuthRecovery?.();clearTimeout(rendererTimer);clearInterval(backgroundScanTimer);clearTimeout(committedTimer);clearTimeout(backgroundTimer);clearInterval(timer);clearTimeout(evictTimer);window.__DSH_STOP_EVENT_CONNECTION__?.();broadcast?.close();const db=await cacheDb().catch(()=>null);db?.close();}};
+ window.__DSH_NATIVE_CACHE__={ownsBackgroundWarm:true,prepareSidebarBootstrap,inspectLocalCache,localCacheActivity,canReload:()=>!window.__DSH_PREVIEW__?.isOpen?.()&&!window.__DSH_NAVIGATION__?.notificationTarget?.()&&recoveryReloadReady()&&![...composerViews.values()].some(view=>Object.values(JSON.parse(view.fingerprint)).some(value=>Array.isArray(value)?value.length:value&&typeof value==='object'?Object.keys(value).length:!!value)),opening,meta,saveMeta,get,put,read,catalog,syncCatalog,readKey,recordCommand,pendingCommands,persistAtom,restoreAtoms,importSnapshot,diagnostics:()=>{const id=location.pathname.split('/')[2],c=nativeClient?.getConversation?.(id);return {...diagnostics,displayCacheWrites:displayProjectionWrites.size,background:{...diagnostics.background,pending:backgroundQueue.size,busy:backgroundBusy},nativeClient:!!nativeClient,remoteReady,online:window.__DSH_NATIVE_ONLINE__,executionConnected:window.__DSH_EXECUTION_CONNECTED__,nativeVersion:nativeClient?.requestClient?.getAppServerVersion?.(),turns:c?.turns?.length,historyKind:c?.turnHistory?.kind,historyEntities:Object.keys(c?.turnHistory?.history?.entitiesByKey||{}).length,resumeState:c?.resumeState,statusRecovery:window.__DSH_NATIVE_STATUS_RECOVERY__?.diagnostics()};},async close(){confirmedUserClosed=true;for(const handle of confirmedUserTimers.values())clearTimeout(handle);confirmedUserTimers.clear();stopNativeAuthRecovery?.();clearTimeout(rendererTimer);clearInterval(backgroundScanTimer);clearTimeout(committedTimer);clearTimeout(backgroundTimer);maintenanceClosed=true;startupFrameObserver.disconnect();clearTimeout(timer);clearTimeout(evictTimer);window.__DSH_STOP_EVENT_CONNECTION__?.();broadcast?.close();const db=await cacheDb().catch(()=>null);db?.close();}};
 })();

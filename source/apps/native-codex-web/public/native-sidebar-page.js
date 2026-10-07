@@ -45,7 +45,7 @@
  if(!['127.0.0.1','localhost'].includes(location.hostname))window.__DSH_PERF_ENDPOINT__='/sync/v1/w/'+scope.id+'/performance';
  const registered=new WeakSet(),warmed=new Map();let prewarmClient=null,prewarmRunning=false;
  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
- async function prewarm(){if(prewarmRunning||!prewarmClient)return;prewarmRunning=true;let metadata=0,bodies=0;
+ async function prewarm(){if(window.__DSH_NATIVE_CACHE__?.ownsBackgroundWarm)return;if(prewarmRunning||!prewarmClient)return;prewarmRunning=true;let metadata=0,bodies=0;
   try{await sleep(2500);if(!list||document.visibilityState!=='visible')return;const [pins,recent]=await Promise.all([prewarmClient.sendRequest('thread/list',{sectionId:'01984de2-8f74-7c91-a3b2-5c5e937cf318',sortKey:'section_position',sortDirection:'asc',limit:40}),prewarmClient.sendRequest('thread/list',{sortKey:'updated_at',limit:8})]);const targets=[...new Map([...pins.data,...recent.data].map(t=>[t.id,t])).values()];
    for(const target of targets){if(document.visibilityState!=='visible'||!list)break;if(warmed.get(target.id)===target.updatedAt)continue;
     // Original read-only native hydration: metadata + latest completed turn.
@@ -58,7 +58,7 @@
  }
  window.__DSH_REGISTER_NATIVE_CLIENT__=client=>{window.__DSH_INSTALL_NATIVE_READ_CACHE__?.(client);window.__DSH_READING_POSITION__?.register(client);window.__DSH_INSTALL_NATIVE_QUEUE__?.(client);if(registered.has(client))return;registered.add(client);if(client.hostId==='local'&&typeof client.hydrateBackgroundThreads==='function'){prewarmClient=client;setTimeout(prewarm,1500);}};
 
- const listUrl='/?workspace='+scope.id+'&view=chat&nativeList=1';let list=!!scope.nativeList||new URL(location.href).searchParams.get('nativeList')==='1',intent=false,scheduled=false,lastReady=null;
+ const listUrl='/?workspace='+scope.id+'&view=chat&nativeList=1';let list=!!scope.nativeList||new URL(location.href).searchParams.get('nativeList')==='1',intent=false,lastReady=null;
  let sidebarWasOpen=false,sidebarWidth=innerWidth,keepSidebarClosedUntil=0,initialSidebarClose=touch&&!list;
  function preserveSidebarOnResize(){
   if(!touch)return;
@@ -85,7 +85,7 @@
   if(event.isTrusted&&target.closest?.('[data-app-shell-sidebar-trigger]')){keepSidebarClosedUntil=0;initialSidebarClose=false;sidebarWasOpen=button?.getAttribute('aria-expanded')!=='true';}
   const label=button?.getAttribute('aria-label')||'',text=button?.textContent?.trim()||'';
   const action=/置顶|归档|Pin |Unpin|Archive/i.test(label);
-  const newChat=/^(新对话|New chat)$/.test(label)||/^(新对话|New chat)$/.test(text)||/中开始新聊天/.test(label);
+  const newChat=!row&&(/^(新对话|新聊天|New chat)$/.test(label)||/^(新对话|新聊天|New chat)$/.test(text)||/中开始新聊天/.test(label));
   if(action||(!row&&!newChat))return;
   if(newChat)window.__DSH_RESET_NEW_CHAT_MODEL__?.();
   const clicked=row?.getAttribute('data-app-action-sidebar-thread-id')?.replace(/^local:/,''),cached=list&&clicked&&lastReady===clicked&&location.pathname==='/local/'+clicked;intent=true;sidebarWasOpen=false;setView(false);if(window.__DSH_NAVIGATION__)window.__DSH_NAVIGATION__.beginConversation(clicked?'/local/'+clicked:'/');else{const u=new URL(location.href);u.searchParams.delete('nativeList');history.replaceState({...history.state,dshListPage:false,dshNativeList:false},'',u.href);}window.__DSH_PERF__?.navigation(Date.now());window.__DSH_PERF__?.event('list_click');queueMicrotask(closeSidebar);if(cached)requestAnimationFrame(()=>requestAnimationFrame(()=>{window.__DSH_PERF__?.event('cached_view');window.__DSH_PERF__?.ready(clicked);}));
@@ -94,7 +94,18 @@
  addEventListener('dsh:native-route',()=>{if(intent||!list){setView(false);intent=false;}});
  addEventListener('popstate',()=>window.__DSH_NATIVE_SIDEBAR__.restore());
  let resizeSettle;addEventListener('resize',()=>{if(innerWidth!==sidebarWidth){root.dataset.dshResizing='1';clearTimeout(resizeSettle);resizeSettle=setTimeout(()=>delete root.dataset.dshResizing,240);}preserveSidebarOnResize();});
- new MutationObserver(()=>{if(scheduled)return;scheduled=true;queueMicrotask(()=>{scheduled=false;applyThreadVisibility();if(list)ensureSidebar();else preserveSidebarOnResize();});}).observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-expanded']});
+ // Streaming reply text does not change sidebar rows. Observe replacements
+ // of the sidebar/trigger and mutations inside it, with at most one scan per
+ // visible frame; hidden work is reconciled when the page becomes visible.
+ const sidebarSelector='#app-shell-sidebar,[data-app-shell-sidebar-trigger]';
+ const containsSidebar=node=>!!(node?.matches?.(sidebarSelector)||node?.querySelector?.(sidebarSelector));
+ const affectsSidebar=record=>record.type==='attributes'
+  ?!!record.target?.matches?.('[data-app-shell-sidebar-trigger]')
+  :!!record.target?.closest?.('#app-shell-sidebar')||[...record.addedNodes,...record.removedNodes].some(containsSidebar);
+ let sidebarDirty=false,sidebarFrame=null;
+ function scheduleSidebar(){sidebarDirty=true;if(sidebarFrame!==null||document.visibilityState==='hidden')return;sidebarFrame=requestAnimationFrame(()=>{sidebarFrame=null;if(document.visibilityState==='hidden')return;sidebarDirty=false;applyThreadVisibility();if(list)ensureSidebar();else preserveSidebarOnResize();});}
+ new MutationObserver(records=>{if(records.some(affectsSidebar))scheduleSidebar();}).observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-expanded']});
+ document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){if(sidebarFrame!==null)cancelAnimationFrame(sidebarFrame);sidebarFrame=null;}else if(sidebarDirty)scheduleSidebar();});
  // Retire only the obsolete custom-chat worker; keep native asset caches.
  navigator.serviceWorker?.getRegistrations().then(registrations=>{for(const registration of registrations){const worker=registration.active||registration.waiting;if(worker&&new URL(worker.scriptURL).pathname==='/app/sw.js')registration.unregister();}}).catch(()=>{});
 })();

@@ -6,7 +6,7 @@ import {SyncAdapter} from '../../src/sync-adapter.mjs';
 let input='';for await(const chunk of process.stdin)input+=chunk;
 const {request}=JSON.parse(input),scope=request.scope,threadId=request.body?.threadId||'11111111-1111-4111-a111-111111111111';
 const generation='metadata-source';
-const catalog={scope,key:'thread:'+threadId,threadId,kind:'catalog',sourceGeneration:generation,generation:'catalog-version',revision:42,payload:{id:threadId,cwd:'/workspace/primary'},bytes:80};
+const catalog={scope,key:'thread:'+threadId,threadId,kind:'catalog',sourceGeneration:generation,generation:'catalog-version',revision:42,payload:{id:threadId,cwd:'/workspace/example'},bytes:80};
 const status={scope,key:'catalog-status',kind:'catalog-status',sourceGeneration:generation,generation:'catalog-version',revision:43,payload:{state:'ready'},bytes:17};
 const bootstrap={scope,key:'bootstrap',kind:'bootstrap',sourceGeneration:generation,generation:'bootstrap-version',revision:40,payload:{config:{fixture:true}},bytes:27};
 const native=new EventEmitter();native.start=async()=>{};

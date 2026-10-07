@@ -40,3 +40,65 @@ export function patchThreadModelSettings(source){
  for(const [needle,replacement] of patches){if(source.split(needle).length!==2)throw Error('Pinned task model restoration contract changed');source=source.replace(needle,replacement);}
  return source;
 }
+
+// Existing tasks keep their own speed. A new-task choice also saves the
+// official default so the next new task remembers it.
+export function patchThreadServiceTier(source){
+ const marker='/*dshThreadServiceTier*/';
+ const oldMarked=marker+'i&&o.hostId!==`local`&&await b(t)',newMarked=marker+'i&&(e==null||o.hostId!==`local`)&&await b(t)';
+ const saveBefore='let a=Pvr(n);Rb(r,e).sendRequest(`config/batchWrite`,',saveAfter='let a=Pvr(n);await Rb(r,e).sendRequest(`config/batchWrite`,';
+ if(source.includes(marker)){
+  if(source.split(oldMarked).length===2)source=source.replace(oldMarked,newMarked);
+  if(source.split(newMarked).length!==2)throw Error('Pinned service-tier picker contract changed');
+  if(source.split(saveBefore).length===2)source=source.replace(saveBefore,saveAfter);
+  if(source.split(saveAfter).length!==2)throw Error('Pinned service-tier save contract changed');
+  return source;
+ }
+ const before='s&&await Rb(a,o.hostId).updateThreadSettingsForNextTurn(e,{serviceTier:t}),i&&await b(t)';
+ const after='s&&await Rb(a,o.hostId).updateThreadSettingsForNextTurn(e,{serviceTier:t}),'+marker+'i&&(e==null||o.hostId!==`local`)&&await b(t)';
+ if(source.split(before).length!==2)throw Error('Pinned service-tier picker contract changed');
+ source=source.replace(before,after);
+ const draftBefore='l=n==null&&a&&c.hasManagedNewThreadSettings,u;';
+ const draftAfter='l=n==null&&a&&(c.hostId===`local`||c.hasManagedNewThreadSettings),u;';
+ if(source.split(draftBefore).length!==2)throw Error('Pinned service-tier draft contract changed');
+ source=source.replace(draftBefore,draftAfter);
+ if(source.split(saveBefore).length!==2)throw Error('Pinned service-tier save contract changed');
+ return source.replace(saveBefore,saveAfter);
+}
+
+// Opening an existing local thread is not a speed-change intent. Native's
+// resume response contains the effective tier; Thread DTO/history pages do not.
+export function patchThreadServiceTierRestore(source){
+ const marker='/*dshThreadServiceTierRestore*/';
+ const legacy='dshReadTier=globalThis.__DSH_USE_READ_MODEL__?.(sro,e)';
+ const restored='dshReadTier=globalThis.__DSH_USE_READ_MODEL__?.(u1a,e)';
+ // sro is the compiler memo-cache runtime. The read-model hook needs React.
+ if(source.includes(marker)){
+  if(!source.includes(legacy))return source;
+  if(source.split(legacy).length!==2||!source.includes('u1a=n(c(),1)'))throw Error('Pinned service-tier React binding changed');
+  return source.replace(legacy,restored);
+ }
+ if(!source.includes('u1a=n(c(),1)'))throw Error('Pinned service-tier React binding is missing');
+ const patches=[
+  ['...ce===void 0?{}:{serviceTier:ue.serviceTier}',
+   '...v===`local`||ce===void 0?{}:{serviceTier:ue.serviceTier}'+marker],
+  ['let Ee=E?.serviceTier===void 0?L?.serviceTier===void 0?null:L.serviceTier:E.serviceTier,De=await jan(s.serviceTier===void 0?Ee:s.serviceTier,',
+   'let Ee=E?.serviceTier===void 0?L?.serviceTier===void 0?null:L.serviceTier:E.serviceTier,De=await jan(n.context?.dshInheritTaskModel?Ee:s.serviceTier===void 0?Ee:s.serviceTier,'],
+  ['p=Eb(MI,e),m=Eb(cro,e),',
+   'p=Eb(MI,e),dshReadTier=globalThis.__DSH_USE_READ_MODEL__?.(u1a,e),dshTierProjection=o.hostId===`local`&&e!=null&&p?.serviceTier===void 0&&dshReadTier&&Object.hasOwn(dshReadTier,`serviceTier`),dshTierSettings=dshTierProjection?{...p,serviceTier:dshReadTier.serviceTier}:p,m=Eb(cro,e),'],
+ ];
+ for(const [before,after] of patches){if(source.split(before).length!==2)throw Error('Pinned service-tier restoration contract changed');source=source.replace(before,after);}
+ // Use the projection only for the picker. It is never a submission setting.
+ const start=source.indexOf('function aro('),end=source.indexOf('function oro(',start);
+ if(start<0||end<=start)throw Error('Pinned service-tier picker is missing');
+ let picker=source.slice(start,end);
+ picker=picker.replace('let s=Y$a(d?.models,t.model),','p=dshTierSettings;let s=Y$a(d?.models,t.model),');
+ // React compiler dependency tracking must include the restored projection.
+ picker=picker.replace('i[18]!==p||','i[18]!==dshTierSettings||');
+ source=source.slice(0,start)+picker+source.slice(end);
+ // A failed requirements lookup must not silently convert Fast to Standard.
+ const before='return t.warning(`Failed to load config requirements for service tier`,{safe:{},sensitive:{error:e}}),null';
+ const after='t.warning(`Failed to load config requirements for service tier`,{safe:{},sensitive:{error:e}});throw e';
+ if(source.split(before).length!==2)throw Error('Pinned service-tier requirements contract changed');
+ return source.replace(before,after);
+}

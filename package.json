@@ -1,6 +1,6 @@
 {
   "name": "better-codex",
-  "version": "0.2.0-beta.2",
+  "version": "0.2.0-beta.3",
   "private": false,
   "description": "Run a native Codex workbench on your Mac with Tailscale or authenticated CVM access and project plugins.",
   "author": "whytan",
@@ -18,7 +18,9 @@
     "video:render:zh": "pnpm --dir video render:zh-vertical",
     "host": "node scripts/better-codex.mjs",
     "verify:portable": "node scripts/verify-portable.mjs",
-    "test:cvm": "node scripts/test-cvm-proxy.mjs"
+    "test:cvm": "node scripts/test-cvm-proxy.mjs",
+    "test:core": "node scripts/test-core.mjs",
+    "test:renderer": "node scripts/test-renderer.mjs"
   },
   "workspaces": [
     "packages/*",

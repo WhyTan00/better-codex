@@ -33,12 +33,14 @@ try{
  });
  cache.setMeta('async-outbox-v1',1);
  cache.setMeta('read-view-v1',1);
+ cache.onChange=()=>parentPort.postMessage({type:'changed'});
  cache.onSlowTransaction=fields=>parentPort.postMessage({type:'slow',fields});
  const rows=cache.db.prepare('SELECT seq,raw,bytes FROM sync_outbox ORDER BY seq').all();
  const meta=Object.fromEntries(cache.db.prepare('SELECT key,value FROM cache_meta').all().map(r=>[r.key,r.value]));
  const bootstrap=SCOPES.map(scope=>cache.get(scope,'bootstrap')).filter(Boolean);
  const versions=cache.db.prepare('SELECT scope,thread_id,generation FROM cache_thread_versions LIMIT 4096').all();
- parentPort.postMessage({type:'ready',generation:cache.generation,meta,bootstrap,viewState,versions,outbox:{epoch:outbox.epoch,sequence:outbox.sequence,ack:outbox.ack,rows,limits:outbox.limits,stats:outbox.stats()}});
+ const catalogRetirements=cache.db.prepare("SELECT * FROM cache_records WHERE kind='catalog' AND deleted=1").all().map(row=>cache.decode(row));
+ parentPort.postMessage({type:'ready',generation:cache.generation,meta,bootstrap,viewState,versions,catalogRetirements,outbox:{epoch:outbox.epoch,sequence:outbox.sequence,ack:outbox.ack,rows,limits:outbox.limits,stats:outbox.stats()}});
 }catch(e){parentPort.postMessage({type:'startup-failed',error:errorValue(e)});}
 
 async function perform(method,args){
