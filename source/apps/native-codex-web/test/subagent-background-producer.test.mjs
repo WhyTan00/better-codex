@@ -31,7 +31,7 @@ test('cached mixed source catalog cold restart keeps originals and generation, r
  const d=dir(t),b=boundary();let cache=new NativeReadCache(d,{boundary:b});
  const p=cache.put('ai','thread:'+parent,'catalog',parent,catalogEntry(main));cache.put('ai','thread:'+child,'catalog',child,catalogEntry(internal));
  const key=nativeReadKey('thread/read',{threadId:child,includeTurns:true});const body=cache.put('ai',key,'history',child,{method:'thread/read',params:{threadId:child,includeTurns:true},result:{thread:{...internal,turns:[{id:child,items:[{id:child,type:'agentMessage',text:'synthetic retained body'}]}]}}});
- cache.db.prepare("DELETE FROM cache_meta WHERE key='user-directory-source-v1'").run();
+ cache.db.prepare("DELETE FROM cache_meta WHERE key='user-directory-source-v2'").run();
  const generation=cache.generation;cache.close();cache=new NativeReadCache(d,{boundary:b});t.after(()=>cache.close());
  assert.equal(cache.generation,generation);assert.deepEqual(cache.get('ai',key),body);assert.deepEqual(cache.get('ai','thread:'+parent),p);
  assert(cache.get('ai','thread:'+child).deleted);assert(cache.changes(0,500,'ai').records.filter(r=>r.kind==='catalog'&&!r.deleted).every(r=>r.threadId===parent));

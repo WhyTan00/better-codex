@@ -1,6 +1,10 @@
-# Validation · v0.2.0-beta.3
+# Validation · v0.2.0-beta.4
 
-The maintained candidate was checked on an Apple Silicon Mac and an isolated Android 16/API 36 emulator (WebView 133). No production Native connection, real business thread, account credential or paid model request was used by the public test run.
+Beta.4 adds one server-cache migration correction. An existing committed `user-directory-source-v1` marker no longer suppresses the once-only retirement of newly recognized lowercase/serialized/parent-bound noninteractive child directory projections. The regression creates a real legacy SQLite schema with v1 present, child catalogs and original bodies, plus a real accepted command Journal. Beta.3 failed with the child catalog still visible; v2 passes while preserving original body/parent rows, source/thread generations, receipt/binding/ownership, and no new revision on the second cold reopen. No marker is cleared as a substitute for an upgrade test.
+
+The v2 change affects the server read replica only. Android source/renderer bytes and their prior acceptance remain the beta.3 baseline; this patch does not rerun or claim new physical-phone, model or power acceptance. The public beta.2 implementation itself had no v1 marker; the corrected case is a legacy/intermediate cache where v1 has already been recorded.
+
+The maintained beta.3 baseline was checked on an Apple Silicon Mac and an isolated Android 16/API 36 emulator (WebView 133). No production Native connection, real business thread, account credential or paid model request was used by the public test run.
 
 - **Android source:** 224 Java tests, zero failures/errors, two pre-existing conditional skips. The origin-pinned release APK built successfully with a locally generated 192-file, hash-verified renderer bundle. Native-shaped fixture data is synthetic, including a body over 1 MiB, 28 items, nine-turn EOF history, and a view-only timestamp update; private conversation fixtures are not distributed.
 - **Generated renderer:** 230 behavioral assertions run against the actual Android initial, primary, scope and import-map targets. They cover execution/history preparation, same-attempt configuration, post-ACK queue behavior, captured send destinations and late callback ownership, Fast restoration, full image handling and cached state.

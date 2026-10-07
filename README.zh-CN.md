@@ -25,7 +25,7 @@ Better Codex 把会话、项目上下文和你自己的工具放在一个工作�
 
 ## 在 Mac 上开始
 
-先安装官方 Codex 桌面应用并登录。[下载 Mac 安装器源码 ZIP](https://github.com/TonyandWei/better-codex/releases/download/v0.2.0-beta.3/Better-Codex-v0.2.0-beta.3-mac.zip)，解压到长期保留的位置，双击 `Install.command`。首次安装会联网下载并校验依赖。
+先安装官方 Codex 桌面应用并登录。[下载 Mac 安装器源码 ZIP](https://github.com/TonyandWei/better-codex/releases/download/v0.2.0-beta.4/Better-Codex-v0.2.0-beta.4-mac.zip)，解压到长期保留的位置，双击 `Install.command`。首次安装会联网下载并校验依赖。
 
 也可以在终端运行：
 

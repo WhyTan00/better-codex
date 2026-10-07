@@ -25,7 +25,7 @@ Agenda, travel, investment research and video production illustrate the plugin i
 
 ## Start on a Mac
 
-Install the official Codex desktop application and sign in. Then [download the Mac installer source ZIP](https://github.com/TonyandWei/better-codex/releases/download/v0.2.0-beta.3/Better-Codex-v0.2.0-beta.3-mac.zip), extract it to a stable location, and double-click `Install.command`. The first installation downloads and verifies dependencies.
+Install the official Codex desktop application and sign in. Then [download the Mac installer source ZIP](https://github.com/TonyandWei/better-codex/releases/download/v0.2.0-beta.4/Better-Codex-v0.2.0-beta.4-mac.zip), extract it to a stable location, and double-click `Install.command`. The first installation downloads and verifies dependencies.
 
 Or use a terminal:
 

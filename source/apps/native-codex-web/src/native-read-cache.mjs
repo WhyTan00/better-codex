@@ -52,13 +52,13 @@ export class NativeReadCache {
   if(!this.meta('read-key-v2'))this.transaction(()=>{for(const row of this.db.prepare("SELECT scope,key FROM cache_records WHERE kind='history'").all()){try{const [method,params]=JSON.parse(row.key.slice(5)),key=nativeReadKey(method,params);if(key!==row.key&&!this.db.prepare('SELECT 1 FROM cache_records WHERE scope=? AND key=?').get(row.scope,key))this.db.prepare('UPDATE cache_records SET key=? WHERE scope=? AND key=?').run(key,row.scope,row.key);}catch{}}this.setMeta('read-key-v2','1');});
   // Retire only the old directory projection. Original child bodies, parent
   // records, source generation and command ownership remain unchanged.
-  if(!this.meta('user-directory-source-v1'))this.transaction(()=>{
+  if(!this.meta('user-directory-source-v2'))this.transaction(()=>{
    const changed=new Set();for(const row of this.db.prepare("SELECT scope,key,thread_id,payload FROM cache_records WHERE kind='catalog' AND deleted=0").all()){
     let thread;try{thread=JSON.parse(row.payload)?.nativeThread;}catch{continue;}
     if(this.rememberInternal(thread)){this.put(row.scope,row.key,'catalog',row.thread_id,null,{deleted:true});changed.add(row.scope);}
    }
    for(const scope of changed){const status=this.get(scope,'catalog-status');if(status?.payload)this.put(scope,'catalog-status','catalog-status','',{...status.payload,count:Number(this.db.prepare("SELECT count(*) n FROM cache_records WHERE scope=? AND kind='catalog' AND deleted=0").get(scope).n)});}
-   this.setMeta('user-directory-source-v1','1');
+   this.setMeta('user-directory-source-v2','1');
   });
  }
  meta(key){return this.db.prepare('SELECT value FROM cache_meta WHERE key=?').get(key)?.value;}
