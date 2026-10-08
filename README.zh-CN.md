@@ -25,7 +25,7 @@ Better Codex 把会话、项目上下文和你自己的工具放在一个工作�
 
 ## 在 Mac 上开始
 
-先安装官方 Codex 桌面应用并登录。[下载 Mac 安装器源码 ZIP](https://github.com/TonyandWei/better-codex/releases/download/v0.2.0-beta.4/Better-Codex-v0.2.0-beta.4-mac.zip)，解压到长期保留的位置，双击 `Install.command`。首次安装会联网下载并校验依赖。
+先安装官方 Codex 桌面应用并登录。[打开 Releases（包含预发布版本）](https://github.com/WhyTan00/better-codex/releases)，从选定版本下载 Mac 安装器源码 ZIP，解压到长期保留的位置，双击 `Install.command`。首次安装会联网下载并校验依赖。
 
 也可以在终端运行：
 
@@ -51,7 +51,7 @@ cd better-codex
 
 如果手机不装 Tailscale，可选择 `better-codex cvm`：生成带认证的 Caddy HTTPS 入口和回到 Mac 的反向 SSH 隧道。服务器、域名与凭据由你提供，CLI 不替你执行远端部署。[CVM 部署说明](docs/cvm-deployment.md)。
 
-Android 用户可以[构建绑定自己 HTTPS 域名的原生客户端](docs/android.md)，使用本机 SQLite 存储与原生生命周期集成。初始接入目标是 Mac 的 Tailscale Serve HTTPS 地址；UI 包与签名密钥由你准备，本次不提供作者的 APK。Android 通过 CVM 的 HTTP Basic 凭据交接与真机配对尚未验收。上面的 Mac 命令安装的是宿主与浏览器入口，不会安装 Android APP。
+Android 用户可以[构建绑定自己 HTTPS 域名的原生客户端](docs/android.md)，使用本机 SQLite 存储与原生生命周期集成。初始接入目标是 Mac 的 Tailscale Serve HTTPS 地址；UI 包与签名密钥由你准备，本次不提供作者的 APK。Android 通过 CVM 的 HTTP Basic 凭据交接与真机配对尚未验收。上面的 Mac 命令安装的是宿主与浏览器入口，不会安装 Android APP。公开版本需要你为自己的 HTTPS 地址构建并签名；作者私有的 `/android/ui-release.json`、`/android/app-release.json` 生产 OTA 发布入口不会随公开宿主安装。
 
 ## 按自己的项目扩展
 

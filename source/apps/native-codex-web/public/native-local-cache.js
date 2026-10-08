@@ -1178,7 +1178,7 @@
   // turn before the official coordinator chooses queue, steer, or start.
   client.dshReadExecutionHead=async id=>{
    await waitForExecution();
-   const stamp=executionEpoch.get(id)||0,generation=submissionGeneration,frontEpoch=hostPathEpoch,services=remoteServices,stoppingAtRead=userStopIntents.get(id);
+   const stamp=executionEpoch.get(id)||0,generation=submissionGeneration,frontEpoch=hostPathEpoch,services=remoteServices,stoppingAtRead=userStopIntents.get(id),configIdentity=window.__DSH_EXECUTION_CONFIG_IDENTITY__?.();
    // A retired read is not an unknown write. End this consumer immediately,
    // release only its own read RPC slots and let the caller prepare against the
    // new connection. Do not retain a zero-timeout old promise across sockets.
@@ -1226,7 +1226,12 @@
     client.updateTurnState?.(id,latest.id,turn=>{turn.status=latest.status;});
    }
    const settled=executionEpoch.get(id)||0;
-   return {hostPolicy:policyRead?.config,threadId:id,activeTurnId,loaded:['idle','active'].includes(head.thread.status?.type),activeFlags:head.thread.status?.activeFlags||[],threadSource:head.thread.threadSource??null,isCurrent:()=>!client.disposed&&nativeClient===client&&generation===submissionGeneration&&frontEpoch===hostPathEpoch&&services===remoteServices&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true&&!userStopIntents.has(id)&&settled===(executionEpoch.get(id)||0)};
+   const currentConfigIdentity=()=>{const now=window.__DSH_EXECUTION_CONFIG_IDENTITY__?.();return !!configIdentity&&!!now&&['scope','frontEpoch','nativeGeneration','transportGeneration','connectionId','resumeId'].every(key=>now[key]===configIdentity[key]);};
+   const projection=policyRead?.configProjection;
+   const configProjectionValid=projection&&projection.protocol==='dsh-scope-global-config-v1'&&projection.hostId==='local'&&projection.scope===scope.id&&projection.scope===configIdentity?.scope&&projection.frontEpoch===frontEpoch&&projection.frontEpoch===configIdentity?.frontEpoch&&projection.nativeGeneration===configIdentity?.nativeGeneration&&projection.cwdMode==='scope-global'&&projection.includeLayers===false&&currentConfigIdentity();
+   const freezeSnapshot=value=>{if(value&&typeof value==='object'){for(const nested of Object.values(value))freezeSnapshot(nested);Object.freeze(value);}return value;};
+   const configReadSnapshot=configProjectionValid?Object.freeze({reply:freezeSnapshot(structuredClone(policyRead)),identity:freezeSnapshot(structuredClone(configIdentity)),isCurrent:currentConfigIdentity}):null;
+   return {configReadSnapshot,hostPolicy:policyRead?.config,threadId:id,activeTurnId,loaded:['idle','active'].includes(head.thread.status?.type),activeFlags:head.thread.status?.activeFlags||[],threadSource:head.thread.threadSource??null,isCurrent:()=>!client.disposed&&nativeClient===client&&generation===submissionGeneration&&frontEpoch===hostPathEpoch&&services===remoteServices&&navigator.onLine&&window.__DSH_EXECUTION_CONNECTED__===true&&!userStopIntents.has(id)&&settled===(executionEpoch.get(id)||0)};
   };
 
   // Read-only quota facade; persist only display fields, never account or reset-credit IDs.

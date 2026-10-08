@@ -1,3 +1,5 @@
+import {patchNativeLocalProfileGate,patchNativeLocalReadGate} from './android-local-profile-gate.mjs';
+import {patchAndroidStartupDiagnostics} from './android-startup-diagnostics.mjs';
 import {patchDraftReceipt} from '../source/apps/native-codex-web/src/official-draft-receipt.mjs';
 import {patchRoutePresentation} from '../source/apps/native-codex-web/src/official-route-presentation.mjs';
 import {patchSendTargetNavigation,patchSendCompletionOwnership,patchSendPreparationPaint,patchAcceptedCreationNavigation} from '../source/apps/native-codex-web/src/official-send-target.mjs';
@@ -183,7 +185,7 @@ export function androidDiagnostics(source,kind){
  ['e.set(gP,c,{selectedQuestionKey:s,questionIds:n.map(e=>e.id),openedAutomatically:!0})','e.set(gP,c,{selectedQuestionKey:s,questionIds:n.map(e=>e.id),openedAutomatically:!0});globalThis.__DSH_CLIENT_LOG__?.question(`shown`,{threadId:t.threadId,turnId:r,questionId:s.itemId,questionCount:n.length,selected:!0})'],
  ['Tor(n,a);for(let e of i.questionIds)','Tor(n,a);globalThis.__DSH_CLIENT_LOG__?.question(`closed`,{threadId:r.threadId,turnId:r.turn.id,questionId:a.itemId,selected:!1});for(let e of i.questionIds)']
  ];
- for(const[a,b]of edits){if(source.split(a).length!==2)throw Error('Diagnostic upstream anchor changed: '+a.slice(0,100));source=source.replace(a,b);}return source;
+ for(const[a,b]of edits){if(source.split(a).length!==2)throw Error('Diagnostic upstream anchor changed: '+a.slice(0,100));source=source.replace(a,b);}return kind==='initial'?patchNativeLocalReadGate(patchNativeLocalProfileGate(patchAndroidStartupDiagnostics(source))):source;
 }
 
 // Older persisted catalog metadata can already be present in the official store.

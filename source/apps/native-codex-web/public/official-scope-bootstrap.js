@@ -59,6 +59,11 @@
  // Small execution checks use the existing prioritized RPC reply lane. They
  // must not acquire an HTTP slot occupied by bulk history/preload reads.
  window.__DSH_EXECUTION_METADATA_CONTROL_READY__=()=>{const state=bulkState(),wire=state?.wire;return !bulkAuthBlocked&&!blocked&&!loginRequired&&!!wire&&wire.__dshNativeConnected===true&&wire.__dshReplyProtocol===REPLY_STREAM_PROTOCOL;};
+ window.__DSH_EXECUTION_CONFIG_IDENTITY__=()=>{
+  if(!window.__DSH_EXECUTION_METADATA_CONTROL_READY__())return null;
+  const wire=bulkState()?.wire;if(!wire)return null;
+  return {scope:scope.id,frontEpoch:wire.__dshFrontEpoch,nativeGeneration:wire.__dshNativeGeneration,transportGeneration:generation,connectionId:wire.__dshDiagnosticId,resumeId};
+ };
  function refreshBulkState(error){const state=bulkAuthBlocked||blocked||loginRequired?null:bulkState();window.__DSH_BULK_READ_HTTP_READY__=window.__DSH_APP_CATALOG_HTTP_READY__=state?.supported===true;for(const waiter of [...bulkWaiters]){if(error)waiter.finish(error);else if(state)waiter.finish(null,state.supported);}}
  function cancelBulkReads(error,wire){for(const operation of bulkOperations)if(!wire||operation.wire===wire)operation.controller.abort(error);for(const waiter of [...bulkWaiters])if(!wire||waiter.wire===wire)waiter.finish(error);refreshBulkState();}
  window.__DSH_BULK_READ_HTTP_READY__=window.__DSH_APP_CATALOG_HTTP_READY__=false;

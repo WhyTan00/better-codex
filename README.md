@@ -25,7 +25,7 @@ Agenda, travel, investment research and video production illustrate the plugin i
 
 ## Start on a Mac
 
-Install the official Codex desktop application and sign in. Then [download the Mac installer source ZIP](https://github.com/TonyandWei/better-codex/releases/download/v0.2.0-beta.4/Better-Codex-v0.2.0-beta.4-mac.zip), extract it to a stable location, and double-click `Install.command`. The first installation downloads and verifies dependencies.
+Install the official Codex desktop application and sign in. Then [open Releases, including prereleases](https://github.com/WhyTan00/better-codex/releases) and download the Mac installer source ZIP from the version you choose. Extract it to a stable location and double-click `Install.command`. The first installation downloads and verifies dependencies.
 
 Or use a terminal:
 
@@ -51,7 +51,7 @@ Open the printed HTTPS `ts.net` URL and add it to the phone's home screen. The e
 
 For an HTTPS domain without Tailscale on the phone, use the optional `better-codex cvm` profile. It prepares an authenticated Caddy entry and a reverse SSH tunnel to your Mac. You provide the server, domain and credentials; the CLI does not deploy them remotely. [CVM setup](docs/cvm-deployment.md).
 
-For Android, [build an origin-pinned native client](docs/android.md) with device-local SQLite storage and native lifecycle integration. Its initial pairing target is your Mac's HTTPS Tailscale Serve origin. You supply the UI package and signing key; this release does not provide the maintainer's APK. Android HTTP Basic handoff for the CVM route and physical-device pairing remain unverified. The Mac setup above installs the host and browser entry, not an Android application.
+For Android, [build an origin-pinned native client](docs/android.md) with device-local SQLite storage and native lifecycle integration. Its initial pairing target is your Mac's HTTPS Tailscale Serve origin. You supply the UI package and signing key; this release does not provide the maintainer's APK. Android HTTP Basic handoff for the CVM route and physical-device pairing remain unverified. The Mac setup above installs the host and browser entry, not an Android application. Build and sign Android for your own HTTPS origin; the author's private `/android/ui-release.json` and `/android/app-release.json` production OTA publishers are not installed by the public host.
 
 ## Make it fit your projects
 

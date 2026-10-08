@@ -1,0 +1,13 @@
+import test from 'node:test';import assert from 'node:assert/strict';import vm from 'node:vm';import{readFile}from'node:fs/promises';import{patchAndroidStartupDiagnostics}from'../../../../scripts/android-startup-diagnostics.mjs';
+const sdkPath=process.env.DSH_INITIAL_SDK,source=sdkPath?await readFile(sdkPath,'utf8'):'';
+const sdkTest=(name,fn)=>test(name,{skip:!sdkPath&&'Requires adopter-owned instrumented SDK'},fn);
+function block(name){const a=source.indexOf('function '+name+'('),b=name==='$Ta'?source.indexOf('}var eEa',a)+1:source.indexOf('function ',a+16);assert(a>=0&&b>a);return source.slice(a,b);}
+for(let mask=0;mask<16;mask++)sdkTest('actual Statsig context gate reports only loading mask '+mask,()=>{
+ const events=[],effects=[],context={d6:{c:()=>Array(9).fill(Symbol.for("react.memo_cache_sentinel"))},WR:()=>({isLoading:!!(mask&1),secret:'fixture-not-to-log'}),Cb:key=>key===1?{isLoading:!!(mask&2),data:{version:'fixture'}}:{isLoading:!!(mask&4),data:{platform:'fixture'}},YF:1,dA:2,LD:()=>({isLoading:!!(mask&8)}),f6:{useEffect:fn=>effects.push(fn)},p6:{jsx:(type,props)=>({type,props})},t6:'loading',NUo:'ready',window:{__DSH_CLIENT_LOG__:{hashId:()=> '0123456789abcdef',event:(kind,p)=>events.push({kind,...p})}}};
+ const fn=vm.runInNewContext(block('MUo')+';MUo',context),result=fn({children:'fixture child'});effects.forEach(fn=>fn());assert.equal(events.length,1);assert.equal(events[0].count,mask);assert.equal(events[0].stage,mask?'pending':'shown');assert.equal(events[0].contentHash,'0123456789abcdef');assert(!JSON.stringify(events).includes('fixture'));assert.equal(result.type,mask?'loading':'ready');
+});
+sdkTest('actual fallback hook reports mount and cleanup without polling or render changes',()=>{
+ const events=[],effects=[],context={eEa:{c:()=>Array(26).fill(Symbol.for("react.memo_cache_sentinel"))},tEa:{useEffect:fn=>effects.push(fn),useState:()=>[false,()=>{}]},HX:{jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props}),Fragment:'fragment'},JTa:'logo',K:(...s)=>s.join(' '),performance:{now:()=>10},window:{__DSH_CLIENT_LOG__:{hashId:()=> '0123456789abcdef',event:(kind,p)=>events.push({kind,...p})}}};
+ const fn=vm.runInNewContext(block('$Ta')+';$Ta',context),result=fn({debugName:'App content'});const cleanup=effects[0]();assert.equal(events[0].stage,'pending');cleanup();assert.equal(events[1].stage,'closed');assert.equal(events[0].count,events[1].count);assert.equal(result.type,'div');assert(!JSON.stringify(events).includes('App content'));
+});
+test('upstream shape drift is rejected without modifying unknown code',()=>{assert.throws(()=>patchAndroidStartupDiagnostics('function unknown(){}'),/ABI changed/);});

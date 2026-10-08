@@ -75,7 +75,7 @@ async function normalizeLocalEnvironment(p,ws){
 }
 const stableId=v=>{const h=createHash('sha256').update(v).digest('hex');return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;};
 export class OfficialBoundary {
- constructor({native,journal,onHistoryRead=()=>{},onNativeResponse=()=>{},historyUpgradeBeforeResume=null,onHistoryUpgrade=()=>{},historyUpgradeWaitMs=10000,enableDefaultModeQuestions=false}){Object.assign(this,{native,journal,onHistoryRead,onNativeResponse,historyUpgradeBeforeResume,onHistoryUpgrade,enableDefaultModeQuestions});this.historyUpgradeWaitMs=Math.max(1,Math.min(10000,historyUpgradeWaitMs));this.historyPreparations=new Map();this.historyCompatibility=new Map();this.threads=new Map();this.checks=new Map();this.lists=new Map();this.queues=new Map();this.active=new Map();this.activityVersion=0;this.pendingStarts=new Map();this.approvals=new Map();this.unmaterialized=new Set();this.usage=new Map();this.appCatalogCache=new AppCatalogCache({read:(params,diagnostic)=>this.native.rpc('app/list',params,diagnostic)});native.on?.('interrupted',()=>{this.appCatalogCache.invalidate();this.activityVersion++;for(const pending of this.pendingStarts.values())pending.closed=true;this.threads.clear();this.lists.clear();this.auxiliaryReads?.clear();this.active.clear();this.approvals.clear();this.unmaterialized.clear();this.defaults=null;});}
+ constructor({native,journal,onHistoryRead=()=>{},onNativeResponse=()=>{},historyUpgradeBeforeResume=null,onHistoryUpgrade=()=>{},historyUpgradeWaitMs=10000,enableDefaultModeQuestions=false,configProjectionIdentity=null}){Object.assign(this,{native,journal,onHistoryRead,onNativeResponse,historyUpgradeBeforeResume,onHistoryUpgrade,enableDefaultModeQuestions,configProjectionIdentity});this.historyUpgradeWaitMs=Math.max(1,Math.min(10000,historyUpgradeWaitMs));this.historyPreparations=new Map();this.historyCompatibility=new Map();this.threads=new Map();this.checks=new Map();this.lists=new Map();this.queues=new Map();this.active=new Map();this.activityVersion=0;this.pendingStarts=new Map();this.approvals=new Map();this.unmaterialized=new Set();this.usage=new Map();this.appCatalogCache=new AppCatalogCache({read:(params,diagnostic)=>this.native.rpc('app/list',params,diagnostic)});native.on?.('interrupted',()=>{this.appCatalogCache.invalidate();this.activityVersion++;for(const pending of this.pendingStarts.values())pending.closed=true;this.threads.clear();this.lists.clear();this.auxiliaryReads?.clear();this.active.clear();this.approvals.clear();this.unmaterialized.clear();this.defaults=null;});}
  historyUpgradeEvent(scope,threadId,outcome,startedAt,requestId){
   const statuses=['preparing','pending','verified','already_paginated','loaded','busy','in_progress','unsupported','unavailable','needs_review'];
   const entry={scope,threadId,status:statuses.includes(outcome?.status)?outcome.status:'needs_review',durationMs:Date.now()-startedAt,rpcIdHash:hashDiagnosticId(requestId)};
@@ -240,7 +240,14 @@ export class OfficialBoundary {
   await this.native.start();
   if(this.capacityRetry&&method==='dsh/capacityRetry/read')return this.capacityRetry.read(scope,p);
   if(this.capacityRetry&&method==='dsh/capacityRetry/cancel')return this.capacityRetry.stop(scope,p);
-  if(method==='config/read'){const c=await this.newChatConfig();return {config:Object.fromEntries(CONFIG_KEYS.filter(k=>k in c).map(k=>[k,c[k]])),origins:{}};}
+  if(method==='config/read'){
+   const before=this.configProjectionIdentity?.(scope),c=await this.newChatConfig(),after=this.configProjectionIdentity?.(scope),result={config:Object.fromEntries(CONFIG_KEYS.filter(k=>k in c).map(k=>[k,c[k]])),origins:{}};
+   // This exact adapter always reads the fixed host's global configuration;
+   // a cwd argument does not select Native project layers. Advertise only the
+   // authenticated same-generation result, never a browser policy authority.
+   if(p.includeLayers===false&&before&&after&&before.scope===ws.id&&after.scope===ws.id&&before.frontEpoch===after.frontEpoch&&typeof after.frontEpoch==='string'&&before.nativeGeneration===after.nativeGeneration&&Number.isSafeInteger(after.nativeGeneration)&&(p.cwd==null||typeof p.cwd==='string'&&await belongs(p.cwd,ws)))result.configProjection={protocol:'dsh-scope-global-config-v1',scope:ws.id,hostId:'local',frontEpoch:after.frontEpoch,nativeGeneration:after.nativeGeneration,cwdMode:'scope-global',includeLayers:false};
+   return result;
+  }
   if(PREFERENCE_WRITES.has(method)){
    if(!clientId||request.id==null)throw fail(400,'写请求缺少稳定客户端身份');
    if(p.filePath!=null||p.expectedVersion!=null||Object.keys(p).some(key=>!['edits','keyPath','value','mergeStrategy','filePath','expectedVersion','reloadUserConfig'].includes(key)))throw fail(403,'这里只允许保存新任务的默认模型、推理强度与速度');

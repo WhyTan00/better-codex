@@ -1,3 +1,4 @@
+import {patchSameAttemptHeadConfig} from './official-attempt-head-config.mjs';
 // The pinned renderer keeps a full resume promise for history consumers. A
 // submission only needs its completed Native/configuration phase. Do not turn a
 // successful thread/read into ownership or skip the original Native resume.
@@ -141,7 +142,7 @@ export function patchFullAccessTurnDirectories(source){
 // A configuration read made by this prepared start can also resolve its final
 // personality default. The opaque, one-use context token is deliberately not
 // a persistent cache, transferable DTO, or an execution/permission witness.
-export function patchSameAttemptSubmissionConfig(source){
+function patchAttemptConfigBase(source){
  const marker='const dshAttemptConfigs=new WeakMap();';
  const capture='D=u||d&&y,O=D?await KPi(n.requestClient,o,';
  const captured='D=u||d&&y,dshConfigHead=n.dshSubmissionHead?.(a),O=D?await KPi(n.requestClient,o,';
@@ -170,3 +171,5 @@ async function dshAttemptDefaultPersonality(manager,context,threadId,messageId,c
 `;
  return source.replace('async function TMs(',helpers+'async function TMs(').replace(capture,captured).replace(finish,finished).replace(read,reused);
 }
+
+export function patchSameAttemptSubmissionConfig(source){return patchSameAttemptHeadConfig(patchAttemptConfigBase(source));}

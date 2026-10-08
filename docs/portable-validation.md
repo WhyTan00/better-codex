@@ -1,4 +1,18 @@
-# Validation · v0.2.0-beta.6
+# Validation · v0.2.0-beta.7
+
+Beta.7 synchronizes the Android Native-local startup gates and same-attempt submission configuration. Optional cloud identity loading cannot hold the local Native route at the loading screen; the local reading gate bypass applies only to loading at `/` or `/local/<UUID>`. Queries, authentication, login, settled denial/error and sandbox/writer checks remain intact. Startup diagnostics expose the gate and route stages without storing prompt or credential content.
+
+A complete current-attempt cached configuration can be reused once only when its authenticated workspace, front epoch, Native generation, thread, cwd, request and head identity match. The portable producer already reads its fixed host-global Native configuration (without a cwd) and applies saved preference overrides; only that measured producer advertises `dsh-scope-global-config-v1`. Changed, missing or undeclared identities use the original read path. Projection metadata does not grant execution permissions.
+
+The locally generated public UI has 194 declared resources and 443 checked required dependency edges; optional routes remain demand-loaded and the existing 600-file/100MiB limits remain unchanged. Actual generated-SDK verification passes 292 checks with no skips, including 29 cases through installed queue → SDK coordinator → submission callbacks → real public config producer, and 24 startup/profile/reading-gate cases. Core passes 234 checks and explicitly skips 24 actual-SDK-required cases when no SDK is supplied; a supplied invalid SDK fails. Host/config/authentication contracts pass 13 checks, the full Go suite passes, and Android release compilation succeeds while bound to that exact generated UI. The source manifest binds 315 files. Official renderer bytes remain local and are not distributed.
+
+The private maintenance owner separately verified normal Android APK72 update adoption, complete deployed resource hashes, 47 actual Android WebView checks and the formal Web entry with conversation body, attachment thumbnail and focusable input. For one fixed historical conversation, an actual emulator offline cold start restored body, previously observed tool process and input around six seconds; metadata gate completion was observed at 5.946 seconds and the screenshot confirmed content at ten seconds. This scoped result is not a zero-delay, physical-phone, arbitrary-conversation or fully offline application guarantee. It is not substituted for the public adopter's own setup acceptance.
+
+Natural phone sends of 2.1/2.5 seconds were observed on the previous UI, not beta.7, and cannot establish this version's phone latency. The older 30-second natural failure lacks the required stage log and remains unexplained. Physical-phone/OEM lifecycle, mobile upload latency, sustained power, signed-in model execution, clean-machine installation and complete all-route offline behavior remain unverified. Private deployment coordinators, production OTA services, official renderer binaries, signing keys and conversation data are outside the public installer.
+
+The public independently owned empty-account host passes 43 checks through its actual HTTP/IPC/AppHost entry before release. No production Native process, business conversation, model turn or emulator is used for this release check. Earlier acceptance below is historical; it is not silently relabeled as beta.7 phone or startup evidence.
+
+# Previous beta.6 acceptance
 
 Beta.6 collects static ESM/CSS dependencies plus the specifically required literal work-mode-access-splash startup branch and its static access-splash dependency. The generator refuses a missing required dynamic/static target. Optional routes remain demand-loaded; this is not all-route/all-dynamic offline closure, and the 600-file/100MiB limits remain unchanged.
 
