@@ -52,7 +52,7 @@ function fixture({canonical=false,paginated=false,hostId='local'}={}){
  Object.setPrototypeOf(manager,ctx.methods);
  if(canonical){manager.getConversation(A).canonicalTurnHistory=true;ctx.AS(conversation,[turn(OLD)],true,undefined,null);}
  const attemptHelpers=initial.includes('const dshAttemptConfigs=new WeakMap();')?cut('const dshAttemptConfigs=new WeakMap();','async function TMs('):'';
- vm.runInContext(attemptHelpers+'const Odn='+cut('Odn=class extends zx{','}));function Adn(').slice(4)+';'+cut('function Mdn(','var Ndn=')+';'+cut('async function EMs(','function DMs(')+cut('async function TMs(','async function EMs(')+';globalThis.coordinatorFactory=Mdn;',ctx);
+ vm.runInContext((initial.includes('const dshHomeQueryAttempts=')?cut('const dshHomeQueryAttempts=','function IMs('):'')+attemptHelpers+'const Odn='+cut('Odn=class extends zx{','}));function Adn(').slice(4)+';'+cut('function Mdn(','var Ndn=')+';'+cut('async function EMs(','function DMs(')+cut('async function TMs(','async function EMs(')+';globalThis.coordinatorFactory=Mdn;',ctx);
  const q=ctx.coordinatorFactory(manager,{logger:manager.logger,storage:{readQueuedFollowUps:()=>({isLoading:false,value:{}})}},()=>{});manager.turnCoordinator=q;
  q.setMessagePreparation((request,kind)=>{const args={scope:{get:()=>null},manager,hostId,targetConversationId:request.conversationId,cwd:'/fixture',context:request.message.context,activeCollaborationMode:request.message.context.collaborationMode,restoreMessage:request.message,clientUserMessageId:request.message.id};return kind==='start'?ctx.TMs(args):ctx.EMs(args);},async()=> 'send-now');
  vm.runInContext(queue,ctx);window.__DSH_INSTALL_NATIVE_QUEUE__(manager);

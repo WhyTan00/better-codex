@@ -1,4 +1,20 @@
-# Validation · v0.2.0-beta.7
+# Validation · v0.2.0-beta.8
+
+Beta.8 starts the exact SDK codex-home metadata query alongside the current-attempt Native head and joins it at the original Vls/Hls node. Matching local identity/head and message ownership are required; active, queued, nonlocal and ineligible contexts retain the original query path. The original error precedence, worktree denial, authentication, sandbox, writer and Fast checks remain. The actual `jan` Fast checker is byte-identical to beta.7; rejected Fast-early experiments are excluded.
+
+The actual Runtime invoke and hello-ack paths now report their outer WS/HTTP lane through the existing privacy logger. Only the existing method/id hashes, numeric/boolean and generation fields are recorded. This does not change dispatch, retry, queue, result/error behavior or record raw prompt, credentials or URLs. The existing public post-ACK queue adapter and privacy contract are retained.
+
+The generated public UI has 194 resources and 443 required dependency edges, with unchanged budgets and optional routes demand-loaded. Actual generated-SDK verification passes309 checks with no skips, including Home10, Runtime/privacy7, current-attempt producer/config29 including late Fast rejection and startup/profile/reading gates24. Core passes234 with41 explicitly skipped actual-SDK-required cases when no SDK is supplied; host contracts13 and the full Go suite pass. Android release compilation is bound to this exact locally generated UI. Source SHA manifest binds319 files, with frozen source/fixture mappings.
+
+The previous public beta.7 SDK and queue reproduce the missing early-home query assertion. A controlled comparison injects a1.4-second head delay and1.6-second original home query: old serial3000ms versus new overlap1600ms, one producer each. These are virtual injected delays through actual SDK callbacks, not natural phone latency or a claim that all slow sends are fixed.
+
+Separately, the private maintenance owner verified UI-only normal Android Settings adoption,63 actual WebView checks, seven formal complete-resource SHAs and a194-resource closure. The first Settings attempt parsed the manifest but failed in the asset stage after45seconds; a second explicit ordinary update succeeded without pinning or clearing data. That failure is retained and the updater is not declared fully repaired. Fixed-conversation offline restart reached the metadata gate at5.814seconds and body/tool process/input were visible in the10-second screenshot; body updates continued after restoring the network. No real prompt or model turn was submitted. Native, Front, APK and PWA remained unchanged.
+
+The natural9.732-second ACK with7.101seconds of preparation round trips belongs to the prior private UI, not this version. Runtime lane diagnostics support future attribution; the historical30-second case still lacks its hop logs. Physical-phone/OEM lifecycle, sustained power, natural send/upload latency, signed-in public clean installation and complete all-route offline behavior remain unverified. Private production OTA/coordinator/CLI release services, official renderer resources, production APKs/signatures and user data are not distributed. README product content remains unchanged.
+
+Public entry verification passes43 actual HTTP/IPC/AppHost checks using an independently owned empty account/workspace, with no production Native connection or model turns. Prior results below are historical and are not silently promoted to beta.8 phone or universal performance acceptance.
+
+# Previous beta.7 acceptance
 
 Beta.7 synchronizes the Android Native-local startup gates and same-attempt submission configuration. Optional cloud identity loading cannot hold the local Native route at the loading screen; the local reading gate bypass applies only to loading at `/` or `/local/<UUID>`. Queries, authentication, login, settled denial/error and sandbox/writer checks remain intact. Startup diagnostics expose the gate and route stages without storing prompt or credential content.
 

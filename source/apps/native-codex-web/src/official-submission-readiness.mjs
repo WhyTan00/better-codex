@@ -1,3 +1,4 @@
+import {patchCodexHomeOverlap} from './official-codex-home-overlap.mjs';
 import {patchSameAttemptHeadConfig} from './official-attempt-head-config.mjs';
 // The pinned renderer keeps a full resume promise for history consumers. A
 // submission only needs its completed Native/configuration phase. Do not turn a
@@ -57,7 +58,7 @@ export function patchSubmissionReadiness(source) {
  // Normal navigation and history callers still await resumeConversation.
  replace('let t=await Rb(e,r.getHostId()).resumeConversation({conversationId:a,model:null,serviceTier:o,reasoningEffort:null,workspaceRoots:p,useAppServerPermissionDefault:s,collaborationMode:m},{readResumeInputs:KO(e,r.getHostId())});',
   'let t=await(r.dshResumeForSubmission?((...args)=>r.dshResumeForSubmission(...args)):((...args)=>Rb(e,r.getHostId()).resumeConversation(...args)))({conversationId:a,model:null,serviceTier:o,reasoningEffort:null,workspaceRoots:p,useAppServerPermissionDefault:s,collaborationMode:m},{readResumeInputs:KO(e,r.getHostId())});');
- return patchParallelSubmissionReads(patchResumeMetadataLane(patchPreparationMetadataRefresh(patchParallelResumePreparation(source))));
+ return patchCodexHomeOverlap(patchParallelSubmissionReads(patchResumeMetadataLane(patchPreparationMetadataRefresh(patchParallelResumePreparation(source)))));
 }
 
 // The renderer tool catalogue depends only on the settings already captured by

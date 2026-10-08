@@ -1,3 +1,4 @@
+import {patchIpcLaneRuntime}from'./official-runtime-lane-diagnostics.mjs';
 // Checked patches in pinned third-party browser glue; official renderer stays intact.
 export function scopeRuntimeAssets(source){
  // The complete runtime includes WCO glue; the standalone bridge does not.
@@ -114,5 +115,5 @@ export function scopeRuntimeAssets(source){
   ['disposeFocus = adapterHost.events.observe({ key: {}, target: w, type: "focus", capture: true, callback: handleFocus });',
    '/* Native cancel/change events own picker completion. Window focus is not cancellation. */']
  ];
- for(const [needle,replacement]of patches){if(source.split(needle).length!==2)throw Error('Pinned browser contract changed');source=source.replace(needle,replacement);}return source;
+ for(const [needle,replacement]of patches){if(source.split(needle).length!==2)throw Error('Pinned browser contract changed');source=source.replace(needle,replacement);}return patchIpcLaneRuntime(source);
 }

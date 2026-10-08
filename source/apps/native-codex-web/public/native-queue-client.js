@@ -281,8 +281,9 @@
    // The client and its Native head still fence retirement, stop and reconnect.
    const initial={isCurrent:()=>false};sending.set(id,initial);
    const traceId=request.message?.id;
-   let prerequisite='thread/read';
+   let prerequisite='thread/read',releaseHome=null;
    try{
+    releaseHome=q.prepareMessage?.dshWarmCodexHomeQuery?.(request);
     if(!client.dshReadExecutionHead)throw Error('发送状态尚未就绪，草稿已保留');
     window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'preparing',reason:'native',method:'thread/read',threadId:id,traceId});
     // Start the independently authenticated head read alongside the existing
@@ -312,7 +313,7 @@
     return await sendMessage(request,...args);
    }
    catch(error){if(prerequisite)window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'failed',reason:'preparation',method:prerequisite,threadId:id,traceId,notSubmitted:true});throw error;}
-   finally{sending.delete(id);}
+   finally{releaseHome?.();sending.delete(id);}
   };
 
   async function preparedInput(id,message){

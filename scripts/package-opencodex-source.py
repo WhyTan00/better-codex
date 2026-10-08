@@ -48,7 +48,7 @@ def main():
         'upstream': pins,
         'license': 'AGPL-3.0-only',
         'modifiedFiles': {name: sha(files[name][0]) for name in PATCHES},
-        'modifications': 'https://github.com/TonyandWei/better-codex/tree/v0.2.0-beta.7/integrations/opencodex',
+        'modifications': 'https://github.com/TonyandWei/better-codex/tree/v0.2.0-beta.8/integrations/opencodex',
     }, indent=2)+'\n').encode(), 0o644)
     files['BETTER_CODEX_BUILD.md'] = (b'''# Corresponding source
 
@@ -66,7 +66,7 @@ pnpm run build:gateway
 
 Use Better Codex's installer for the separately acquired official resources,
 deployment configuration and runtime entry. Exact build modifications are in
-scripts/portable/setup.mjs in the Better Codex v0.2.0-beta.7 source.
+scripts/portable/setup.mjs in the Better Codex v0.2.0-beta.8 source.
 ''', 0o644)
     with args.output.open('xb') as output, gzip.GzipFile(filename='', mode='wb', fileobj=output, mtime=0) as gz, tarfile.open(fileobj=gz, mode='w') as archive:
         for name, (data, mode) in sorted(files.items()):
