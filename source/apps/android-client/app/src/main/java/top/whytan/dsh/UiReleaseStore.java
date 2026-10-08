@@ -264,10 +264,18 @@ public final class UiReleaseStore implements Closeable {
                                 .get()
                                 .header("Origin", DshConfig.ORIGIN);
                         addCookie(fileRequest, DshConfig.ORIGIN);
+                        AssetDiagnostic asset = new AssetDiagnostic(eventScope, traceId, manifest.version, entry);
+                        asset.event("started", "download_start", null);
                         try (Response response = executeBounded(client, fileRequest.build(), deadline)) {
                             statusCode[0] = response.code();
+                            asset.statusCode = response.code();
+                            asset.event("received", "request_received", null);
                             if (response.code() != 200 || response.body() == null) throw new IOException("asset unavailable");
-                            verifyAndWrite(response.body(), target, entry);
+                            verifyAndWrite(response.body(), target, entry, asset);
+                            asset.event("downloaded", "download_complete", null);
+                        } catch (Exception failure) {
+                            asset.failure(failure);
+                            throw failure;
                         }
                     }
                 }
@@ -579,8 +587,100 @@ public final class UiReleaseStore implements Closeable {
     }
 
     private static void verifyAndWrite(ResponseBody body, File target, Entry entry) throws IOException {
+        verifyAndWrite(body, target, entry, null);
+    }
+
+    private static void verifyAndWrite(ResponseBody body, File target, Entry entry,
+                                       @Nullable AssetDiagnostic asset) throws IOException {
+        if (asset != null) asset.operation = "body_partial";
         try (InputStream input = body.byteStream()) {
-            copyVerified(input, target, entry);
+            copyVerified(input, target, entry, asset);
+            if (asset != null) asset.operation = "body_partial";
+        }
+    }
+
+    // Observation only: fixed labels and manifest digest prefix; no URL/body/error text.
+    // The original refresh trace, return values, timeouts, cleanup and active marker remain authoritative.
+    private final class AssetDiagnostic {
+        final String scope, traceId, version, hash;
+        final long startedAt = SystemClock.elapsedRealtime();
+        long bytes;
+        int statusCode = -1;
+        String operation = "request_failed", firstFailure;
+
+        AssetDiagnostic(String scope, String traceId, String version, Entry entry) {
+            this.scope = scope; this.traceId = traceId; this.version = version;
+            this.hash = entry.sha256.substring(0, 16);
+        }
+
+        void failedAt(String fixedOperation) {
+            if (firstFailure == null) firstFailure = fixedOperation;
+        }
+
+        void event(String stage, String reason, @Nullable String failureClass) {
+            try {
+                JSONObject fields = new JSONObject().put("traceId", traceId).put("uiVersion", version)
+                        .put("contentHash", hash).put("count", bytes).put("reason", reason)
+                        .put("durationMs", Math.max(0L, SystemClock.elapsedRealtime() - startedAt));
+                if (statusCode >= 100 && statusCode <= 999) fields.put("statusCode", statusCode);
+                if (failureClass != null) fields.put("failureClass", failureClass);
+                diagnostics.event(scope, "android-update", stage, fields);
+            } catch (Exception ignored) {
+                // Diagnostics cannot change asset download, validation or storage behavior.
+            }
+        }
+
+        void failure(Exception failure) {
+            String reason = firstFailure == null ? operation : firstFailure;
+            if (cancelRequested.get()) {
+                event("cancelled", "cancelled", "aborted");
+                return;
+            }
+            String kind;
+            if ("store_failed".equals(reason)) kind = "storage";
+            else if ("verify_failed".equals(reason)) kind = "rpc_contract";
+            else if (failure instanceof java.net.UnknownHostException) kind = "dns";
+            else if (failure instanceof javax.net.ssl.SSLException) kind = "tls";
+            else if (failure instanceof java.io.InterruptedIOException) kind = "timeout";
+            else if (statusCode == 401 || statusCode == 403 || statusCode == 303) kind = "auth";
+            else if (statusCode >= 100 && statusCode != 200) kind = "http";
+            else if (failure instanceof IOException) kind = "connection";
+            else kind = "unknown";
+            event("failed", reason, kind);
+        }
+    }
+
+    private static final class AssetInput extends BufferedInputStream {
+        final AssetDiagnostic asset;
+        AssetInput(InputStream input, AssetDiagnostic asset) { super(input); this.asset = asset; }
+        @Override public synchronized int read(byte[] bytes, int offset, int length) throws IOException {
+            asset.operation = "body_partial";
+            try {
+                int count = super.read(bytes, offset, length);
+                if (count > 0) asset.bytes += count;
+                return count;
+            } catch (IOException | RuntimeException failure) {
+                asset.failedAt("body_partial"); throw failure;
+            }
+        }
+        @Override public void close() throws IOException {
+            try { super.close(); }
+            catch (IOException | RuntimeException failure) { asset.failedAt("body_partial"); throw failure; }
+        }
+    }
+
+    private static final class AssetOutput extends BufferedOutputStream {
+        final AssetDiagnostic asset;
+        AssetOutput(OutputStream output, AssetDiagnostic asset) { super(output); this.asset = asset; }
+        @Override public synchronized void write(byte[] bytes, int offset, int length) throws IOException {
+            asset.operation = "store_failed";
+            try { super.write(bytes, offset, length); }
+            catch (IOException | RuntimeException failure) { asset.failedAt("store_failed"); throw failure; }
+        }
+        @Override public void close() throws IOException {
+            asset.operation = "store_failed";
+            try { super.close(); }
+            catch (IOException | RuntimeException failure) { asset.failedAt("store_failed"); throw failure; }
         }
     }
 
@@ -630,16 +730,28 @@ public final class UiReleaseStore implements Closeable {
     }
 
     private static void copyVerified(InputStream source, File target, Entry entry) throws IOException {
+        copyVerified(source, target, entry, null);
+    }
+
+    private static void copyVerified(InputStream source, File target, Entry entry,
+                                     @Nullable AssetDiagnostic asset) throws IOException {
         File temporary = new File(target.getParentFile(), target.getName() + ".part");
         MessageDigest digest = sha256();
         long count = 0L;
-        try (InputStream input = new BufferedInputStream(source); OutputStream output = new BufferedOutputStream(new FileOutputStream(temporary, false))) {
+        if (asset != null) asset.operation = "store_failed";
+        try (InputStream input = asset == null ? new BufferedInputStream(source) : new AssetInput(source, asset);
+             OutputStream output = asset == null ? new BufferedOutputStream(new FileOutputStream(temporary, false))
+                     : new AssetOutput(new FileOutputStream(temporary, false), asset)) {
             byte[] buffer = new byte[32 * 1024];
             int read;
             while ((read = input.read(buffer)) != -1) {
                 if (Thread.currentThread().isInterrupted()) throw new IOException("cancelled");
                 count += read;
-                if (count > entry.bytes || count > MAX_FILE_BYTES) throw new IOException("asset size");
+                if (count > entry.bytes || count > MAX_FILE_BYTES) {
+                    if (asset != null) asset.operation = "verify_failed";
+                    if (asset != null) asset.failedAt("verify_failed");
+                    throw new IOException("asset size");
+                }
                 digest.update(buffer, 0, read);
                 output.write(buffer, 0, read);
             }
@@ -649,10 +761,18 @@ public final class UiReleaseStore implements Closeable {
             if (failure instanceof IOException) throw (IOException) failure;
             throw new IOException("asset write", failure);
         }
+        if (asset != null) {
+            asset.operation = "verify_failed";
+            asset.event("received", "body_ready", null);
+        }
         if (count != entry.bytes || !hex(digest.digest()).equals(entry.sha256)) {
             //noinspection ResultOfMethodCallIgnored
             temporary.delete();
             throw new IOException("asset integrity");
+        }
+        if (asset != null) {
+            asset.event("verified", "verify_ok", null);
+            asset.operation = "store_failed";
         }
         if (!temporary.renameTo(target)) {
             try {

@@ -900,7 +900,10 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshUiInBackground(boolean manual) {
-        if (!updateStarted.compareAndSet(false, true)) return;
+        if (!updateStarted.compareAndSet(false, true)) {
+            if (manual) showUiUpdateNotice("界面更新正在进行");
+            return;
+        }
         uiUpdateExecutor.execute(() -> {
             try {
                 android.content.SharedPreferences checks = getSharedPreferences("update-checks", MODE_PRIVATE);
@@ -908,6 +911,9 @@ public final class MainActivity extends Activity {
                 if (!manual && previous <= now && now - previous < AUTO_UPDATE_INTERVAL_MS) return;
                 UiReleaseStore.UpdateResult result = uiReleaseStore.refresh(DshNetwork.builder(this).build());
                 if (result.success) checks.edit().putLong("ui", System.currentTimeMillis()).apply();
+                if (manual) runOnUiThread(() -> showUiUpdateNotice(result.success
+                        ? (result.changed ? "界面更新已准备好" : "界面资源已是最新")
+                        : "界面更新失败，当前内容已保留"));
             } finally {
                 updateStarted.set(false);
                 runOnUiThread(() -> {
@@ -916,6 +922,11 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void showUiUpdateNotice(String message) {
+        if (isFinishing() || isDestroyed() || !activityResumed) return;
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
     private void tryApplyDownloadedUi() {

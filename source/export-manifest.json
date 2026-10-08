@@ -76,7 +76,7 @@
     "apps/sync-gateway/public/manifest.webmanifest": "a69c8cdfe89f9f4983eb66553f5a1f73b7530db3ef3a47ff2e8a89f3fc0b117f",
     "apps/sync-gateway/public/sw.js": "b652cdb49deadc463d2eafd4b6ebc520f46c072a16cbf0245fc984d7f3f3056e",
     "apps/android-client/app/proguard-rules.pro": "b621390c0b50a202de66844d892c1a204c5963351e9b83e88b0482afa4510407",
-    "apps/android-client/app/build.gradle": "a75c6ee639fe4473d485bd6e87ff14beb69b8e960f8e10983819a5381a611be0",
+    "apps/android-client/app/build.gradle": "88a340d08cf1a1ebce986c81fa891f5594e049f9009bf3a47c7a4b8962f99e62",
     "apps/android-client/gradle/wrapper/gradle-wrapper.properties": "4af3490d6d3cd657e0f7306d0a53ae8240b9a79f317aad8f6abfe87320b3dc7e",
     "apps/android-client/app/src/main/AndroidManifest.xml": "2d9898556fcaef2a101ff8d475ede360baa340bd823d9be9014ae228c34bfde2",
     "apps/android-client/app/src/main/asset-templates/android-startup.js": "ea9a36b5795b7e9efa23afaff6747c9e61607a3311d8e7dd07eefa7a7240f746",
@@ -88,9 +88,9 @@
     "apps/android-client/app/src/main/java/top/whytan/dsh/DeliverableJobService.java": "1c2dffb04ac92696e07e7275057501b680dfc72c36044a206fcdcc414d0e83ce",
     "apps/android-client/app/src/main/java/top/whytan/dsh/SyncRestoreReceiver.java": "da15cbe07b130cb3daa497d6e40544a2a188e97d21b38c623ca476db01faff93",
     "apps/android-client/app/src/main/java/top/whytan/dsh/PhoneCodeCrypto.java": "be8967a7abefa0551b417febf9266a7a83922df8e03b277953c0f7247df6307a",
-    "apps/android-client/app/src/main/java/top/whytan/dsh/MainActivity.java": "a43a7274d2ecfc249f277de7d50f93570db41e3bbb9d11d986e99d593b7a181c",
+    "apps/android-client/app/src/main/java/top/whytan/dsh/MainActivity.java": "d9ebd6a82121a51a8254a323c0f65e02648c5c18330bc267565bce813b8f4359",
     "apps/android-client/app/src/main/java/top/whytan/dsh/OriginDns.java": "d8894d27f17191544f0fa6ac36a8a4495033856d5b6560ba42abad4941c3c29e",
-    "apps/android-client/app/src/main/java/top/whytan/dsh/UiReleaseStore.java": "2751236d5056beeb3cc056249b1cbe85242c8107df231c5223dc44170030fdc3",
+    "apps/android-client/app/src/main/java/top/whytan/dsh/UiReleaseStore.java": "ef11a4b9920784bde531557b00cff0ceb06c49b1c28f2ebd3b642fb6908b39d5",
     "apps/android-client/app/src/main/java/top/whytan/dsh/StreamProjection.java": "ebd17cae96e338365e4a715a1e7fd702d525998b0567945bea54d32aec4eb800",
     "apps/android-client/app/src/main/java/top/whytan/dsh/BackgroundConnection.java": "f027fd26389562069a3212c380cf0d4bff3812788aa92d1631288b119d203ea5",
     "apps/android-client/app/src/main/java/top/whytan/dsh/PhoneCodeClient.java": "12d169fa60055b3213c9dd9b1850417a9ff9ad76aa65cb2ba0ab228ed9e10e5b",
@@ -125,7 +125,7 @@
     "apps/android-client/app/src/test/java/top/whytan/dsh/DeliverableCacheTest.java": "cabff011bcf418e10604f0341af3951c15fa1a0230f7709a3d04d529fe8ad748",
     "apps/android-client/app/src/test/java/top/whytan/dsh/ForegroundSyncNotificationTest.java": "b5cb988daa57435a0ab19640ea2cc7f91431fd0938c6ebc5f76b7791a4ab794f",
     "apps/android-client/app/src/test/java/top/whytan/dsh/EmptyFocusPreparationTest.java": "b3f4ce80d0bef1eb7448242725cbd144017582ef632b3f4516c90f147a171813",
-    "apps/android-client/app/src/test/java/top/whytan/dsh/MainActivityUiUpdateSchedulingTest.java": "a57864c1703aaa2720ad5f26c19d107d071cb873bf40ed73c89a149fc210a2ee",
+    "apps/android-client/app/src/test/java/top/whytan/dsh/MainActivityUiUpdateSchedulingTest.java": "94e8d6c1ff6f5a75c85da858be11539712f43cebd43aeaeee83dd62a2a990989",
     "apps/android-client/app/src/test/java/top/whytan/dsh/OriginDnsTest.java": "0810904be2fd047e39efa11006964e6920d687c645dfb31ee67f5c404bc25375",
     "apps/android-client/app/src/test/java/top/whytan/dsh/CatalogueSessionRecoveryTest.java": "d2785068b2cca56f5738d13c9b649844797c47ba8d579934427f7e02ccf9b3fe",
     "apps/android-client/app/src/test/java/top/whytan/dsh/MainActivityStartupTest.java": "e022bbcf710b11bb3c8549b0dde6a5baf1fcfb1f4169f21151ac1b2db921f1f3",
@@ -324,6 +324,7 @@
     "apps/native-codex-web/src/official-codex-home-overlap.mjs": "621ff55f76806d4befc1098d17941412e396bcc71e0d1af8ec69ced2eb64f766",
     "apps/native-codex-web/src/official-runtime-lane-diagnostics.mjs": "6073a736d051dd0d3a2b32614c538fc6cc2ca7f4621fd1e559b7a35db4f6f387",
     "apps/native-codex-web/test/home-query-parallel.test.mjs": "4c2d7c46c0f8a9765ce8d8e8ee235238c15cc7041bbc0746acb5f11096ec61cd",
-    "apps/native-codex-web/test/runtime-lane-diagnostics.test.mjs": "ac3907c8509a2ca771c387ac3c825b72755e9e6c3ee41659063886fad650ce29"
+    "apps/native-codex-web/test/runtime-lane-diagnostics.test.mjs": "ac3907c8509a2ca771c387ac3c825b72755e9e6c3ee41659063886fad650ce29",
+    "apps/android-client/app/src/test/java/top/whytan/dsh/UiReleaseAssetDiagnosticTest.java": "80741404c85b93f07ce30e658159b462819b0a650332d26af1e88b2ce0422d67"
   }
 }

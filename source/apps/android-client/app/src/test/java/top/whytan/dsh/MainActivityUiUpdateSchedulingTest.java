@@ -183,4 +183,42 @@ public final class MainActivityUiUpdateSchedulingTest {
             assertEquals(0, f.web.loads); assertEquals(0, f.web.scripts);
         }
     }
+
+    private static void refresh(Fixture f, boolean manual) throws Exception {
+        java.lang.reflect.Method method = MainActivity.class.getDeclaredMethod("refreshUiInBackground", boolean.class);
+        method.setAccessible(true); method.invoke(f.activity, manual);
+    }
+    private static void closedStore(Fixture f) throws Exception {
+        UiReleaseStore store = new UiReleaseStore(f.activity); store.close();
+        field("uiReleaseStore").set(f.activity, store);
+        f.activity.getSharedPreferences("update-checks", Context.MODE_PRIVATE).edit().clear().commit();
+        org.robolectric.shadows.ShadowToast.reset();
+    }
+    @Test public void manualFailureUsesActualRefreshResultAndReleasesSlotWithoutReplacingPage() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            f.activity.onResume(); closedStore(f); refresh(f, true);
+            assertEquals(1, f.network.work.size()); f.network.work.removeFirst().run(); f.idle(0);
+            assertEquals("界面更新失败，当前内容已保留", org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean) field("updateStarted").get(f.activity)).get());
+            assertEquals(0, f.web.loads); assertEquals(Fixture.DOCUMENT, f.web.getUrl());
+        }
+    }
+    @Test public void repeatedManualTapShowsBusyWithoutAnotherRefresh() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            f.activity.onResume(); closedStore(f); refresh(f, true); refresh(f, true);
+            assertEquals(1, f.network.work.size());
+            assertEquals("界面更新正在进行", org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+            assertEquals(0, f.web.loads);
+        }
+    }
+    @Test public void automaticFailureIsSilentAndBackgroundManualCompletionIsSilent() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            f.activity.onResume(); closedStore(f); refresh(f, false);
+            f.network.work.removeFirst().run(); f.idle(0);
+            assertNull(org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+            refresh(f, true); f.activity.onPause(); f.network.work.removeFirst().run(); f.idle(0);
+            assertNull(org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+            assertEquals(0, f.web.loads);
+        }
+    }
 }
