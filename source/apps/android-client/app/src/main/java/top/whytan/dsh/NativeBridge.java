@@ -43,16 +43,24 @@ public final class NativeBridge implements AutoCloseable {
     private final ScopeSessionClient controlSession;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // Selected history/projection I/O must not queue behind workspace import,
+    // status scans or bulk synchronization. SQLite WAL remains the same store;
+    // this helper has its own reader/monitor, not a second history authority.
+    private final ExecutorService projectionWorker = Executors.newSingleThreadExecutor();
+    private final SyncStore projectionStore;
+    private final FocusRequestQueue focusRequests = new FocusRequestQueue(worker);
     private final Map<String, Long> bridgeStartedAt = new ConcurrentHashMap<>();
     private final Map<String, String> bridgeMethods = new ConcurrentHashMap<>();
     private volatile JavaScriptReplyProxy proxy;
     private volatile String proxyScope;
     private volatile boolean installed;
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
 
     public NativeBridge(Context context, WebView webView, SyncStore store, UiReleaseStore uiReleaseStore, Runnable openSettings, Runnable requestNotificationPermission, NativeAppearance appearance, Runnable applyAppearance, DocumentExporter documentExporter, java.util.function.BiConsumer<java.io.File,String> deliverableOpener) {
         this.context = context.getApplicationContext();
         this.webView = webView;
         this.store = store;
+        this.projectionStore = store == null ? null : new SyncStore(this.context);
         this.uiReleaseStore = uiReleaseStore;
         this.openSettings = openSettings;
         this.requestNotificationPermission = requestNotificationPermission;
@@ -128,7 +136,7 @@ public final class NativeBridge implements AutoCloseable {
                 && !"openDeliverable".equals(method) && !"resolveDeliverable".equals(method) && !"getTheme".equals(method) && !"setTheme".equals(method) && !"saveDocument".equals(method)
                 && !"getNotificationSettings".equals(method) && !"setDeviceOwner".equals(method) && !"setCompletionNotifications".equals(method)
                 && !"startSync".equals(method) && !"stopSync".equals(method) && !"openSettings".equals(method)
-                && !"diagnosticContext".equals(method) && !"focusThread".equals(method) && !"presentConversation".equals(method)
+                && !"readBodyWitness".equals(method) && !"diagnosticContext".equals(method) && !"focusThread".equals(method) && !"presentConversation".equals(method)
                 && !"saveVisibleProcesses".equals(method) && !"readVisibleProcesses".equals(method) && !"invalidateVisibleProcesses".equals(method)) {
             postError(replyProxy, requestId, scope, "METHOD_NOT_ALLOWED", "桥接方法未开放");
             return;
@@ -138,6 +146,7 @@ public final class NativeBridge implements AutoCloseable {
             String traceId = isUuid(requestedTrace) ? requestedTrace : requestId;
             String cookie = android.webkit.CookieManager.getInstance().getCookie(DshConfig.ORIGIN);
             controlSession.read(scope, cookie, traceId, new ScopeSessionClient.Trace() {
+                public void summary(JSONObject fields) { try { fields.put("traceId",traceId).put("routeClass","scope_session").put("method","GET").put("reason","network_summary"); diagnostics.event(scope,"android-network","received",fields); } catch(Exception ignored) {} }
                 public void event(String stage,String reason,int status,long elapsed) { log(stage,reason,status,elapsed,null); }
                 public void failure(String reason,int status,long elapsed,String failureClass) { log("failed",reason,status,elapsed,failureClass); }
                 private void log(String stage,String reason,int status,long elapsed,String failureClass) {
@@ -154,14 +163,13 @@ public final class NativeBridge implements AutoCloseable {
             return;
         }
         if("recordDiagnostics".equals(method)) {
-            diagnostics.acceptWebEvents(scope,request.optJSONArray("events"),ids->{
-                if(ids==null){postError(replyProxy,requestId,scope,"DIAGNOSTIC_STORE_FAILED","日志尚未写入");return;}
-                try{reply(replyProxy,requestId,scope,new JSONObject().put("received",true).put("acknowledgedEventIds",ids));}
-                catch(JSONException failure){postError(replyProxy,requestId,scope,"DIAGNOSTIC_STORE_FAILED","日志尚未写入");}
+            diagnostics.acceptWebEventsReceipt(scope,request.optJSONArray("events"),receipt->{
+                if(receipt==null){postError(replyProxy,requestId,scope,"DIAGNOSTIC_STORE_FAILED","日志尚未写入");return;}
+                reply(replyProxy,requestId,scope,receipt);
             });return;
         }
         if ("openDeliverable".equals(method)) {
-            worker.execute(()->{try{DeliverableCache cache=DeliverableCache.get(context);JSONObject d=cache.resolve(scope,request.optString("path",""));
+            executeBridgeWork(scope, requestId, ()->{try{DeliverableCache cache=DeliverableCache.get(context);JSONObject d=cache.resolve(scope,request.optString("path",""));
                 if(!d.optBoolean("available"))throw new IllegalStateException("not cached");
                 java.io.File file=cache.exportCopy(context,Uri.parse(d.getString("url")),scope,true);
                 main.post(()->{if(scope.equals(pageScope(webView))){deliverableOpener.accept(file,d.optString("mime","application/octet-stream"));reply(replyProxy,requestId,scope,d);}else postError(replyProxy,requestId,scope,"SCOPE_MISMATCH","工作区已切换");});
@@ -170,7 +178,7 @@ public final class NativeBridge implements AutoCloseable {
         if ("resolveDeliverable".equals(method)) {
             String path=request.optString("path", "");
             if(!path.startsWith("/")||path.length()>8192){postError(replyProxy,requestId,scope,"INVALID_PATH","文件路径无效");return;}
-            worker.execute(()->{try{reply(replyProxy,requestId,scope,DeliverableCache.get(context).resolve(scope,path));}
+            executeBridgeWork(scope, requestId, ()->{try{reply(replyProxy,requestId,scope,DeliverableCache.get(context).resolve(scope,path));}
                 catch(Exception unavailable){postError(replyProxy,requestId,scope,"FILE_UNAVAILABLE","文件尚未保存在本机");}});
             return;
         }
@@ -184,19 +192,21 @@ public final class NativeBridge implements AutoCloseable {
         }
         if ("focusThread".equals(method)) {
             String threadId=request.optString("threadId", "");
-            JSONObject result=new JSONObject();
-            try { result.put("accepted", NativeDiagnostics.isUuid(threadId) && SyncForegroundService.focusThread(context,scope,threadId)); }
-            catch (JSONException ignored) {}
-            reply(replyProxy,requestId,scope,result);return;
+            // Store locks belong on the existing worker, never WebView's main
+            // callback. A queued old selection cannot promote itself later.
+            focusRequests.submit(() -> { logBridgeQueueDelay(scope, requestId); return NativeDiagnostics.isUuid(threadId) && SyncForegroundService.focusThread(context,scope,threadId); }, accepted -> {
+                try { reply(replyProxy,requestId,scope,new JSONObject().put("accepted",accepted)); }
+                catch (JSONException failure) { postError(replyProxy,requestId,scope,"READ_FAILED","本地会话暂不可读"); }
+            }, failure -> postError(replyProxy,requestId,scope,"BRIDGE_UNAVAILABLE","桥接暂不可用"));
+            return;
         }
         if ("diagnosticContext".equals(method)) {
-            JSONObject result = diagnostics.identity(scope);
-            try {
+            executeBridgeWork(scope, requestId, () -> { try {
+                JSONObject result = diagnostics.identity(scope);
                 String version = uiReleaseStore.activeVersion();
                 if (version != null && version.matches("[a-f0-9]{16}")) result.put("uiVersion", version);
-            } catch (JSONException ignored) {
-            }
-            reply(replyProxy, requestId, scope, result);
+                reply(replyProxy, requestId, scope, result);
+            } catch (Exception failure) { postError(replyProxy,requestId,scope,"READ_FAILED","诊断信息暂不可读"); }});
             return;
         }
         if ("getNotificationSettings".equals(method) || "setDeviceOwner".equals(method) || "setCompletionNotifications".equals(method)) {
@@ -225,7 +235,7 @@ public final class NativeBridge implements AutoCloseable {
             if (filename.isEmpty() || filename.length() > 160 || !filename.endsWith(".docx") || encoded.length() > 11200000) {
                 postError(replyProxy, requestId, scope, "INVALID_DOCUMENT", "Word 文件无效或过大"); return;
             }
-            worker.execute(() -> {
+            executeBridgeWork(scope, requestId, () -> {
                 try {
                     byte[] data = Base64.decode(encoded, Base64.DEFAULT);
                     if (data.length < 4 || data.length > 8 * 1024 * 1024 || data[0] != 'P' || data[1] != 'K' || data[2] != 3 || data[3] != 4) throw new IllegalArgumentException();
@@ -270,48 +280,55 @@ public final class NativeBridge implements AutoCloseable {
             return;
         }
         if ("readSavedRecord".equals(method) || "saveReadRecord".equals(method)) {
-            worker.execute(()->{try{
-                if("saveReadRecord".equals(method)){store.saveReadRecord(scope,request.getJSONObject("record"));reply(replyProxy,requestId,scope,new JSONObject().put("saved",true));}
-                else reply(replyProxy,requestId,scope,store.readSavedRecord(scope,request.optString("key"),request.optString("sourceGeneration"),request.optString("generation")));
-            }catch(Exception failure){postError(replyProxy,requestId,scope,"ARCHIVE_FAILED","本地历史暂不可读写");}});return;
+            executeProjectionWork(scope, requestId, ()->{try{
+                if("saveReadRecord".equals(method)){projectionStore.saveReadRecord(scope,request.getJSONObject("record"));reply(replyProxy,requestId,scope,new JSONObject().put("saved",true));}
+                else reply(replyProxy,requestId,scope,request.optBoolean("preferCurrent")?projectionStore.readLocalRecord(scope,request.optString("key"),request.optString("sourceGeneration"),request.optString("generation")):projectionStore.readSavedRecord(scope,request.optString("key"),request.optString("sourceGeneration"),request.optString("generation")));
+            }catch(Exception failure){SyncStore.operationFailed(failure);postError(replyProxy,requestId,scope,"ARCHIVE_FAILED","本地历史暂不可读写");}});return;
+        }
+        if ("readBodyWitness".equals(method)) {
+            String thread=request.optString("threadId");
+            if(!NativeDiagnostics.isUuid(thread)){postError(replyProxy,requestId,scope,"INVALID_REQUEST","会话标识无效");return;}
+            executeProjectionWork(scope, requestId, ()->{try{reply(replyProxy,requestId,scope,projectionStore.rendererBodyWitness(scope,thread));}
+                catch(Exception failure){postError(replyProxy,requestId,scope,"READ_FAILED","本地会话暂不可读");}});return;
         }
         if ("readThreadRecords".equals(method) || "readSavedThreadRecords".equals(method)) {
             String thread=request.optString("threadId");
             if(!NativeDiagnostics.isUuid(thread)){postError(replyProxy,requestId,scope,"INVALID_REQUEST","会话标识无效");return;}
-            worker.execute(()->{try{reply(replyProxy,requestId,scope,"readSavedThreadRecords".equals(method)?store.readSavedThreadRecords(scope,thread):store.readThreadRecords(scope,thread));}
+            executeProjectionWork(scope, requestId, ()->{try{reply(replyProxy,requestId,scope,"readSavedThreadRecords".equals(method)?projectionStore.readSavedThreadRecords(scope,thread):projectionStore.readThreadRecords(scope,thread));}
                 catch(Exception failure){postError(replyProxy,requestId,scope,"READ_FAILED","本地会话暂不可读");}});return;
         }
         if ("saveVisibleProcesses".equals(method) || "readVisibleProcesses".equals(method) || "invalidateVisibleProcesses".equals(method)) {
-            worker.execute(()->{try{
-                if("saveVisibleProcesses".equals(method)){store.saveVisibleProcesses(scope,request.getJSONObject("value"));reply(replyProxy,requestId,scope,new JSONObject().put("saved",true));}
-                else if("invalidateVisibleProcesses".equals(method)){store.invalidateVisibleProcesses(scope,request.optString("threadId"),request.optLong("at"));reply(replyProxy,requestId,scope,new JSONObject().put("saved",true));}
-                else reply(replyProxy,requestId,scope,store.readVisibleProcesses(scope,request.optString("threadId"),request.optString("turnId")));
+            executeProjectionWork(scope, requestId, ()->{try{
+                if("saveVisibleProcesses".equals(method)){projectionStore.saveVisibleProcesses(scope,request.getJSONObject("value"));reply(replyProxy,requestId,scope,new JSONObject().put("saved",true));}
+                else if("invalidateVisibleProcesses".equals(method)){projectionStore.invalidateVisibleProcesses(scope,request.optString("threadId"),request.optLong("at"));reply(replyProxy,requestId,scope,new JSONObject().put("saved",true));}
+                else reply(replyProxy,requestId,scope,projectionStore.readVisibleProcesses(scope,request.optString("threadId"),request.optString("turnId")));
             }catch(Exception failure){postError(replyProxy,requestId,scope,"PROCESS_CACHE_FAILED","本机过程记录暂不可读写");}});return;
         }
         if ("readStream".equals(method)) {
             String thread=request.optString("threadId");
             if(!NativeDiagnostics.isUuid(thread)){postError(replyProxy,requestId,scope,"INVALID_REQUEST","会话标识无效");return;}
-            worker.execute(()->{try{reply(replyProxy,requestId,scope,store.readStream(scope,thread));}
+            executeProjectionWork(scope, requestId, ()->{try{reply(replyProxy,requestId,scope,projectionStore.readStream(scope,thread));}
                 catch(Exception failure){postError(replyProxy,requestId,scope,"READ_FAILED","本地增量暂不可读");}});return;
         }
         if ("status".equals(method)) {
-            JSONObject result = SyncForegroundService.statusSnapshot(context, scope);
-            try {
+            executeBridgeWork(scope, requestId, () -> { try {
+                JSONObject result = SyncForegroundService.statusSnapshot(context, scope, store);
+                // Display/cache capabilities must be available on the ordinary
+                // local status reply, without a separate diagnostic RPC.
+                result.put("nativeDiagnostics", diagnostics.identity(scope));
                 result.put("uiReleaseVersion", uiReleaseStore.activeVersion());
                 result.put("documentExport", true);
-            } catch (JSONException ignored) {
-            }
-            reply(replyProxy, requestId, scope, result);
+                reply(replyProxy, requestId, scope, result);
+            } catch (Exception failure) { postError(replyProxy,requestId,scope,"READ_FAILED","本地状态暂不可读"); }});
             return;
         }
         if ("requestSync".equals(method)) {
-            boolean accepted = SyncForegroundService.requestSync(scope);
-            JSONObject result = SyncForegroundService.statusSnapshot(context, scope);
-            try {
+            executeBridgeWork(scope, requestId, () -> { try {
+                boolean accepted = SyncForegroundService.requestSync(scope);
+                JSONObject result = SyncForegroundService.statusSnapshot(context, scope, store);
                 result.put("accepted", accepted);
-            } catch (JSONException ignored) {
-            }
-            reply(replyProxy, requestId, scope, result);
+                reply(replyProxy, requestId, scope, result);
+            } catch (Exception failure) { postError(replyProxy,requestId,scope,"READ_FAILED","本地状态暂不可读"); }});
             return;
         }
         long after;
@@ -326,11 +343,12 @@ public final class NativeBridge implements AutoCloseable {
         }
         final long requestedAfter = after;
         final int requestedLimit = limit;
-        worker.execute(() -> {
+        executeBridgeWork(scope, requestId, () -> {
             try {
-                JSONObject result = store.readRecords(scope, requestedAfter, requestedLimit);
+                JSONObject result = store.readRecords(scope, requestedAfter, requestedLimit,request.optBoolean("indexOnly"));
                 reply(replyProxy, requestId, scope, result);
             } catch (RuntimeException failure) {
+                SyncStore.operationFailed(failure);
                 postError(replyProxy, requestId, scope, "READ_UNAVAILABLE", "本地同步记录暂不可读");
             }
         });
@@ -359,7 +377,43 @@ public final class NativeBridge implements AutoCloseable {
         }
     }
 
+    // Keep bridge ordering unchanged. Sample only a slow queue or UI handoff;
+    // normal requests and diagnostic delivery do not add another log event.
+    private void executeBridgeWork(String scope, String requestId, Runnable task) {
+        executeWork(worker,scope,requestId,task);
+    }
+    private void executeProjectionWork(String scope,String requestId,Runnable task){
+        executeWork(projectionWorker,scope,requestId,task);
+    }
+    private void executeWork(ExecutorService executor,String scope,String requestId,Runnable task){
+        final String method=bridgeMethods.get(bridgeKey(scope,requestId));
+        executor.execute(() -> {
+            logBridgeQueueDelay(scope, requestId);
+            long started=SystemClock.elapsedRealtime();
+            SyncStore.OperationTiming timing=("readRecords".equals(method)||"saveReadRecord".equals(method))?SyncStore.beginOperationTiming():null;
+            try{task.run();}finally{
+                if(timing!=null){
+                    SyncStore.endOperationTiming();
+                    diagnostics.storeTiming(scope,method,requestId,timing);
+                }
+                long duration=SystemClock.elapsedRealtime()-started;
+                if(duration>=250L&&!"recordDiagnostics".equals(method))try{
+                    JSONObject fields=new JSONObject().put("traceId",requestId).put("reason","bridge_reply").put("durationMs",duration);if(method!=null)fields.put("method",method);
+                    diagnostics.event(scope,"android-bridge","committed",fields);
+                }catch(Exception ignored){}
+            }
+        });
+    }
+
+    private void logBridgeQueueDelay(String scope, String requestId) {
+        Long receivedAt = bridgeStartedAt.get(bridgeKey(scope, requestId));
+        if (receivedAt == null) return;
+        long delay = SystemClock.elapsedRealtime() - receivedAt;
+        if (delay >= 250L) diagnostic(scope, "started", "bridge_request", requestId, delay);
+    }
+
     private void reply(JavaScriptReplyProxy target, String requestId, String scope, JSONObject result) {
+        String method = bridgeMethods.get(bridgeKey(scope, requestId));
         diagnostic(scope, "dispatch", "bridge_reply", requestId, bridgeDuration(scope, requestId));
         JSONObject value = new JSONObject();
         try {
@@ -371,10 +425,11 @@ public final class NativeBridge implements AutoCloseable {
             value.put("result", result == null ? JSONObject.NULL : result);
         } catch (JSONException ignored) {
         }
-        post(target, value.toString());
+        post(target, value.toString(), scope, requestId, method);
     }
 
     private void postError(JavaScriptReplyProxy target, String requestId, String scope, String code, String message) {
+        String method = bridgeMethods.get(bridgeKey(scope, requestId));
         diagnostic(scope, "failed", "bridge_failed", requestId, bridgeDuration(scope, requestId));
         JSONObject value = new JSONObject();
         try {
@@ -391,13 +446,26 @@ public final class NativeBridge implements AutoCloseable {
             value.put("error", error);
         } catch (JSONException ignored) {
         }
-        post(target, value.toString());
+        post(target, value.toString(), scope, requestId, method);
     }
 
     private void post(JavaScriptReplyProxy target, String value) {
+        post(target, value, null, null, null);
+    }
+
+    private void post(JavaScriptReplyProxy target, String value, String scope, String requestId, String method) {
+        final long queuedAt = SystemClock.elapsedRealtime();
         main.post(() -> {
             try {
                 target.postMessage(value);
+                final long delay = SystemClock.elapsedRealtime() - queuedAt;
+                if (delay >= 250L && isUuid(requestId) && !"recordDiagnostics".equals(method)) {
+                    try {
+                        JSONObject fields = new JSONObject().put("traceId", requestId).put("reason", "bridge_reply").put("durationMs", delay);
+                        if (method != null) fields.put("method", method);
+                        diagnostics.event(scope, "android-bridge", "received", fields);
+                    } catch (Exception ignored) { }
+                }
             } catch (RuntimeException ignored) {
                 // The page may have navigated away since the request arrived.
             }
@@ -420,6 +488,7 @@ public final class NativeBridge implements AutoCloseable {
     }
 
     public void clearProxy() {
+        focusRequests.cancelPending();
         controlSession.cancel();
         SyncForegroundService.clearPresentation(this);
         proxy = null;
@@ -462,12 +531,18 @@ public final class NativeBridge implements AutoCloseable {
 
     @Override
     public void close() {
+        if(!closed.compareAndSet(false,true))return;
         SyncForegroundService.clearPresentation(this);
         String scope = proxyScope;
         if (DshConfig.isScope(scope)) diagnostic(scope, "closed", "activity_destroy", null, -1L);
         clearProxy();
         bridgeStartedAt.clear();bridgeMethods.clear();
+        focusRequests.close();
         worker.shutdownNow();
+        // Complete already queued durable projection writes without blocking
+        // the Activity/UI thread, then close this owned SQLite helper.
+        projectionWorker.execute(()->{if(projectionStore!=null)projectionStore.close();});
+        projectionWorker.shutdown();
         controlSession.close();
     }
 

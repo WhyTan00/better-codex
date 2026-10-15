@@ -6,7 +6,7 @@ const marker=sourceScript.split('\n')[0];
 if(bundle&&bundle.split(sourceScript.trim()).length!==2)throw Error('Final scope bundle lacks the exact recovery component');
 const script=sourceScript;
 const loader=await readFile(process.env.DSH_LOADER_TEST_SOURCE||new URL('../public/native-loader.js',import.meta.url),'utf8');
-function fixture(fetchImpl,{beforeScope,storage}={}){
+function fixture(fetchImpl,{beforeScope,storage,deferScope=false}={}){
  class Storage{constructor(){this.values=new Map()}get length(){return this.values.size}key(i){return [...this.values.keys()][i]??null}getItem(k){return this.values.get(k)||null}setItem(k,v){this.values.set(k,v)}removeItem(k){this.values.delete(k)}clear(){this.values.clear()}}
  const listeners={},timers=new Map(),events=[],sockets=[],connectionEvents=[],controllers=[];let timerId=0,reloads=0,ids=0,now=Date.now();
  class AbortController{constructor(){this.signal={aborted:false};controllers.push(this)}abort(){this.signal.aborted=true}}
@@ -18,7 +18,7 @@ function fixture(fetchImpl,{beforeScope,storage}={}){
  context.window={__DSH_CLIENT_LOG__:{event:(kind,e)=>connectionEvents.push({kind,...e}),identity:()=>({pageId:"abcd1234",uiVersion:"1234567890abcdef"})},WebSocket:Socket,__DSH_SCOPE__:{id:'ai',token:'scope'},fetch:fetchImpl||(async()=>({ok:true,json:async()=>({id:'ai',token:'renewed'})})),dispatchEvent:event=>{events.push(event);listeners[event.type]?.(event);}};
  if(storage)context.localStorage.values=storage;
  beforeScope?.(context);
- vm.runInNewContext(script,context);
+ if(!deferScope)vm.runInNewContext(script,context);
  const create=()=>{const socket=new context.window.WebSocket('wss://workbench.example.test/w/ai/ws');socket.send(JSON.stringify({type:'hello',clientId:'native-renderer'}));return socket;};
  const message=(socket,m)=>socket.emit('message',{data:JSON.stringify(m)});
  const hello=(socket,{resumed=false,received=0}={})=>message(socket,{type:'hello-ack',clientId:'native-renderer',dshProtocol:'dsh-page-resume-v1',dshResumeId:'same-session',dshResumed:resumed,dshReceivedSeq:received});
@@ -48,8 +48,8 @@ test('real wire logger persists and uploads the connection snapshot without requ
  assert(!JSON.stringify(log.log.snapshot()).includes('PRIVATE_WIRE_INPUT'));const reopened=diagnosticFixture({storage:log.storage,online:true});assert(reopened.log.snapshot().events.some(e=>e.eventId===receipt.eventId));await reopened.log.flush();assert(reopened.uploads.flatMap(x=>x.events).some(e=>e.eventId===receipt.eventId&&e.handshakeComplete===true&&e.count===0));
 });
 function loaderFixture(fetchImpl){
- const x=fixture(fetchImpl),root={textContent:''},loaded=[],cache={prepareSidebarBootstrap:async config=>config,restoreAtoms:async()=>({}),meta:async key=>key==='auth-locked'?false:null,saveMeta:async()=>{}};
- x.context.structuredClone=structuredClone;x.context.matchMedia=()=>({matches:false});x.context.history={state:{},replaceState(){}};x.context.document.documentElement={dataset:{}};x.context.document.getElementById=()=>root;x.context.document.querySelector=()=>null;x.context.document.createElement=()=>({setAttribute(){},addEventListener(){},append(){},remove(){}});x.context.document.head={append(element){loaded.push(element.src||element.name||'');if(typeof element.onload==='function')queueMicrotask(()=>element.onload());}};x.context.window.__DSH_NATIVE_CACHE__=cache;x.context.window.__DSH_THEME_COLOR__={};
+ const x=fixture(fetchImpl,{deferScope:true}),root={textContent:''},loaded=[],cache={prepareSidebarBootstrap:async config=>config,restoreAtoms:async()=>({}),meta:async key=>key==='auth-locked'?false:null,saveMeta:async()=>{}};
+ x.context.structuredClone=structuredClone;x.context.matchMedia=()=>({matches:false});x.context.history={state:{},replaceState(){}};x.context.document.documentElement={dataset:{}};x.context.document.getElementById=()=>root;x.context.document.querySelector=()=>null;x.context.document.createElement=()=>({setAttribute(){},addEventListener(){},append(){},remove(){}});x.context.document.head={append(element){loaded.push(element.src||element.name||'');if(element.src==='/scope.js')vm.runInNewContext(script,x.context);if(typeof element.onload==='function')queueMicrotask(()=>element.onload());}};x.context.window.__DSH_NATIVE_CACHE__=cache;x.context.window.__DSH_THEME_COLOR__={};
  vm.runInNewContext(loader.replace('__DSH_NATIVE_RELEASE__',JSON.stringify({shell:'/shell.html',scope:'/scope.js',runtime:'/runtime.js',pwa:'/pwa.js',entry:'/entry.js'})),x.context);return {...x,root,loaded,cache};
 }
 test('foreground recovery requests native catch-up without replacing page or resending an accepted prompt',async()=>{
@@ -280,4 +280,17 @@ test('closed wire cannot use previous history completion to hide failed scope re
 });
 test('late successful foreground renewal updates credentials and preserves completed history',async()=>{
  const {x,state}=await pendingForegroundScope({status:200});assert.equal(state(),'connected');assert.equal(x.context.window.__DSH_SCOPE__.token,'fresh-after-sync');
+});
+
+
+test('heartbeat evidence correlates a probe and pong without recording the raw nonce',()=>{
+ const x=fixture(undefined,{beforeScope(c){c.window.__DSH_CLIENT_LOG__.hashId=()=> '0123456789abcdef';}}),socket=x.create();x.hello(socket);
+ const ping=socket.sent.find(m=>m.type==='dsh:ping');assert(ping);
+ const dispatch=x.connectionEvents.find(e=>e.stage==='dispatch'&&e.rpcIdHash==='0123456789abcdef');assert(dispatch);
+ x.message(socket,{type:'dsh:pong',nonce:ping.nonce});const received=x.connectionEvents.find(e=>e.stage==='received'&&e.rpcIdHash===dispatch.rpcIdHash);assert(received);assert(Number.isFinite(received.durationMs));assert(!JSON.stringify(x.connectionEvents).includes(ping.nonce));
+ assert.equal([...x.timers.values()].some(t=>t.ms===8000),false);
+});
+test('broken heartbeat diagnostic hashing cannot stop a probe or pong',()=>{
+ const x=fixture(undefined,{beforeScope(c){c.window.__DSH_CLIENT_LOG__.hashId=()=>{throw Error('diagnostic unavailable')};}}),socket=x.create();x.hello(socket);
+ const ping=socket.sent.find(m=>m.type==='dsh:ping');assert(ping);x.message(socket,{type:'dsh:pong',nonce:ping.nonce});assert.equal(socket.readyState,1);assert.equal([...x.timers.values()].some(t=>t.ms===8000),false);
 });

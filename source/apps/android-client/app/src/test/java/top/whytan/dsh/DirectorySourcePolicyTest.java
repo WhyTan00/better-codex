@@ -51,7 +51,7 @@ public class DirectorySourcePolicyTest {
     @Test public void existingChildPreparationRetiresWithoutAnyHttpOrDeletingHistory()throws Exception {
         catalog(thread(CHILD,spawn(),"idle"),1);SyncStore.Preparation job=store.requestPreparation("ai","archive",CHILD,"",3,true,"old-job");
         Class<?> type=Class.forName("top.whytan.dsh.SyncClient$PrefetchTask");Constructor<?> ctor=type.getDeclaredConstructor(SyncClient.class,SyncStore.Preparation.class,long.class,String.class);ctor.setAccessible(true);
-        Runnable task=(Runnable)ctor.newInstance(client,job,1L,UUID.randomUUID().toString());((Map)field("prefetchByThread").get(client)).put("archive".equals(job.kind)?"archive:"+CHILD:CHILD,task);task.run();
+        Runnable task=(Runnable)ctor.newInstance(client,job,1L,UUID.randomUUID().toString());Field key=type.getDeclaredField("queueKey");key.setAccessible(true);((Map)field("prefetchByThread").get(client)).put(key.get(task),task);task.run();
         assertEquals(0,requests);assertTrue(store.duePreparations("ai",Long.MAX_VALUE,10).isEmpty());assertNotNull(store.catalogRecord("ai",CHILD));
     }
     @Test public void unknownOldPinAdoptsOneHeadThenRetiresBeforeAnyBodyRead()throws Exception {
@@ -71,7 +71,7 @@ public class DirectorySourcePolicyTest {
         }).build());
         SyncStore.Preparation job=store.requestPreparation("ai","history",CHILD,"",2,true,"old-pin");
         Class<?> type=Class.forName("top.whytan.dsh.SyncClient$PrefetchTask");Constructor<?> ctor=type.getDeclaredConstructor(SyncClient.class,SyncStore.Preparation.class,long.class,String.class);ctor.setAccessible(true);
-        Runnable task=(Runnable)ctor.newInstance(client,job,1L,UUID.randomUUID().toString());((Map)field("prefetchByThread").get(client)).put("archive".equals(job.kind)?"archive:"+CHILD:CHILD,task);task.run();
+        Runnable task=(Runnable)ctor.newInstance(client,job,1L,UUID.randomUUID().toString());Field key=type.getDeclaredField("queueKey");key.setAccessible(true);((Map)field("prefetchByThread").get(client)).put(key.get(task),task);task.run();
         assertEquals(1,requests);assertTrue(store.isInternalDirectoryThread("ai",CHILD));assertTrue(store.duePreparations("ai",Long.MAX_VALUE,10).isEmpty());
     }
 }

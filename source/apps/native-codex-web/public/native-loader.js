@@ -47,7 +47,7 @@
  (async()=>{
   await script(release.scope);cache=window.__DSH_NATIVE_CACHE__;const atomsReady=cache.restoreAtoms().catch(()=>({}));
  addEventListener('dsh:authentication-required',()=>{authBlocked=true;authenticated=false;window.__DSH_NATIVE_ONLINE__=false;});
- addEventListener('dsh:scope-renewed',()=>{authenticated=true;controlReady();});
+ addEventListener('dsh:scope-renewed',()=>{if(window.__DSH_SCOPE__?.id!==id||typeof window.__DSH_SCOPE__.token!=='string'||!window.__DSH_SCOPE__.token)return;authBlocked=false;authenticated=true;controlReady();});
   let failed=null;const session=window.__DSH_SESSION_READY__=freshSession().catch(error=>{failed=error;return false;});
   const online=session.then(ok=>ok?freshBootstrap():null).catch(()=>null);
   const [locked,saved]=await Promise.all([cache.meta('auth-locked').catch(()=>false),cache.meta('bootstrap').catch(()=>null)]);let cached=locked?null:saved;

@@ -7,7 +7,7 @@
  try{if(location.origin!==ORIGIN||window.top!==window)return;bridge=window.DshNative;}catch{return;}
  if(!bridge||typeof bridge.postMessage!=='function'||window.__DSH_ANDROID_BRIDGE__)return;
 
- const SAFE_METHODS=new Set(['scopeSession','presentConversation','recordDiagnostics','readStream','readThreadRecords','readSavedThreadRecords','readSavedRecord','saveReadRecord','saveVisibleProcesses','readVisibleProcesses','invalidateVisibleProcesses','openDeliverable','resolveDeliverable','focusThread','diagnosticContext','status','requestSync','readRecords','startSync','stopSync','openSettings','getTheme','setTheme','saveDocument','getNotificationSettings','setDeviceOwner','setCompletionNotifications']),RECORD_KINDS=new Set(['catalog','history','turn','item','readAlias']);
+ const SAFE_METHODS=new Set(['scopeSession','presentConversation','recordDiagnostics','readStream','readThreadRecords','readSavedThreadRecords','readBodyWitness','readSavedRecord','saveReadRecord','saveVisibleProcesses','readVisibleProcesses','invalidateVisibleProcesses','openDeliverable','resolveDeliverable','focusThread','diagnosticContext','status','requestSync','readRecords','startSync','stopSync','openSettings','getTheme','setTheme','saveDocument','getNotificationSettings','setDeviceOwner','setCompletionNotifications']),RECORD_KINDS=new Set(['catalog','history','turn','item','readAlias']);
  const pending=new Map(),states=new Map();
  let serial=0,currentScope=null,cache=null,scopeEpoch=0,pullPromise=null,pullAgain=false;
  const identities=new Set(),identityRequested=new Set();let nativeApkVersion=0,focusedKey='';
@@ -20,7 +20,7 @@
   nativeRequest('presentConversation',{threadId,visible:!!threadId,...threadId&&seenTurnId?{seenTurnId}:{}}).catch(()=>{if(presentationKey===key)presentationKey='';});
  }
  const log=(stage,values={})=>window.__DSH_CLIENT_LOG__?.event('client_health',{component:'android-bridge',stage,...values});
- function observeIdentity(status){const identity=status?.nativeDiagnostics;if(identity?.deviceId&&!identities.has(currentScope+':'+identity.processIdTag)){identities.add(currentScope+':'+identity.processIdTag);nativeApkVersion=Number(identity.apkVersion)||0;focusSelected();presentConversation();log('boot',{nativeDeviceId:identity.deviceId,processIdTag:identity.processIdTag,apkVersion:identity.apkVersion});}else if(!identity?.deviceId&&!identityRequested.has(currentScope)){const captured=currentScope;identityRequested.add(captured);nativeRequest('diagnosticContext').then(value=>{if(captured===currentScope&&value?.deviceId)observeIdentity({nativeDiagnostics:value});}).catch(()=>{});}}
+ function observeIdentity(status){const identity=status?.nativeDiagnostics;if(identity?.deviceId){const previousVersion=nativeApkVersion;nativeApkVersion=Number(identity.apkVersion)||0;window.__DSH_ANDROID_DIAGNOSTIC_CONTEXT__=Object.freeze({scope:currentScope,deviceId:identity.deviceId,processIdTag:identity.processIdTag,apkVersion:nativeApkVersion});identityRequested.delete(currentScope);focusSelected();presentConversation();if(previousVersion!==nativeApkVersion)emit('dsh:android-capabilities-ready',currentScope,{apkVersion:nativeApkVersion});if(!identities.has(currentScope+':'+identity.processIdTag)){identities.add(currentScope+':'+identity.processIdTag);log('boot',{nativeDeviceId:identity.deviceId,processIdTag:identity.processIdTag,apkVersion:identity.apkVersion});}}else if(nativeApkVersion===0&&!identityRequested.has(currentScope)){const captured=currentScope;identityRequested.add(captured);nativeRequest('diagnosticContext').then(value=>{if(captured===currentScope&&value?.deviceId)observeIdentity({nativeDiagnostics:value});else identityRequested.delete(captured);}).catch(()=>identityRequested.delete(captured));}}
  let statusTimer=null,probeTimer=null,scopeProbeTimer=null,closed=false,lastStatusFingerprint='';
  let readyResolve,cacheReadyResolve;const ready=new Promise(resolve=>{readyResolve=resolve;}),cacheReady=new Promise(resolve=>{cacheReadyResolve=resolve;});
  let cacheReadyStarted=false;
@@ -46,6 +46,7 @@
   if(value.event==='status'){
    const scope=validScope(value.scope);if(!scope||scope!==currentScope)return;
    const status=value.status&&typeof value.status==='object'?value.status:value;
+   observeIdentity(status);
    stateFor(scope).historyWarmOwned=nativeApkVersion>=64&&status?.enabled===true&&status?.running===true;
    const fingerprint=JSON.stringify([scope,status.state,status.online,status.enabled,status.running,status.recordCursor,status.cursor,status.generation,status.catalogCursor,status.eventCursor]);
    emit('dsh:android-status',scope,{status});
@@ -87,9 +88,9 @@
   return true;
  };
  const pageOk=(page,scope)=>{
-  if(!page||page.scope!==scope||typeof page.generation!=='string'||!page.generation||!Array.isArray(page.records)||page.records.length>200||page.hasMore===true&&!page.records.length)return false;
+  if(!page||page.scope!==scope||typeof page.generation!=='string'||!page.generation||!Array.isArray(page.records)||page.records.length>200||page.hasMore===true&&!page.records.length&&!(page.indexOnly===true&&Array.isArray(page.bodyChanges)&&page.bodyChanges.length))return false;
   const generation=page.generation;
-  return page.records.every(record=>recordOk(record,scope,generation));
+  return page.records.every(record=>recordOk(record,scope,generation))&&(!page.indexOnly||Array.isArray(page.bodyChanges)&&page.bodyChanges.length+page.records.length<=200&&page.bodyChanges.every(record=>recordOk(record,scope,generation)&&record.kind!=='catalog'&&record.kind!=='readAlias'&&!Object.hasOwn(record,'payload')));
  };
  async function importPage(page,scope,epoch,after){
   if(epoch!==scopeEpoch||scope!==currentScope)return false;
@@ -102,7 +103,7 @@
   await cache.importSnapshot(payload);
   if(generation&&state.generation&&generation!==state.generation)state.changed.clear();
   state.after=next;if(generation)state.generation=generation;
-  const ids=[...new Set(page.records.map(record=>record.threadId).filter(id=>typeof id==='string'&&id))];
+  const ids=[...new Set([...page.records,...(page.bodyChanges||[])].map(record=>record.threadId).filter(id=>typeof id==='string'&&id))];
   for(const id of ids)state.changed.add(id);
   emit('dsh:android-cache-updated',scope,{cursor:next,generation:state.generation,hasMore:!!page.hasMore,catalogRecords:page.records.filter(record=>record.kind==='catalog').length,historyRecords:page.records.filter(record=>record.kind!=='catalog').length,threadIds:ids});
   return true;
@@ -129,10 +130,11 @@
     saved=0;state.after=0;await cache.saveMeta(cursorKey(scope),0);
    }
    if(status?.resetRequired===true&&saved>0){saved=0;state.after=0;await cache.saveMeta(cursorKey(scope),0);}
+   if(savedGeneration&&savedGeneration===statusGeneration&&status?.resetRequired!==true&&number(status.recordCursor)!=null&&saved>=status.recordCursor){state.after=saved;return {scope,cursor:saved,reason,unchanged:true};}
    let after=saved,loops=0,resets=0;
    do{
     if(++loops>64)throw Error('Android 缓存分页超过单次上限');
-    const page=await nativeRequest('readRecords',{after,limit:200},20000);
+    const page=await nativeRequest('readRecords',{after,limit:200,...(nativeApkVersion>=76?{indexOnly:true}:{})},20000);
     if(epoch!==scopeEpoch||scope!==currentScope)return null;
     if(!page||page.scope!==scope)throw Error('Android 记录工作区不匹配');
     const pageGeneration=typeof page.generation==='string'?page.generation:'';
@@ -159,7 +161,7 @@
  }
  async function setScope(next){
   next=validScope(next);if(!next||next===currentScope)return;
-  const previous=currentScope,epoch=++scopeEpoch,previousPull=pullPromise;if(previous)rejectScope(previous);currentScope=next;focusedKey='';pullAgain=false;lastStatusFingerprint='';
+  const previous=currentScope,epoch=++scopeEpoch,previousPull=pullPromise;if(previous)rejectScope(previous);currentScope=next;delete window.__DSH_ANDROID_DIAGNOSTIC_CONTEXT__;nativeApkVersion=0;focusedKey='';pullAgain=false;lastStatusFingerprint='';
   emit('dsh:android-scope-changed',next,{previous});
   if(cache){const start=()=>{if(epoch===scopeEpoch)pull('scope-change').catch(()=>{});};if(previousPull)previousPull.finally(start).catch(()=>{});else start();}
  }
@@ -222,6 +224,9 @@
   readStream:threadId=>nativeApkVersion>=23?nativeRequest('readStream',{threadId}):Promise.resolve(null),
   readThreadRecords:threadId=>nativeApkVersion>=24?nativeRequest('readThreadRecords',{threadId}):Promise.resolve(null),
   readSavedThreadRecords:threadId=>nativeApkVersion>=51?nativeRequest('readSavedThreadRecords',{threadId}):Promise.resolve(null),
+  ownsLocalBodies:()=>nativeApkVersion>=76,
+  readLocalRecord:(key,version={})=>nativeApkVersion>=76?nativeRequest('readSavedRecord',{key,...version,preferCurrent:true}):Promise.resolve(null),
+  readBodyWitness:threadId=>nativeApkVersion>=76?nativeRequest('readBodyWitness',{threadId}):Promise.resolve(null),
   readSavedRecord:(key,version={})=>nativeApkVersion>=51?nativeRequest('readSavedRecord',{key,...version}):Promise.resolve(null),
   saveReadRecord:record=>nativeApkVersion>=51?nativeRequest('saveReadRecord',{record}):Promise.resolve(null),
   saveVisibleProcesses:value=>nativeApkVersion>=64?nativeRequest('saveVisibleProcesses',{value}):Promise.resolve(null),

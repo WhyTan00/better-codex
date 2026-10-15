@@ -12,13 +12,13 @@ function fixture(){
 }
 test('connection replay cannot starve the first local history paint in an empty view',()=>{
  const f=fixture();assert.equal(f.snapshot.initialLocalPaint,true);f.ctx.nativeEventEpoch.set(id,10);assert.equal(f.guard(),true);
- f.turns.push({items:[{id:'cached'}]});f.snapshot.applied=true;assert.equal(f.guard(),true);f.ctx.nativeEventEpoch.set(id,11);assert.equal(f.guard(),false,'normal fence resumes after body adoption');
+ f.turns.push({turnId:'fixture-turn',items:[{id:'cached'}]});f.snapshot.applied=true;assert.equal(f.guard(),true);f.ctx.nativeEventEpoch.set(id,11);assert.equal(f.guard(),false,'normal fence resumes after body adoption');
 });
 test('a live body arriving during the local process read wins over cached first paint',()=>{
- const f=fixture();f.ctx.nativeEventEpoch.set(id,2);f.turns.push({items:[{id:'live'}]});assert.equal(f.guard(),false);
+ const f=fixture();f.ctx.nativeEventEpoch.set(id,2);f.turns.push({turnId:'fixture-turn',items:[{id:'live'}]});assert.equal(f.guard(),false);
 });
 test('existing prompt or process items retain the strict stale-history fence',()=>{
- const f=fixture();f.turns.push({items:[{id:'prompt'}]});const snapshot={confirmedAt:1};const guard=f.ctx.localHistoryGuard(id,snapshot,()=>true,1);assert.equal(snapshot.initialLocalPaint,false);assert.equal(guard(),false);
+ const f=fixture();f.turns.push({turnId:'fixture-turn',items:[{id:'prompt'}]});const snapshot={confirmedAt:1};const guard=f.ctx.localHistoryGuard(id,snapshot,()=>true,1);assert.equal(snapshot.initialLocalPaint,false);assert.equal(guard(),false);
 });
 test('rewrite, navigation, source generation and client replacement cannot borrow empty-view permission',()=>{
  for(const change of [f=>f.ctx.recoveryEpoch.set(id,1),f=>f.ctx.nativeClient={},f=>f.ctx.nativeClient.disposed=true]){const f=fixture();change(f);assert.equal(f.guard(),false);}

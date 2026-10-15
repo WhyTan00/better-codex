@@ -115,8 +115,15 @@ public final class DeliverableCache {
         found.put("available",true).put("url",DshConfig.ORIGIN+"/__dsh_deliverables/"+scope+"/"+key+"/"+Uri.encode(found.getString("name")));
         return found;
     }
-    public synchronized WebResourceResponse intercept(Uri uri,String scope,String range,boolean authorized) {
-        if(!DshConfig.isDshUri(uri)||uri.getPath()==null||!uri.getPath().startsWith("/__dsh_deliverables/"))return null;
+    static boolean isLocalResource(Uri uri) {
+        return DshConfig.isDshUri(uri)&&uri.getPath()!=null&&uri.getPath().startsWith("/__dsh_deliverables/");
+    }
+    public WebResourceResponse intercept(Uri uri,String scope,String range,boolean authorized) {
+        // Network/control requests must not acquire the file-cache lock.
+        if(!isLocalResource(uri))return null;
+        return interceptLocal(uri,scope,range,authorized);
+    }
+    private synchronized WebResourceResponse interceptLocal(Uri uri,String scope,String range,boolean authorized) {
         try {
             List<String> parts=uri.getPathSegments();JSONObject grant=parts.size()==4?grants.get(parts.get(2)):null;
             if(!authorized||grant==null||!scope.equals(parts.get(1))||!scope.equals(grant.getString("scope"))||grant.getLong("expires")<System.currentTimeMillis())return error(403,"Forbidden");

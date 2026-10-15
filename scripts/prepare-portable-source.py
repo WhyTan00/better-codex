@@ -28,6 +28,12 @@ def main():
  files += ['apps/native-codex-web/test/fixtures/'+name for name in ['source-page-producer.mjs','source-metadata-producer.mjs','portable-test-environment.mjs']]
  files += ['apps/sync-gateway/public/'+file.name for file in (src/'apps/sync-gateway/public').iterdir() if file.is_file()]
  files += ['apps/sync-gateway/'+file.name for file in (src/'apps/sync-gateway').iterdir() if file.is_file() and (file.suffix=='.go' or file.name in ['go.mod','go.sum'])]
+ # Redistributable PDF.js font/CMap support, with all upstream license files.
+ vendor=src/'apps/native-codex-web/vendor/pdfjs-5.4.296'
+ if 'official-pdf-preview.mjs' in selected:
+  files += [str(file.relative_to(src)) for file in vendor.iterdir() if file.is_file()]
+ for file in (src/'apps/sync-gateway/testdata').glob('*.json'):
+  files.append(str(file.relative_to(src)))
  manifest={}
  for name in sorted(files):
   data=(src/name).read_text()

@@ -1,3 +1,6 @@
+import {createControlPathTiming,createControlPathLog} from './control-path-timing.mjs';
+import {SubmissionContexts,SUBMISSION_CONTEXT_PROTOCOL} from './submission-context.mjs';
+import {EXECUTION_METADATA_PROTOCOL,readExecutionMetadata} from './execution-metadata-control.mjs';
 import {PROJECT_STATE_KEYS,workspaceProjects,readWorkspaceGlobalState} from './workspace-projects.mjs';
 import {pluginUiRoute,readPluginUi} from './plugin-ui-store.mjs';
 import {ConnectionDiagnostics,hashDiagnosticId,rpcDiagnosticContext,errorDiagnosticFields,appHostError} from './connection-diagnostics.mjs';
@@ -20,7 +23,7 @@ import {createAppHostFactory} from './official-app-host.mjs';
 import {OfficialGit} from './official-git.mjs';
 import {OfficialState} from './official-state.mjs';
 import {createOfficialSettings} from './official-settings.mjs';
-import {PageSessions,PAGE_RESUME_PROTOCOL,REPLY_STREAM_PROTOCOL} from './page-sessions.mjs';
+import {PageSessions,PAGE_RESUME_PROTOCOL,REPLY_STREAM_PROTOCOL,LARGE_REPLY_PROTOCOL} from './page-sessions.mjs';
 import {NativeEventDispatcher} from './native-event-dispatcher.mjs';
 import {cacheableBootstrap} from './native-bootstrap.mjs';
 import {nativeUIRelease,scopeSources} from './native-ui-release.mjs';
@@ -37,6 +40,7 @@ import {wantsNativeNotification} from './notification-interest.mjs';
 import {endToEndHeaders} from './http-headers.mjs';
 import {nativeVersion} from './native-version.mjs';
 import {safePerformanceEvents} from './performance-events.mjs';
+import {ClientDiagnosticArchive} from './client-diagnostic-archive.mjs';
 import {OfficialDesktopMetadata} from './official-desktop-metadata.mjs';
 import {TextResponses} from './official-http-text.mjs';
 import {isWorkspaceNavigation,navigationDenial} from './navigation.mjs';
@@ -74,6 +78,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  const capacityRetry=boundary.capacityRetry=portableConfig?null:new NativeCapacityRetry({boundary});
  native.on('interrupted',()=>capacityRetry?.connectionLost());
  const shell=await loadShellAssets();
+ const clientDiagnosticArchive=new ClientDiagnosticArchive(path.join(stateDir,'client-diagnostics'));
  const clients=new Set(),clientById=new Map(),fileGrants=new Map(),diagnostics=new Map(),desktopMetadata=new OfficialDesktopMetadata(upstream);let bulkIdentityGeneration=0;
  native.on('interrupted',()=>{bulkIdentityGeneration++;});
  const performanceEvents=[];
@@ -88,6 +93,21 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  const store=new OfficialState(stateDir),files=fileDiagnostics.observe(new OfficialFiles({stateDir,boundary}));boundary.files=files;const git=new OfficialGit({upstream,files,send});
  const state=scope=>store.read(scope),persist=scope=>store.persist(scope);const bootstrapDefaults=new Map(),failedAtomBroadcasts=new Set(),pendingAtomWrites=new Map();
  const settings=createOfficialSettings({RpcTarget,state,persist});
+ const submissionContexts=new SubmissionContexts({identity:()=>epoch+':'+native.generation,read:async(scope,threadId)=>{
+  const ws=workspace(scope);
+  await boundary.checked(ws,threadId);
+  const [configuration,requirements,saved]=await Promise.all([boundary.call(scope,{method:'config/read',params:{includeLayers:false}}),boundary.call(scope,{method:'configRequirements/read',params:{}}),state(scope)]);
+  const global=key=>readWorkspaceGlobalState(ws,saved.globals,key);
+  const roots=global('thread-writable-roots')?.[threadId]??[];
+  return {configuration,requirements,hostPaths:{codexHome:runtimeProfile.codexHome},workspace:{roots,isProjectless:(global('projectless-thread-ids')??[]).includes(threadId),outputDirectory:global('thread-projectless-output-directories')?.[threadId]??null,workspaceRoot:global('thread-workspace-root-hints')?.[threadId]??null}};
+ }});
+ boundary.verifySubmissionContext=(scope,threadId,token)=>submissionContexts.verify(scope,threadId,token);
+ boundary.onSubmissionContextVerified=entry=>connectionLog.event({component:'front',method:'turn/start',stage:'verified',cacheHit:true,...entry});
+ boundary.readSubmissionContext=async(scope,threadId)=>{
+  const thread=await boundary.checked(workspace(scope),threadId,{fresh:true});
+  return {thread,submissionContext:await submissionContexts.issue(scope,threadId)};
+ };
+
  const queuedSendLocks=new QueuedSendLocks(journal.db),nativeQueue=new NativeQueue({boundary,journal}),nativeCache=new NativeReadCache(portableConfig?path.join(portableConfig.stateDir,'native-cache'):process.env.DSH_NATIVE_CACHE_DIR||path.join(stateDir,'native-cache'),{boundary});
  const deliverables=new Deliverables({root:path.join(stateDir,'deliverables'),files,read:(scope,method,params)=>nativeCache.read(scope,method,params,{fresh:false}),check:(scope,id)=>boundary.checked(workspace(scope),id),fileUrl:artifactFileUrl});
  let cacheEvents=Promise.resolve();native.on('notification',m=>{cacheEvents=cacheEvents.then(()=>nativeCache.observe(m)).catch(()=>{});});
@@ -96,6 +116,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  async function config(scope,origin){if(!configCache||Date.now()-configAt>60000){if(!configLoading)configLoading=(async()=>{const r=await fetch(upstream+'/codex-web-config.js');if(!r.ok)throw fail(503,'官方界面尚未就绪');const context={window:{},location:{origin}};vm.runInNewContext(await r.text(),context,{timeout:1000});configCache=context.window.__CODEX_WEB_CONFIG__;configAt=Date.now();})().finally(()=>{configLoading=null});await configLoading;}
   const s=await state(scope),c=boundary.bootstrap(scope,{...configCache,gatewayBaseUrl:origin,gatewayWsUrl:origin.replace(/^http/,'ws')+'/ws'},s.globals),settings=await boundary.config();
   const mode={'danger-full-access':'full-access','read-only':'read-only','workspace-write':'auto'}[settings.sandbox_mode];
+  nativeCache.catalog(scope).catch(()=>{});
   c.initialSidebarBootstrap.catalogEntries=nativeCache.changes(0,100,scope,'catalog').records.filter(r=>!r.deleted).map(r=>r.payload);
   c.persistedAtomSnapshot={...c.persistedAtomSnapshot,...s.atoms,'home-composer-mode-v1':'work',...(mode?{'agent-mode-by-host-id':{local:mode},'config-derived-agent-mode-by-host-id':{local:mode}}:{})};c.initialSidebarBootstrap.globalStateEntries=c.initialSidebarBootstrap.globalStateEntries.map(x=>({key:x.key,value:PROJECT_STATE_KEYS.has(x.key)||x.key==='pending_worktrees'&&!Array.isArray(s.globals[x.key])?x.value:Object.hasOwn(s.globals,x.key)?s.globals[x.key]:x.value}));
   let cachedDefaults=bootstrapDefaults.get(scope);if(!cachedDefaults||Date.now()-cachedDefaults.at>60000){const methods=['config/read','model/list','account/read','getAuthStatus','configRequirements/read','modelProvider/capabilities/read','remoteControl/status/read','collaborationMode/list','permissionProfile/list','experimentalFeature/list'];const results=await Promise.allSettled(methods.map(method=>boundary.call(scope,{method,params:method==='permissionProfile/list'?{cwd:workspace(scope).root}:{} })));cachedDefaults={at:Date.now(),values:Object.fromEntries(results.flatMap((r,i)=>r.status==='fulfilled'?[[methods[i],r.value]]:[]))};bootstrapDefaults.set(scope,cachedDefaults);}
@@ -103,7 +124,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   nativeCache.put(scope,'bootstrap','bootstrap','',{config:readOnly});return {...c,dshReadDefaults:readOnly.dshReadDefaults,dshNativeInitialization:readOnly.dshNativeInitialization,dshSettings:readOnly.dshSettings};}
  function send(ws,m){if(ws.resumeId)return pageSessions.send(ws,m);if(ws.readyState!==1)return false;if(ws.bufferedAmount>32*1024*1024){ws.close(1013,'请重新连接并核对快照');return false;}ws.send(JSON.stringify(m));return true;}
  function emit(ws,payload){return send(ws,{channel:CHANNEL,payload,dshEpoch:epoch,dshSeq:sequence[ws.scope]});}
- function rpcResponse(ws,request,value,error){const context=rpcDiagnosticContext({id:request?.id,method:request?.method,params:request?.params,scope:ws?.scope,connectionId:ws?.connectionId,pageId:ws?.diagnosticPageId});connectionLog.event({component:'front',stage:error?'failed':'received',...context,...(error?errorDiagnosticFields(error):{})});if(error){const reasons=[['运行工作区','runtime_workspace'],['权限配置','permission_profile'],['沙箱策略','sandbox_policy'],['执行策略','approval_policy'],['不允许覆写','config_override'],['模型提供方','model_provider']];trace(ws.scope,'rejected',reasons.find(([text])=>error.message?.includes(text))?.[1]||'other');}emit(ws,{type:'mcp-response',hostId:'local',message:{id:request.id,...(error?{error:errorShape(error)}:{result:value})}});}
+ function rpcResponse(ws,request,value,error){const context=rpcDiagnosticContext({id:request?.id,method:request?.method,params:request?.params,ipcKind:'mcp-request',hostMethod:request?.method,scope:ws?.scope,connectionId:ws?.connectionId,pageId:ws?.diagnosticPageId});connectionLog.event({component:'front',stage:error?'failed':'received',...context,...(error?errorDiagnosticFields(error):{})});if(error){const reasons=[['运行工作区','runtime_workspace'],['权限配置','permission_profile'],['沙箱策略','sandbox_policy'],['执行策略','approval_policy'],['不允许覆写','config_override'],['模型提供方','model_provider']];trace(ws.scope,'rejected',reasons.find(([text])=>error.message?.includes(text))?.[1]||'other');}emit(ws,{type:'mcp-response',hostId:'local',message:{id:request.id,...(error?{error:errorShape(error)}:{result:value})}});}
  function notifyClientStatus(ws,payload){
   // Peers may expose partial services or disappear while a socket is closing.
   // Catch synchronous lookup/call errors as well as rejected remote calls.
@@ -143,8 +164,8 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    if(p.type==='thread-prewarm-start'){for(const key of Object.keys(p.request?.params?.config||{}))trace(scope,'native-config',key);}
    if(p.hostId&&p.hostId!=='local')throw fail(403,'远程宿主不属于当前工作区');
    // 保持官方“IPC ACK + 异步 mcp-response”的协议，浏览器断开不取消已接受执行。
-   const rpcContext=rpcDiagnosticContext({id:p.request?.id,method:p.request?.method,params:p.request?.params,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});connectionLog.event({component:'front',stage:'dispatch',...rpcContext});
-   const operation=['fs/createDirectory','fs/writeFile','fs/remove'].includes(p.request?.method)?files.nativeAttachmentRequest(scope,p.request.method,p.request.params||{}):boundary.call(scope,p.request,{clientId:client.stableId,pageId:client.diagnosticPageId,connectionId:client.connectionId});
+   const rpcContext=rpcDiagnosticContext({id:p.request?.id,method:p.request?.method,params:p.request?.params,ipcKind:'mcp-request',hostMethod:p.request?.method,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});connectionLog.event({component:'front',stage:'dispatch',...rpcContext});
+   const operation=p.request?.method==='fs/readFile'?files.nativeReadFile(scope,p.request.params||{}):['fs/createDirectory','fs/writeFile','fs/remove'].includes(p.request?.method)?files.nativeAttachmentRequest(scope,p.request.method,p.request.params||{}):boundary.call(scope,p.request,{clientId:client.stableId,pageId:client.diagnosticPageId,connectionId:client.connectionId});
    operation.then(v=>rpcResponse(client,p.request,v),e=>rpcResponse(client,p.request,null,e));return null;
   }
   if(channel==='codex_desktop:message-from-view'&&p.type==='mcp-response'){await boundary.answer(scope,p.message||p.response||p);return null;}
@@ -153,7 +174,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   // is used by the official send precheck even for an ordinary workspace.
   const hostMethod=p.type==='fetch'?String(p.url||'').replace(/^vscode:\/\/codex\//,''):null;
   if(channel==='codex_desktop:message-from-view'&&['codex-home','home-directory','locale-info','worktree-shell-environment-config'].includes(hostMethod)){
-   const started=performance.now(),context=rpcDiagnosticContext({id:p.requestId,method:hostMethod,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});
+   const started=performance.now(),context=rpcDiagnosticContext({id:p.requestId,method:hostMethod,ipcKind:'fetch',hostMethod,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});
    connectionLog.event({component:'front',stage:'dispatch',...context});
    try{
     const input=typeof p.body==='string'?JSON.parse(p.body):p.body||{},params=input.params||input;
@@ -203,7 +224,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   }
   if(p.type==='shared-object-subscribe'){const c=await config(scope,client.origin);emit(client,{type:'shared-object-updated',key:p.key||p.objectId,value:c.sharedObjectSnapshot[p.key||p.objectId]});return null;}
   if(p.type==='fetch'){
-   const started=performance.now(),context=rpcDiagnosticContext({id:p.requestId,method:hostMethod,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});
+   const started=performance.now(),context=rpcDiagnosticContext({id:p.requestId,method:hostMethod,ipcKind:'fetch',hostMethod,scope,connectionId:client.connectionId,pageId:client.diagnosticPageId});
    connectionLog.event({component:'front',stage:'dispatch',...context});
    try{
    const method=String(p.url||'').replace(/^vscode:\/\/codex\//,'');let input={};try{input=typeof p.body==='string'?JSON.parse(p.body):p.body||{};}catch{}const a=input.params||input;let value;
@@ -226,6 +247,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    else if(method==='git-origins')value={origins:{}};
    else if(method==='ide-context')value=null;
    else if(['account-info','os-info','codex-command-keymap-state'].includes(method))value=await desktopMetadata.read(method);
+   else if(method==='global-dictation-hotkey-state'){if(a.hostId&&a.hostId!=='local')throw fail(403,'宿主不属于当前工作区');value={supported:false,configuredHotkey:null,configuredToggleHotkey:null};}
    else if(method==='workspace-root-options')value=(await config(scope,client.origin)).initialSidebarBootstrap.workspaceRootOptions;
    else if(method==='list-pinned-threads'){const threadIds=[],seen=new Set();let cursor;for(let page=0;page<64;page++){const r=await boundary.call(scope,{method:'thread/list',params:{sectionId:'01984de2-8f74-7c91-a3b2-5c5e937cf318',sortKey:'section_position',sortDirection:'asc',cursor}});threadIds.push(...(r.data||[]).map(t=>t.id));cursor=r.nextCursor;if(!cursor)break;if(seen.has(cursor))throw fail(503,'置顶分页异常');seen.add(cursor);}value={threadIds,serverOrderedThreadIds:threadIds};}
    else if(method==='set-thread-pinned'||method==='set-pinned-threads-order'){
@@ -241,10 +263,10 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    else if(method==='developer-instructions'){if(a.cwd&&!await belongs(a.cwd,workspace(scope)))throw fail(403,'工作目录超出当前工作区');value={instructions:typeof a.baseInstructions==='string'?a.baseInstructions:''};}
    else if(method==='ensure-directory')value=await ensureScopedDirectory(scope,a.path);
    else if(['set-remote-control-connections-enabled','set-remote-wsl-connections-enabled'].includes(method))value={enabled:false};
-   else throw fail(403,'此桌面请求尚未开放');
+   else throw Object.assign(fail(403,'此桌面请求尚未开放'),{diagnosticPolicyReason:'desktop_request_unmapped'});
    connectionLog.event({component:'front',stage:'received',...context,durationMs:Math.round(performance.now()-started)});
    emit(client,{type:'fetch-response',requestId:p.requestId,responseType:'success',status:200,headers:{'content-type':'application/json'},bodyJsonString:JSON.stringify(value)});
-   }catch(e){connectionLog.event({component:'front',stage:'failed',...context,durationMs:Math.round(performance.now()-started),...errorDiagnosticFields(e)});emit(client,{type:'fetch-response',requestId:p.requestId,responseType:'error',status:statusOf(e),error:e.code?e.message:'官方请求暂不可用'});}
+   }catch(e){connectionLog.event({component:'front',stage:'failed',...context,durationMs:Math.round(performance.now()-started),...errorDiagnosticFields(e),...statusOf(e)===403&&!e.diagnosticPolicyReason&&['read-file','read-file-binary','read-file-metadata','workspace-directory-entries'].includes(hostMethod)?{policyReason:'file_request_denied'}:{}});emit(client,{type:'fetch-response',requestId:p.requestId,responseType:'error',status:statusOf(e),error:e.code?e.message:'官方请求暂不可用'});}
    return null;
   }
   if(p.type==='ready'||p.type==='view-ready'){emitInitialization(client);return null;}
@@ -272,7 +294,10 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  }
  const boundPort=()=>server.address()?.port??port;
  const allowedOrigins=()=>[runtimeProfile.origin,`http://127.0.0.1:${boundPort()}`,`http://localhost:${boundPort()}`,...(publicOrigin?[publicOrigin]:[])];
+ const controlLog=createControlPathLog(path.join(stateDir,'control-path.jsonl'));
+ const controlTiming=createControlPathTiming({component:'front',emit:value=>controlLog.event(value)});
  const server=http.createServer(async(req,res)=>{try{
+  controlTiming.observe(req,res);
   const host=req.headers.host||'',origin=allowedOrigins().find(value=>new URL(value).host===host);if(!origin)throw fail(403,'Host不受信任');
   if(req.method==='GET'&&req.url==='/'){res.writeHead(303,{location:'/?workspace=ai','cache-control':'no-store'});return res.end();}
   const safeNavigation=isWorkspaceNavigation(req);
@@ -291,7 +316,8 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   if(route==='/readyz'){
    if(req.method!=='GET')return json(res,405,{ready:false});
    const controller=new AbortController(),cancel=()=>controller.abort();req.once('aborted',cancel);res.once('close',cancel);
-   try{const ready=await officialReady({native,upstream,signal:controller.signal,portable:!!portableConfig});if(!res.destroyed)json(res,ready?200:503,{ready});}
+   const healthStarted=performance.now();
+   try{const ready=await officialReady({native,upstream,signal:controller.signal,portable:!!portableConfig});const durationMs=Math.round(performance.now()-healthStarted);if(!ready||durationMs>=1000||Math.random()<1/16)controlLog.event({component:'front',stage:ready?'committed':'failed',reason:'health_timing',durationMs});if(!res.destroyed)json(res,ready?200:503,{ready});}
    finally{req.off('aborted',cancel);res.off('close',cancel);}return;
   }
   if(route==='/healthz')return json(res,200,{status:'ok',service:'official-codex-front',version:'1.0.0',epoch,...await boundary.hostActivity(),nativeState:native.state,officialUpstream:upstream});
@@ -316,6 +342,14 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
   if(route==='/codex-web-config.js'){const scope=u.searchParams.get('workspace'),ws=authorized(req,scope,u);const c=await config(ws.id,origin);c.gatewayWsUrl+='?scopeToken='+encodeURIComponent(u.searchParams.get('scopeToken'));return await textResponses.send(req,res,'window.__CODEX_WEB_CONFIG__='+JSON.stringify(c)+';',{'content-type':'text/javascript','cache-control':'no-store'});}
   const scoped=route.match(/^\/w\/(ai|zyy)(\/.*)$/);
   if(scoped){const scope=scoped[1],endpoint=scoped[2],grantMatch=endpoint.match(/^\/api\/local-file\/([A-Za-z0-9_-]{32})\/[^/]+$/);if(grantMatch&&['GET','HEAD'].includes(req.method))return await serveGrantedFile(scope,grantMatch[1],req,res);const ws=authorized(req,scope,u);
+   if(endpoint==='/api/page-reply'&&req.method==='GET'){
+    const page=clientById.get(scope+':'+req.headers['x-dsh-page-id']),wire=page?.wire;
+    if(!page||page.expired||wire?.readyState!==1||page.resumeId!==req.headers['x-dsh-page-resume']||page.stableId!==req.headers['x-dsh-client-id']||page.connectionId!==req.headers['x-dsh-connection-id']||req.headers['x-dsh-front-epoch']!==epoch)throw fail(409,'读取连接已更换，请重新读取');
+    let value;try{value=pageSessions.largeReply(page,u.searchParams.get('stream'),Number(u.searchParams.get('seq')));}catch{throw fail(404,'此页面回应已确认或已失效');}
+    // Compress before crossing the host tunnel, just like bulk reads. The
+    // page-bound reply remains transient and keeps its original sequence.
+    return await textResponses.send(req,res,value,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-dsh-front-epoch':epoch});
+   }
    if(endpoint.startsWith('/api/phone-code/')){if(!phoneCodes||scope!=='ai')throw fail(403,'phone_code_scope_denied');return await phoneCodes.phone(req,res,endpoint.slice('/api/phone-code/'.length));}
    if(req.method==='GET'&&(endpoint==='/api/projects'||/^\/api\/projects\/[a-z0-9-]+$/.test(endpoint)))return json(res,200,await projectData(scope,endpoint.split('/')[3]));
    if(endpoint==='/api/projects/comfyui-video/material-feedback'&&req.method==='POST'){const b=await body(req);return json(res,200,await projectMaterialFeedback(scope,'comfyui-video',b));}
@@ -361,7 +395,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
     if(method==='thread/goal/get'&&(!only(['threadId'])||typeof params.threadId!=='string'||!params.threadId))throw fail(403,'此通道只读取当前会话目标');
     if(method==='thread/turns/list'&&(!only(['threadId','limit','sortDirection','itemsView','cursor'])||params.limit!==1||params.sortDirection!=='desc'||params.itemsView!=='notLoaded'||params.cursor!=null))throw fail(403,'此通道只读取当前轮次身份');
     if(method==='config/read'&&(!only(['cwd','includeLayers'])||params.includeLayers!=null&&typeof params.includeLayers!=='boolean'))throw fail(403,'执行配置读取参数无效');
-    if(method==='configRequirements/read'&&!only([]))throw fail(403,'执行约束读取参数无效');
+     if(method==='configRequirements/read'&&!only([]))throw fail(403,'执行约束读取参数无效');
     const page=clientById.get(scope+':'+req.headers['x-dsh-page-id']),wire=page?.wire,nativeGeneration=native.generation,identityGeneration=bulkIdentityGeneration;
     const current=()=>page&&!page.expired&&clientById.get(scope+':'+page.pageId)===page&&page.wire===wire&&wire?.readyState===1&&page.resumeId===req.headers['x-dsh-page-resume']&&page.stableId===req.headers['x-dsh-client-id']&&page.connectionId===req.headers['x-dsh-connection-id']&&req.headers['x-dsh-front-epoch']===epoch&&String(nativeGeneration)===req.headers['x-dsh-native-generation']&&native.state==='ready'&&native.generation===nativeGeneration&&bulkIdentityGeneration===identityGeneration;
     if(!current())throw fail(409,'读取连接已更换，请重新读取');
@@ -392,7 +426,7 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
    if(endpoint==='/api/auth/status')return json(res,200,{authenticated:true,passwordRequired:false});
    if(endpoint==='/api/ipc/invoke'&&req.method==='POST'){const b=await body(req),client=clientById.get(scope+':'+b.clientId);if(!client&&!BOOTSTRAP_READS.has(b.channel))throw fail(409,'请先连接事件通道');return json(res,200,{ok:true,value:await invoke(scope,b,client||{origin,stableId:'bootstrap-read'})});}
    if(endpoint==='/api/sync'){await native.start();return json(res,200,{epoch,seq:sequence[scope],...await boundary.snapshot(scope)});}
-   if(endpoint==='/api/performance'&&req.method==='POST'){const b=await body(req);for(const entry of safePerformanceEvents(b.events))performanceEvents.push({scope,at:new Date().toISOString(),...entry});if(performanceEvents.length>300)performanceEvents.splice(0,performanceEvents.length-300);return json(res,200,{received:true});}
+   if(endpoint==='/api/performance'&&req.method==='POST'){const b=await body(req),entries=safePerformanceEvents(b.events);let acknowledgedEventIds;try{acknowledgedEventIds=await clientDiagnosticArchive.append(scope,entries);}catch{throw fail(503,'诊断记录暂未保存，请稍后重试');}for(const entry of entries)performanceEvents.push({scope,at:new Date().toISOString(),...entry});if(performanceEvents.length>300)performanceEvents.splice(0,performanceEvents.length-300);return json(res,200,{received:true,acknowledgedEventIds});}
    if(endpoint==='/api/diagnostics')return json(res,200,{counts:Object.fromEntries([...diagnostics].filter(([key])=>key.startsWith(scope+':'))),fileOperations:fileDiagnostics.snapshot(scope),historyReads:historyReads.filter(e=>e.scope===scope),historyUpgrades:historyUpgrades.filter(e=>e.scope===scope),performance:performanceEvents.filter(e=>e.scope===scope),nativeVersion:nativeVersion(native.initialization)});
    if(endpoint==='/api/request'&&req.method==='POST'){const b=await body(req);return json(res,200,await boundary.call(scope,b.request,{clientId:b.clientId}));}
    throw fail(403,'文件、插件配置及此接口暂未开放');
@@ -451,18 +485,20 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
      const stableId=typeof m.dshClientId==='string'&&m.dshClientId.length<=160?m.dshClientId:m.clientId;
      let resumed=false;
      if(m.dshProtocol===PAGE_RESUME_PROTOCOL){
-      try{({session:ws,resumed}=pageSessions.attach(wire,{scope,pageId:m.clientId,stableId,origin:ws.origin,resumeId:m.dshResumeId,ack:m.dshAck??0,replyProtocol:m.dshReplyProtocol,replyAck:m.dshReplyAck}));}
+      try{({session:ws,resumed}=pageSessions.attach(wire,{scope,pageId:m.clientId,stableId,origin:ws.origin,resumeId:m.dshResumeId,ack:m.dshAck??0,replyProtocol:m.dshReplyProtocol,replyAck:m.dshReplyAck,largeReplyProtocol:m.dshLargeReplyProtocol}));}
       catch(error){const reason=['page_resume_unavailable','page_ack_invalid','page_session_limit'].includes(error?.message)?error.message:'page_resume_unavailable';wireDiagnostic('rejected',{reason});wire.send(JSON.stringify({type:'dsh:resume-unavailable',reason}));wire.close(4009,reason);return;}
    }else{ws.pageId=m.clientId;ws.stableId=stableId;}
      ws.connectionId=connectionId;ws.diagnosticPageId=u.searchParams.get('dshDiagPage');
      handshaken=true;wireDiagnostic('hello',{resumed,durationMs:Date.now()-startedAt});if(resumed)ws.needsCatchup=false;clients.add(ws);clientById.set(scope+':'+ws.pageId,ws);
-      const ack={type:'hello-ack',clientId:m.clientId,...(ws.resumeId?{dshProtocol:PAGE_RESUME_PROTOCOL,dshResumeId:ws.resumeId,dshResumed:resumed,dshReceivedSeq:ws.receivedSeq,dshBulkReadProtocol:BULK_READ_PROTOCOL,dshAttachmentUploadProtocol:ATTACHMENT_UPLOAD_PROTOCOL,dshIsolatedReadMethods:[...BULK_READ_METHODS],dshEpoch:epoch,dshNativeGeneration:native.generation,dshNativeConnected:native.state==='ready',...(ws.replyProtocol?{dshReplyProtocol:REPLY_STREAM_PROTOCOL,dshReplySnapshotSeq:ws.replies.rpc.sentSeq}:{})}:{})};
+      const ack={type:'hello-ack',clientId:m.clientId,...(ws.resumeId?{dshProtocol:PAGE_RESUME_PROTOCOL,dshResumeId:ws.resumeId,dshResumed:resumed,dshReceivedSeq:ws.receivedSeq,dshBulkReadProtocol:BULK_READ_PROTOCOL,dshExecutionMetadataProtocol:EXECUTION_METADATA_PROTOCOL,dshSubmissionContextProtocol:SUBMISSION_CONTEXT_PROTOCOL,dshAttachmentUploadProtocol:ATTACHMENT_UPLOAD_PROTOCOL,dshIsolatedReadMethods:[...BULK_READ_METHODS],dshEpoch:epoch,dshNativeGeneration:native.generation,dshNativeConnected:native.state==='ready',...(ws.replyProtocol?{dshReplyProtocol:REPLY_STREAM_PROTOCOL,dshReplySnapshotSeq:ws.replies.rpc.sentSeq}:{})}:{})};
+     if(ws.largeReplyProtocol)ack.dshLargeReplyProtocol=LARGE_REPLY_PROTOCOL;
      if(ws.resumeId){pageSessions.control(ws,ack);pageSessions.replay(ws);}else send(ws,ack);
      await syncClient(ws,{recover:resumed});return;
     }
     if(!handshaken)throw fail(403,'hello required');
     if(ws.resumeId){
      if(ws.wire!==wire)return;
+     if(m.type==='dsh:execution-metadata-read'){await readExecutionMetadata({message:m,page:ws,wire,epoch,native,boundary,pages:pageSessions,identityGeneration:()=>bulkIdentityGeneration,log:entry=>connectionLog.event(entry)});return;}
      if(m.type==='dsh:reply-ack'){if(!ws.replyProtocol)throw fail(400,'未协商回应通道');pageSessions.acknowledgeReply(ws,m.stream,m.seq);return;}
      if(m.type==='dsh:ack'){pageSessions.acknowledge(ws,m.seq);if(ws.needsCatchup&&!ws.catchingUp&&ws.bytes<1024*1024){ws.needsCatchup=false;ws.catchingUp=syncClient(ws,{recover:true}).catch(()=>{ws.needsCatchup=true;}).finally(()=>{ws.catchingUp=null;});}return;}
      if(m.type!=='dsh:ping'&&m.type!=='dsh:sync'){
@@ -486,6 +522,6 @@ export async function createOfficialFront({port=3084,upstream=runtimeProfile.ups
  native.on('interrupted',()=>{eventDispatcher.barrier();connectionLog.event({component:'front',stage:'closed',reason:'native_disconnected'});reconnecting=true;for(const ws of clients){ws.ownedThreads?.clear();emit(ws,{type:'codex-app-server-connection-changed',hostId:'local',state:'disconnected',transport:'websocket',isSnapshot:false});send(ws,{type:'dsh:sync-state',epoch,seq:sequence[ws.scope],hostState:'disconnected'});}});
  native.on('ready',()=>{connectionLog.event({component:'front',stage:'ready',reason:'native_ready'});if(!reconnecting)return;reconnecting=false;for(const ws of clients)if(ws.pageId){emitInitialization(ws,{isSnapshot:false});syncClient(ws).catch(()=>{});}});
  await native.start();
- return {server,boundary,native,journal,async close(){phoneCodes?.close();capacityRetry?.close();eventDispatcher.barrier();pageSessions.close();for(const ws of clients)ws.close();wss.close();await new Promise(r=>server.close(r));await Promise.allSettled([...boundary.historyPreparations.values()].map(r=>r.promise));native.close();await store.flush();await cacheEvents;nativeCache.close();journal.close();connectionLog.event({component:'front',stage:'stopped',reason:'shutdown'});await connectionLog.close();}};
+ return {server,boundary,native,journal,async close(){controlTiming.close();phoneCodes?.close();capacityRetry?.close();eventDispatcher.barrier();pageSessions.close();for(const ws of clients)ws.close();wss.close();await new Promise(r=>server.close(r));await Promise.allSettled([...boundary.historyPreparations.values()].map(r=>r.promise));native.close();await store.flush();await cacheEvents;nativeCache.close();journal.close();connectionLog.event({component:'front',stage:'stopped',reason:'shutdown'});await Promise.all([connectionLog.close(),controlLog.close()]);}};
 }
 if(process.argv[1]&&fileURLToPath(import.meta.url)===path.resolve(process.argv[1])){const port=Number(process.env.PORT||3084),front=await createOfficialFront({port,stateDir:process.env.DSH_OFFICIAL_STATE_DIR,publicOrigin:process.env.DSH_OFFICIAL_PUBLIC_ORIGIN||null});front.server.listen(port,'127.0.0.1',()=>console.log(JSON.stringify({service:'official-codex-front',port,pid:process.pid})));for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{await front.close();process.exit(0);});}

@@ -1,3 +1,19 @@
+# Current main: October 15 source synchronization
+
+[Change scope and remaining limitations](updates/2026-10-15.md). This is a source sync; existing beta.9 download assets and version numbers remain unchanged. Historical sections below are not current device acceptance.
+
+- Generated renderer: **328 passed, zero failures/skips**, using locally generated UI `b3f422d8548a940b`. All 202 resources and 471 dependency edges verified; 27,826,821 bytes. This exercises actual generated SDK callbacks with isolated protocol fixtures and sends no real model turns.
+- Core: **248 passed, 42 explicit SDK-required skips**, zero failures. The separate renderer run supplies generated resources; a missing historical SDK is not fabricated.
+- Added synchronization regressions: **106 passed, three explicit SDK/replay skips**, zero failures. Covers control timing and isolation, request receipts, queue recovery, completion handoff, diagnostic privacy/retention and scoped file roots. The Front integration uses an adopter-owned IPC codec and a mock Native endpoint.
+- Host/configuration contracts: **13 passed**. Go relay: full `go test ./...` passed.
+- Android JVM/Robolectric: **274 tests, zero failures/errors, two conditional skips** (externally supplied UI package and cross-language process export). The update-package regression executes the actual manifest checker against accepted and rejected application IDs. No Android emulator or physical phone was used in this source-sync task.
+
+The Android test harness keeps database/native-runtime cases on its existing SDK 28 fixture; mixing its process-wide native loader with a newly introduced SDK 34 database test caused a test-runtime failure, corrected before the final full run. Initial failing runs are not counted as passing evidence. A separate debug APK build then passed with this exact generated UI: both APK manifest-verifier tests passed, and all 202 packaged UI resource hashes matched. The debug APK stays local and is not a release artifact. Source synchronization also exposed and repaired public package-ID validation and retirement of preparation listeners. Natural reconnect latency, signed-in public end-to-end sends, physical-phone thermal/power and production OTA adoption remain outside these checks.
+
+Reproduction commands are in the [sync note](updates/2026-10-15.md) and below. Official renderer assets stay local, outside the published tree.
+
+---
+
 # Validation · v0.2.0-beta.9
 
 Beta.9 adds Android native UI-asset stage diagnostics and foreground manual-update feedback. The original refresh trace now records header/body/verification/storage phases, manifest digest prefix, bytes and fixed failure classes. The actual durable sanitizer retains existing privacy rules: no URL, response body, cookie, prompt or raw error text. A failed diagnostic sink cannot alter the original download result or cleanup. Manual taps show busy/latest/ready/failure feedback; automatic and background completion stay silent. Original timeout/retry/cache, CAS slot and reload/adoption rules are unchanged.

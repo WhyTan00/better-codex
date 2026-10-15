@@ -280,7 +280,8 @@ public final class MainActivity extends Activity {
         },15_000L);
         diagnosticEvent(scope, "android-app", "started", "activity_create", launchRequest.traceId, null, null,
                 -1L, null, null, null, -1);
-        updateNativeStatusControls(scope, SyncForegroundService.statusSnapshot(this, scope));
+        // The Web-only layout has no native status bar. Its bridge and status
+        // receiver supply current state without opening SQLite on first paint.
         if (getIntent().getBooleanExtra("open_background_settings", false)) uiHandler.post(this::showNativeSettings);
     }
 
@@ -294,8 +295,11 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
             Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             boolean ime=insets.isVisible(WindowInsetsCompat.Type.ime());int imeHeight=insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            // Edge-to-edge Android does not resize this root automatically.
+            // Give WebView the unobscured area so its DOM composer remains
+            // above the IME; native panning must not hide the input or header.
+            view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom,ime?imeHeight:0));
             if(webView!=null)webView.post(()->{
                 if(webView==null)return;
                 webView.evaluateJavascript("window.__DSH_ANDROID_INPUT__?.insets?.("+ime+","+imeHeight+")",null);
@@ -520,7 +524,7 @@ public final class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
                 if (!DshConfig.isDshUri(request.getUrl()) || !"GET".equals(request.getMethod())) return null;
-                WebResourceResponse cached=DeliverableCache.get(MainActivity.this).intercept(request.getUrl(),scope,request.getRequestHeaders().get("Range"),hasDshCookie());
+                WebResourceResponse cached=DeliverableCache.isLocalResource(request.getUrl())?DeliverableCache.get(MainActivity.this).intercept(request.getUrl(),scope,request.getRequestHeaders().get("Range"),hasDshCookie()):null;
                 if(cached!=null)return cached;
                 UiReleaseStore.LocalResource resource = uiReleaseStore.localResource(request.getUrl().getPath(), pageRelease);
                 if (resource == null) return null;
@@ -1813,7 +1817,7 @@ public final class MainActivity extends Activity {
             Uri url = request.getUrl();
             if (!request.isForMainFrame() && !DshConfig.isDshUri(url)) return super.shouldInterceptRequest(view, request);
             if (!DshConfig.isDshUri(url) || !"GET".equalsIgnoreCase(request.getMethod())) return super.shouldInterceptRequest(view, request);
-            WebResourceResponse cached=DeliverableCache.get(MainActivity.this).intercept(url,scope,request.getRequestHeaders().get("Range"),hasDshCookie());
+            WebResourceResponse cached=DeliverableCache.isLocalResource(url)?DeliverableCache.get(MainActivity.this).intercept(url,scope,request.getRequestHeaders().get("Range"),hasDshCookie()):null;
             if(cached!=null)return cached;
             if (request.isForMainFrame() && isPinnedShellRoute(url) && hasDshCookie()) {
                 UiReleaseStore.LocalResource shell = uiReleaseStore.localResource(pageRelease == null ? null : pageRelease.shellPath, pageRelease);

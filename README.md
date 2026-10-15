@@ -1,5 +1,7 @@
 # Better Codex
 
+**Latest source update (October 15):** send/control isolation, completion and local-history recovery, Android lifecycle fixes, PDF support and bounded diagnostics. [Changes and remaining limitations](docs/updates/2026-10-15.md). This updates `main`; downloadable beta.9 artifacts are unchanged.
+
 [中文](README.zh-CN.md) · [Install](docs/open-source-setup.md) · [Project plugins](docs/plugins.md) · [Validation](docs/portable-validation.md)
 
 **Your native Codex, with a workbench shaped around your projects.**

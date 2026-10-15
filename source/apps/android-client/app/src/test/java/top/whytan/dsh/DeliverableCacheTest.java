@@ -35,4 +35,18 @@ public class DeliverableCacheTest {
         context.getSharedPreferences("sync-control",Context.MODE_PRIVATE).edit().putBoolean("enabled:ai",false).commit();DeliverableJobService.schedule(context,"ai");
         assertNull(context.getSystemService(android.app.job.JobScheduler.class).getPendingJob(48101));
     }
+    @Test public void blockedCacheDoesNotHoldNetworkAndControlRequests()throws Exception{
+        java.util.concurrent.ExecutorService workers=java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.concurrent.CountDownLatch held=new java.util.concurrent.CountDownLatch(1),release=new java.util.concurrent.CountDownLatch(1);
+        workers.submit(()->{synchronized(cache){held.countDown();try{release.await();}catch(InterruptedException e){Thread.currentThread().interrupt();}}});
+        assertTrue(held.await(2,java.util.concurrent.TimeUnit.SECONDS));
+        try{
+            for(String path:new String[]{"/w/ai/api/bulk-read","/w/ai/api/page-reply","/dsh-scope-session"}){
+                Uri uri=Uri.parse(DshConfig.ORIGIN+path);assertFalse(DeliverableCache.isLocalResource(uri));
+                assertNull(workers.submit(()->cache.intercept(uri,"ai",null,true)).get(500,java.util.concurrent.TimeUnit.MILLISECONDS));
+            }
+            assertTrue(DeliverableCache.isLocalResource(Uri.parse(DshConfig.ORIGIN+"/__dsh_deliverables/ai/invalid/file")));
+        }finally{release.countDown();workers.shutdownNow();assertTrue(workers.awaitTermination(3,java.util.concurrent.TimeUnit.SECONDS));}
+    }
+
 }

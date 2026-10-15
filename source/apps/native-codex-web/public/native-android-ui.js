@@ -175,10 +175,14 @@
    // DOM row, a receipt, and an in-memory notification are not that commit.
    const cache=window.__DSH_NATIVE_CACHE__;
    if(accepted.length&&typeof cache?.meta==='function'){
-    const [saved,generation,locked,head]=await Promise.all([cache.meta('confirmed-user-items-v1:'+threadId,{timeoutMs:80}),cache.meta('catalog-generation',{timeoutMs:80}),cache.meta('auth-locked',{timeoutMs:80}),typeof cache.get==='function'&&typeof cache.readKey==='function'?cache.get(cache.readKey('thread/read',{threadId,includeTurns:false}),{touch:false}):null]);
+    const [saved,generation,locked,head,display]=await Promise.all([cache.meta('confirmed-user-items-v1:'+threadId,{timeoutMs:80}),cache.meta('catalog-generation',{timeoutMs:80}),cache.meta('auth-locked',{timeoutMs:80}),typeof cache.get==='function'&&typeof cache.readKey==='function'?cache.get(cache.readKey('thread/read',{threadId,includeTurns:false}),{touch:false}):null,window.__DSH_READ_COMMITTED_HISTORY__?.(threadId,{touch:false,preferSummary:true})]);
     if(authEpoch!==pendingAuthEpoch||pendingAuthLocked||historyEpoch!==(pendingHistoryEpochs.get(threadId)||0))return;if(!locked&&saved?.scope===scope.id&&saved.threadId===threadId&&saved.sourceGeneration===generation&&typeof saved.generation==='string'&&saved.generation.length>0&&head?.scope===scope.id&&!head.deleted&&head.sourceGeneration===saved.sourceGeneration&&head.generation===saved.generation&&head.payload?.result?.thread?.id===threadId){
      const ids=new Set((saved.turns||[]).flatMap(turn=>(turn.items||[]).filter(item=>item.type==='userMessage'&&typeof item.id==='string'&&item.id.length>0&&Array.isArray(item.content)).flatMap(item=>[item.id,item.clientId].filter(Boolean))));
-     for(const record of accepted)if(ids.has(record.id)||record.messageId&&ids.has(record.messageId)){record.historySaved=true;const live=pendingPrompts.get(record.id)?.record;if(live)live.historySaved=true;acceptedDisplays.delete(record.id);}
+     // A durable item ledger alone cannot render a turn absent from the local
+     // history index. Keep the accepted intent until the actual cold-read
+     // projection can recover that same Native input without a network read.
+     const recoverable=new Set(display?.response?.thread?.id===threadId&&display.sourceGeneration===saved.sourceGeneration&&display.generation===saved.generation?(display.page?.data||[]).flatMap(turn=>(turn.items||[]).filter(item=>item.type==='userMessage').flatMap(item=>[item.id,item.clientId].filter(Boolean))):[]);
+     for(const record of accepted)if((ids.has(record.id)&&recoverable.has(record.id))||(record.messageId&&ids.has(record.messageId)&&recoverable.has(record.messageId))){record.historySaved=true;const live=pendingPrompts.get(record.id)?.record;if(live)live.historySaved=true;acceptedDisplays.delete(record.id);}
      persistPending();
     }
    }
@@ -195,7 +199,15 @@
  function putPending(record){if(record.state==='sending'||record.state==='preparing'){followingPrompt=record;tailFinal=false;}const entry={record,row:null,badge:null};pendingPrompts.set(record.id,entry);cancelAnimationFrame(pendingFrame);renderPending();entry.persisted=persistPending();return entry;}
  // Render the accepted local intent before any configuration/upload/network wait.
  const capturedComposers=new WeakMap(),failedComposerDrafts=new WeakMap();
- window.__DSH_ANDROID_PENDING__={bindThread(clientThreadId,threadId){if(!/^[0-9a-f-]{36}$/i.test(threadId)||!clientThreadId)return;let changed=false;for(const {record}of pendingPrompts.values())if(record.threadId==null&&record.clientThreadId===clientThreadId){record.threadId=threadId;changed=true;}if(changed){persistPending();schedulePending();}},capture(value){
+ // Only the exact in-flight command's Native receipt may advance this row.
+ // Keep the composer retention/ownership callbacks on their original path.
+ const acceptPendingNativeReceipt=receipt=>{
+  if(pendingAuthLocked||!receipt||!['threadId','traceId','turnId'].every(key=>typeof receipt[key]==='string'&&/^[0-9a-f-]{36}$/i.test(receipt[key])))return false;
+  const entry=pendingPrompts.get(receipt.traceId),record=entry?.record;
+  if(!record||record.threadId!==receipt.threadId||!['preparing','sending','unknown'].includes(record.state)||record.userHistoryEpoch!==(pendingHistoryEpochs.get(record.threadId)||0)||typeof entry.acceptNative!=='function')return false;
+  entry.acceptNative({threadId:receipt.threadId,turnId:receipt.turnId});return true;
+ };
+ window.__DSH_ANDROID_PENDING__={acceptNativeReceipt:acceptPendingNativeReceipt,bindThread(clientThreadId,threadId){if(!/^[0-9a-f-]{36}$/i.test(threadId)||!clientThreadId)return;let changed=false;for(const {record}of pendingPrompts.values())if(record.threadId==null&&record.clientThreadId===clientThreadId){record.threadId=threadId;changed=true;}if(changed){persistPending();schedulePending();}},capture(value){
   const controller=value.controller,editor=controller?.view?.dom;if(!controller||!editor||capturedComposers.has(controller)||typeof value.text!=='string')return null;
   const retained=value.retain();if(typeof retained!=='function')return null;
   const previous=failedComposerDrafts.get(controller);failedComposerDrafts.delete(controller);
@@ -215,6 +227,7 @@
  },begin(value){
   const record={...value,id:value.id||crypto.randomUUID(),threadId:Object.hasOwn(value,'threadId')?value.threadId:currentThread(),path:location.pathname,at:Date.now(),userHistoryEpoch:pendingHistoryEpochs.get(value.threadId||value.clientThreadId||currentThread())||0,state:value.state==='preparing'?'preparing':'sending'},entry=putPending(record);if(!pendingMirrorPersisted)throw Error('本机暂时无法保存输入，消息尚未发送，草稿已保留');const painted=afterVisiblePaint();
   const update=(state,result,reason)=>{if(!pendingPrompts.has(record.id))return;if(['accepted','queued'].includes(record.state)&&!['accepted','queued'].includes(state))return;if(['accepted','queued'].includes(state)&&record.retryOf){let id=record.retryOf;const seen=new Set([record.id]);while(id&&!seen.has(id)){seen.add(id);const prior=pendingPrompts.get(id)?.record;if(prior?.state!=='failed'||!matchesPage(prior))break;id=prior.retryOf;dropPending(prior.id);}}record.state=state;record.reason=reason||null;if(result?.threadId)record.threadId=result.threadId;const messageId=result?.messageResult?.messageId??result?.messageId;if(messageId)record.messageId=messageId;if(state==='accepted'){if(record.userHistoryEpoch!==(pendingHistoryEpochs.get(record.threadId||record.clientThreadId)||0)){dropPending(record.id);return;}acceptedDisplays.set(record.id,record);}if(state==='accepted')window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'accepted',reason:'native',traceId:record.id,threadId:record.threadId,durationMs:Date.now()-record.at,textAvailable:!!nativeRow(record)});persistPending();schedulePending();if(state==='accepted')queueMicrotask(()=>reconcilePendingHistory());};
+  entry.acceptNative=result=>update('accepted',result);
   return {persisted:()=>entry.persisted,presented:()=>painted,isCurrent:()=>matchesPage(record),preparing(reason){update('preparing',null,reason);},sending(){update('sending');},added(){record.nativeAnnounced=true;handoffPendingBeforePaint();persistPending();schedulePending();},finish(result){update('accepted',result);if(record.renderOwner==='native'||nativeRow(record))dropPending(record.id);else schedulePending();},queued(result){update('queued',result);dropPending(record.id);},fail(unknown,reason){update(unknown?'unknown':'failed',null,reason);}};
  }};
  const restorePending=async()=>{const epoch=pendingAuthEpoch;try{

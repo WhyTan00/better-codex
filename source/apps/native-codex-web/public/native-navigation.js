@@ -14,6 +14,8 @@
  const managed=u=>u.origin===location.origin&&(/^\/local\/[0-9a-f-]{36}$/i.test(u.pathname)||u.pathname==='/');
  let cursor=Number.isSafeInteger(history.state?.dshNavIndex)?history.state.dshNavIndex:0,pendingEntry=null,notificationNavigation=0,selectedPresentation=null,selectionRevision=0;
  const strictFinal=window.__DSH_NOTIFICATION_FINAL_GATE__===true;
+ const routeLog=(stage,path)=>{try{window.__DSH_CLIENT_LOG__?.event('client_health',{component:'android-webview',stage,reason:'user_request',threadId:path?.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1],count:selectionRevision});}catch{}};
+ const requestRouterRoute=(path,replace=false)=>{routeLog('dispatch',path);window.postMessage({type:'navigate-to-route',path,replace},location.origin);};
  let pendingNotification=null,notificationOverlay=null,notificationTimer=null,notificationObserver=null,notificationFrame=null;
  const notificationLog=(p,stage)=>window.__DSH_CLIENT_LOG__?.event('client_health',{component:'android-webview',stage,reason:'notification_open',threadId:p.path.split('/')[2],turnId:p.turnId||undefined,traceId:p.traceId});
  function revealTarget(p){
@@ -90,10 +92,10 @@
   const u=new URL(target??location.href,location.href);
   if(!managed(u))return (method==='pushState'?push:replace)(value,title,target);
   const mode=u.searchParams.get('nativeList')==='1'||window.__DSH_NATIVE_SIDEBAR__?.isList?'list':'chat';
-  if(method==='pushState'&&!value?.dshPluginPage&&pendingEntry?.path===u.pathname&&pendingEntry.index===cursor&&mode==='chat'){
+  if(method==='pushState'&&!value?.dshPluginPage&&!value?.dshPreferences&&pendingEntry?.path===u.pathname&&pendingEntry.index===cursor&&mode==='chat'){
    pendingEntry=null;view=mode;return replace(state(value,mode),title,url(u.href,mode));
   }
-  if(method==='pushState'){cursor++;pendingEntry=null;}
+  if(method==='pushState'){if(!value?.dshPreferences)cursor++;pendingEntry=null;}
   view=mode;return (method==='pushState'?push:replace)(state(value,mode),title,url(u.href,mode));
  };
  function clearNotification(){if(pendingNotification&&location.pathname===pendingNotification.path){const u=new URL(location.href);for(const key of ['fromNotification','notificationTurn','notificationThread'])u.searchParams.delete(key);replace(history.state,'',u.pathname+u.search+u.hash);}notificationObserver?.disconnect();notificationObserver=null;if(notificationFrame)cancelAnimationFrame(notificationFrame);notificationFrame=null;clearTimeout(notificationTimer);notificationTimer=null;pendingNotification=null;notificationOverlay?.remove();notificationOverlay=null;delete document.documentElement.dataset.dshNavigationPending;}
@@ -127,7 +129,7 @@
   acceptRoute(path){return (!pendingNotification||pendingNotification.path===path)&&(!selectedPresentation||selectedPresentation==='/'||selectedPresentation===path);},
   // Called by the original renderer's setConversationPresented layout effect,
   // after its target DOM commits. Neither a route URL nor a cache read is enough.
-  presented(id){if(selectedPresentation==='/local/'+id||selectedPresentation==='/')selectedPresentation=null;if(pendingNotification?.path!=='/local/'+id||location.pathname!==pendingNotification.path)return;if(!pendingNotification.strict){clearNotification();return;}pendingNotification.layout=true;pendingNotification.status.textContent='正在同步回复…';revealTarget(pendingNotification);prepareFinal();checkFinal();},
+  presented(id){routeLog('received','/local/'+id);if(completionEntry.path==='/local/'+id&&location.pathname===completionEntry.path&&!pendingNotification&&document.visibilityState==='visible'&&!window.__DSH_NATIVE_SIDEBAR__?.isList&&(completionEntry.target?!!findFinal(completionEntry.target)?.getClientRects().length:[...document.querySelectorAll('[data-app-action-timeline-scroll] [data-dsh-final-answer-identities][data-dsh-final-thread-id][data-dsh-final-turn-id]')].some(row=>row.getAttribute('data-dsh-final-thread-id')===id&&!!row.getAttribute('data-dsh-final-turn-id')&&!!(row.getAttribute('data-dsh-final-answer-identities')||'').trim()&&row.getClientRects().length))){completionEntry.presented=true;clearCompletionAnchor();}if(selectedPresentation==='/local/'+id||selectedPresentation==='/')selectedPresentation=null;if(pendingNotification?.path!=='/local/'+id||location.pathname!==pendingNotification.path)return;if(!pendingNotification.strict){clearNotification();return;}pendingNotification.layout=true;pendingNotification.status.textContent='正在同步回复…';revealTarget(pendingNotification);prepareFinal();checkFinal();},
   openConversation(target){
    let u;try{u=new URL(target,location.href);}catch{return false;}
    if(u.origin!==location.origin||u.searchParams.get('workspace')!==scope.id||!/^\/local\/[0-9a-f-]{36}$/i.test(u.pathname)||!document.querySelector('[data-app-shell-sidebar-trigger]'))return false;
@@ -135,10 +137,10 @@
    const id=u.pathname.split('/')[2],same=location.pathname===u.pathname&&(!pendingNotification||pendingNotification.layout);
    window.__DSH_FOCUS_POLICY__?.reset('notification');
    this.beginConversation(u.pathname);if(guarded||!same)notificationTarget(u.pathname,u.searchParams.get('notificationTurn'));window.__DSH_NATIVE_SIDEBAR__?.openWorkbench();view='chat';
-   if(same){if(guarded)pendingNotification.layout=true;replace(state(history.state,'chat'),'',url(u.href,'chat'));window.dispatchEvent(new CustomEvent('dsh:native-route',{detail:{path:u.pathname}}));if(guarded){revealTarget(pendingNotification);prepareFinal();}return true;}
+   if(same){if(guarded)pendingNotification.layout=true;replace(state(history.state,'chat'),'',url(u.href,'chat'));window.dispatchEvent(new CustomEvent('dsh:native-route',{detail:{path:u.pathname}}));requestRouterRoute(u.pathname,true);if(guarded){revealTarget(pendingNotification);prepareFinal();}return true;}
    // Routing owns navigation; a slow cache preparation must never keep the old
    // conversation visible or schedule a later route that overrides user input.
-   window.postMessage({type:'navigate-to-route',path:u.pathname},location.origin);
+   requestRouterRoute(u.pathname);
    Promise.resolve().then(()=>window.__DSH_PREPARE_CACHED_CONVERSATION__?.(id)).catch(()=>{});return true;
   },
   pushPreview(value,title,target){cursor++;pendingEntry=null;push(state(value,'chat'),title,target);},

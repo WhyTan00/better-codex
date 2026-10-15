@@ -3,6 +3,7 @@ import {rpcDiagnosticContext,errorDiagnosticFields} from './connection-diagnosti
 
 export const PAGE_RESUME_PROTOCOL='dsh-page-resume-v1';
 export const REPLY_STREAM_PROTOCOL='dsh-reply-stream-v1';
+export const LARGE_REPLY_PROTOCOL='dsh-large-reply-v1';
 const replyStreams=['rpc','app-host'];
 const replyState=()=>({outbox:new Map(),sentSeq:0,ackedSeq:0,writtenSeq:0,inflightBytes:0});
 // Retain the existing AppHost RPC session across a phone's socket replacement.
@@ -14,7 +15,7 @@ export class PageSessions {
  constructor({onExpire=()=>{},shouldRetain=()=>false,onWireEvent=null,ttlMs=30*60*1000,maxSessions=32,maxBytes=32*1024*1024,maxFrames=4096,maxWireBytes=256*1024,maxPumpFrames=32}={}){
   Object.assign(this,{onExpire,shouldRetain,onWireEvent,ttlMs,maxSessions,maxBytes,maxFrames});this.maxWireBytes=Math.max(1,Math.min(maxBytes,maxWireBytes));this.maxPumpFrames=Math.max(1,Math.min(maxFrames,maxPumpFrames));this.sessions=new Map();
  }
- attach(socket,{scope,pageId,stableId,origin,resumeId,ack=0,replyProtocol,replyAck={}}){
+ attach(socket,{scope,pageId,stableId,origin,resumeId,ack=0,replyProtocol,replyAck={},largeReplyProtocol}){
   let session=resumeId?this.sessions.get(resumeId):null;
   if(resumeId&&(!session||session.scope!==scope||session.pageId!==pageId||session.stableId!==stableId||session.origin!==origin))throw Error('page_resume_unavailable');
   const resumed=!!session;
@@ -22,11 +23,13 @@ export class PageSessions {
   // failed first hello has no detach timer and must not leave an orphan here.
   if(!Number.isSafeInteger(ack)||ack<0||ack>(session?.sentSeq??0))throw Error('page_ack_invalid');
   if(session?.replyProtocol&&replyProtocol!==session.replyProtocol)throw Error('page_resume_unavailable');
+  if(session?.largeReplyProtocol&&largeReplyProtocol!==session.largeReplyProtocol)throw Error('page_resume_unavailable');
   for(const stream of replyStreams){const seq=replyAck[stream]??0;if(!Number.isSafeInteger(seq)||seq<0||seq>(session?.replies?.[stream]?.sentSeq??0))throw Error('page_ack_invalid');}
   if(!session){
    if(this.sessions.size>=this.maxSessions)throw Error('page_session_limit');
    session={scope,pageId,stableId,origin,resumeId:randomBytes(24).toString('base64url'),ports:new Map(),wire:null,outbox:new Map(),bytes:0,sentSeq:0,ackedSeq:0,receivedSeq:0,writtenSeq:0,inflightBytes:0,pumpHandle:null,pumping:false,timer:null,expired:false};
    session.replyProtocol=replyProtocol===REPLY_STREAM_PROTOCOL?REPLY_STREAM_PROTOCOL:null;session.replies=Object.fromEntries(replyStreams.map(stream=>[stream,replyState()]));
+   session.largeReplyProtocol=session.replyProtocol&&largeReplyProtocol===LARGE_REPLY_PROTOCOL?LARGE_REPLY_PROTOCOL:null;
    Object.defineProperty(session,'readyState',{get(){return this.wire?.readyState??3;}});
    Object.defineProperty(session,'bufferedAmount',{get(){return this.wire?.bufferedAmount??0;}});
    session.close=(code,reason)=>session.wire?.close(code,reason);
@@ -70,10 +73,10 @@ export class PageSessions {
   if(!this.onWireEvent){wire.send(raw,completed);return;}
   const started=performance.now(),context={component:'page-ws',...rpcDiagnosticContext({scope:session.scope,connectionId:session.connectionId,pageId:session.diagnosticPageId}),...metadata,wireSequence:wire.dshWireSequence=(wire.dshWireSequence||0)+1,payloadBytes:Buffer.byteLength(raw)};
   // Preserve the ordinal for all frames, but do not rotate away an incident by
-  // logging every fast streaming delta/pong. Small AppHost bootstrap replies are
+  // logging every fast streaming delta. Correlated pongs remain visible; small AppHost bootstrap replies are
   // bounded per wire; every large frame or slow/failed callback remains visible.
   const appHostStart=metadata.frameKind==='app-host-port-message'&&(wire.dshAppHostFrames=(wire.dshAppHostFrames||0)+1)<=8;
-  const sampling=['mcp-response','fetch-response','persisted-atom-sync'].includes(metadata.frameKind)?'key':context.payloadBytes>=16*1024?'large':appHostStart?'app_host_start':null;
+  const sampling=['mcp-response','fetch-response','persisted-atom-sync','dsh:pong'].includes(metadata.frameKind)?'key':context.payloadBytes>=16*1024?'large':appHostStart?'app_host_start':null;
   const record=(stage,error,mode=sampling)=>{try{this.onWireEvent({...context,stage,sampling:mode,durationMs:Math.max(0,Math.round(performance.now()-started)),bufferedBytes:wire.bufferedAmount??0,senderQueueFrames:wire._sender?._queue?.length,outboxBytes:session.bytes,pendingFrames:this.pendingFrames(session),...(error?errorDiagnosticFields(error):{})});}catch{}};
   if(sampling)record('wire_queued');
   try{wire.send(raw,error=>{if(error||sampling||performance.now()-started>=100)record(error?'wire_failed':'wire_sent',error,sampling||(error?'failure':'slow'));completed(error);});}catch(error){record('wire_failed',error,sampling||'failure');throw error;}
@@ -81,10 +84,23 @@ export class PageSessions {
  wireMetadata(message){
   const type=message.payload?.type||message.type;
   const frameKind=['mcp-response','mcp-notification','mcp-request','fetch-response','persisted-atom-sync','app-host-port-message','opencodex:ipc-result','dsh:sync-state','hello-ack','dsh:pong'].includes(type)?type:'other';
-  const id=type==='mcp-response'?message.payload?.message?.id:type==='fetch-response'?message.payload?.requestId:type==='opencodex:ipc-result'?message.requestId:undefined;
+  const id=type==='mcp-response'?message.payload?.message?.id:type==='fetch-response'?message.payload?.requestId:type==='opencodex:ipc-result'?message.requestId:type==='dsh:pong'?message.nonce:undefined;
   return {frameKind,...rpcDiagnosticContext({id})};
  }
  control(session,message){if(session.readyState!==1)return false;this.write(session,JSON.stringify(message),this.wireMetadata(message));return true;}
+ largeReply(session,stream,seq){
+  if(session.expired||session.largeReplyProtocol!==LARGE_REPLY_PROTOCOL||stream!=='app-host'||!Number.isSafeInteger(seq)||seq<1)throw Error('page_reply_unavailable');
+  const frame=session.replies[stream].outbox.get(seq);
+  if(!frame||frame.bytes<=this.maxWireBytes||seq>session.replies[stream].writtenSeq)throw Error('page_reply_unavailable');
+  return frame.raw;
+ }
+ replyWire(session,stream,seq,frame){
+  // A retained AppHost result can be several megabytes. Its original body and
+  // receipt remain in the same page session, but never occupy the control TCP
+  // stream ahead of pongs or new execution results.
+  if(stream==='app-host'&&session.largeReplyProtocol===LARGE_REPLY_PROTOCOL&&frame.bytes>this.maxWireBytes)return JSON.stringify({type:'dsh:large-reply',protocol:LARGE_REPLY_PROTOCOL,stream,seq,bytes:frame.bytes});
+  return frame.raw;
+ }
  cancelPump(session){if(session.pumpHandle)clearImmediate(session.pumpHandle);session.pumpHandle=null;}
  schedulePump(session,wire=session.wire){if(session.expired||session.wire!==wire||session.readyState!==1||session.pumpHandle||session.writtenSeq>=session.sentSeq&&Object.values(session.replies||{}).every(lane=>lane.writtenSeq>=lane.sentSeq))return;session.pumpHandle=setImmediate(()=>{session.pumpHandle=null;if(session.wire===wire)this.pump(session);});session.pumpHandle.unref?.();}
  pumpReplies(session,wire){
@@ -94,7 +110,7 @@ export class PageSessions {
     if(session.bufferedAmount>this.maxBytes){session.close(1013,'connection backpressure');break;}
     if(session.bufferedAmount>0&&session.bufferedAmount+frame.bytes>this.maxWireBytes)break;
     const inflight=lane.writtenSeq-lane.ackedSeq;if(inflight>=this.maxPumpFrames||inflight>0&&lane.inflightBytes+frame.bytes>this.maxWireBytes)break;
-    lane.writtenSeq=seq;lane.inflightBytes+=frame.bytes;count++;this.write(session,frame.raw,{...frame.metadata,sequence:seq,replayed:seq<=lane.replayThrough});
+    lane.writtenSeq=seq;lane.inflightBytes+=frame.bytes;count++;this.write(session,this.replyWire(session,stream,seq,frame),{...frame.metadata,sequence:seq,responseBytes:frame.bytes,replayed:seq<=lane.replayThrough});
    }
   }
  }

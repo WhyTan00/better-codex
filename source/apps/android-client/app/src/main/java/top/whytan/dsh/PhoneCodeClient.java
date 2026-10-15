@@ -116,5 +116,5 @@ public final class PhoneCodeClient implements Closeable {
         if(!enabled())return;
         post("respond",sealed);PhoneCodeSettings.state(context,result.getString("status"));
     }
-    @Override public void close(){closed=true;Call call=active;if(call!=null)call.cancel();worker.shutdownNow();http.dispatcher().cancelAll();http.connectionPool().evictAll();http.dispatcher().executorService().shutdown();}
+    @Override public void close(){closed=true;Call call=active;worker.shutdownNow();NetworkClientClose.close(http,()->{if(call!=null)call.cancel();});}
 }

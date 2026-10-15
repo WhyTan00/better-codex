@@ -92,6 +92,9 @@ public final class ApkUpdateManager implements Closeable {
         String traceId = UUID.randomUUID().toString();
         long startedAt = SystemClock.elapsedRealtime();
         int[] statusCode = {-1};
+        DownloadProgress progress = new DownloadProgress();
+        NetworkTiming timing = new NetworkTiming();
+        Throwable[] downloadFailure = {null};
         boolean[] terminal = {false};
         diagnostic(eventScope, "attempt", "check_start", traceId, startedAt, -1, -1L);
         if (closed.get() || baseClient == null) {
@@ -108,6 +111,7 @@ public final class ApkUpdateManager implements Closeable {
                     .get();
             addCookie(request);
             call = trackedCall(client, request.build());
+            progress.phase="response_headers";
             try (Response response = call.execute()) {
                 statusCode[0] = response.code();
                 if (response.code() != 200 || response.body() == null) return null;
@@ -121,7 +125,7 @@ public final class ApkUpdateManager implements Closeable {
                 String url = value.optString("url", "");
                 String sha = value.optString("sha256", "");
                 long bytes = value.optLong("bytes", -1L);
-                if (!"top.whytan.dsh".equals(value.optString("packageName", "")) || versionCode < 1L
+                if (!BuildConfig.APPLICATION_ID.equals(value.optString("packageName", "")) || versionCode < 1L
                         || versionName.isEmpty() || !SHA256.matcher(sha).matches() || bytes < 1L || bytes > MAX_APK_BYTES) return null;
                 Uri download = Uri.parse(DshConfig.ORIGIN + url);
                 if (!DshConfig.isDshUri(download) || !APK_PATH.matcher(download.getPath() == null ? "" : download.getPath()).matches()) return null;
@@ -155,6 +159,9 @@ public final class ApkUpdateManager implements Closeable {
                 ? update.traceId : UUID.randomUUID().toString();
         long startedAt = SystemClock.elapsedRealtime();
         int[] statusCode = {-1};
+        DownloadProgress progress = new DownloadProgress();
+        NetworkTiming timing = new NetworkTiming();
+        Throwable[] downloadFailure = {null};
         boolean[] terminal = {false};
         diagnostic(eventScope, "attempt", "download_start", traceId, startedAt, -1, -1L);
         if (closed.get() || update == null || !update.available || baseClient == null) {
@@ -182,23 +189,26 @@ public final class ApkUpdateManager implements Closeable {
                     /* Replace only after the new file verifies. */
                 }
             }
-            OkHttpClient client = boundedClient(baseClient, 180);
+            OkHttpClient client = NetworkTiming.install(boundedClient(baseClient, 180).newBuilder()).build();
             temporary = new File(updateDir, "app-" + update.versionCode + "." + UUID.randomUUID() + ".part");
             Request.Builder request = new Request.Builder()
+                    .tag(NetworkTiming.class,timing).header("X-DSH-Diagnostic-Trace",traceId)
                     .url(DshConfig.ORIGIN + update.url)
                     .header("Origin", DshConfig.ORIGIN)
                     .get();
             addCookie(request);
             call = trackedCall(client, request.build());
+            progress.phase="response_headers";
             try (Response response = call.execute()) {
                 statusCode[0] = response.code();
                 if (response.code() != 200 || response.body() == null) return null;
                 String type = response.header("Content-Type", "").toLowerCase(Locale.ROOT);
                 if (!type.contains("application/vnd.android.package-archive")) return null;
-                copyVerified(response.body().byteStream(), temporary, update);
+                copyVerified(response.body().byteStream(), temporary, update, progress);
             }
             diagnostic(eventScope, "downloaded", "download_complete", traceId, startedAt, statusCode[0], 1L);
             try {
+                progress.phase="package_verify";
                 verifyPackage(temporary, update.versionCode);
             } catch (IOException failure) {
                 diagnostic(eventScope, "failed", "verify_failed", traceId, startedAt, statusCode[0], -1L);
@@ -206,14 +216,23 @@ public final class ApkUpdateManager implements Closeable {
             }
             diagnostic(eventScope, "verified", "verify_ok", traceId, startedAt, statusCode[0], 1L);
             if (closed.get()) return null;
+            progress.phase="install_file";
             if (!temporary.renameTo(target)) Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             diagnostic(eventScope, "committed", "download_complete", traceId, startedAt, statusCode[0], 1L);
             terminal[0] = true;
             return target;
-        } catch (Exception ignored) {
+        } catch (Exception failure) {
+            downloadFailure[0]=failure;
             return null;
         } finally {
-            if (call != null) activeCall.compareAndSet(call, null);
+            if (call != null) {
+                try {
+                    JSONObject fields=timing.summary(traceId,downloadFailure[0],statusCode[0]);
+                    if(fields==null&&!terminal[0])fields=new JSONObject();
+                    if(fields!=null){fields.put("traceId",traceId).put("reason","network_summary").put("downloadPhase",progress.phase).put("downloadBytes",progress.bytes).put("expectedBytes",update.bytes).put("networkFailed",!terminal[0]);diagnostics.event(eventScope,"android-update",terminal[0]?"committed":"failed",fields);}
+                }catch(Exception ignored){}
+                activeCall.compareAndSet(call, null);
+            }
             if (temporary != null && temporary.exists()) temporary.delete();
             if (!terminal[0]) {
                 boolean cancelled = closed.get();
@@ -309,7 +328,9 @@ public final class ApkUpdateManager implements Closeable {
         }
     }
 
-    private static void copyVerified(InputStream source, File target, CheckResult update) throws IOException {
+    private static final class DownloadProgress { String phase="queued"; long bytes; }
+    private static void copyVerified(InputStream source, File target, CheckResult update) throws IOException { copyVerified(source,target,update,new DownloadProgress()); }
+    private static void copyVerified(InputStream source, File target, CheckResult update, DownloadProgress progress) throws IOException {
         MessageDigest digest;
         try {
             digest = MessageDigest.getInstance("SHA-256");
@@ -317,16 +338,21 @@ public final class ApkUpdateManager implements Closeable {
             throw new IOException("sha256 unavailable", failure);
         }
         long count = 0L;
+        progress.phase="file_open";
         try (InputStream input = new BufferedInputStream(source); OutputStream output = new BufferedOutputStream(new FileOutputStream(target, false))) {
             byte[] buffer = new byte[64 * 1024];
             int read;
-            while ((read = input.read(buffer)) != -1) {
+            while (true) {
+                progress.phase="response_body";read=input.read(buffer);if(read==-1)break;
+                progress.bytes+=read;
                 count += read;
                 if (count > update.bytes || count > MAX_APK_BYTES) throw new IOException("apk too large");
                 digest.update(buffer, 0, read);
-                output.write(buffer, 0, read);
+                progress.phase="file_write";output.write(buffer, 0, read);
             }
+            progress.phase="file_write";
         }
+        progress.phase="integrity_verify";
         if (count != update.bytes || !hex(digest.digest()).equals(update.sha256)) {
             //noinspection ResultOfMethodCallIgnored
             target.delete();

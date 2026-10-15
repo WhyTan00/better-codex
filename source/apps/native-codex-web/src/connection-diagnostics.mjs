@@ -4,22 +4,24 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 
 const enums={
+ ipcKind:['fetch','mcp-request'],
+ policyReason:['desktop_request_unmapped','native_method_unmapped','file_request_denied','workspace_policy_denied','native_attachment_registry_denied'],
  sampling:['key','large','app_host_start','slow','failure'],
  frameKind:['mcp-response','mcp-notification','mcp-request','fetch-response','persisted-atom-sync','app-host-port-message','opencodex:ipc-result','dsh:sync-state','hello-ack','dsh:pong','other'],
- component:['front','page-ws','native','cloud-bridge','app-host'],
+ component:['proxy','front','page-ws','native','cloud-bridge','app-host'],
  stage:['wire_queued','wire_sent','wire_failed','boot','attempt','open','ready','hello','closed','failed','reconnecting','syncing','received','pending','dispatch','stopped','replaced','rejected','heartbeat','committed','skipped','started','background','foreground','downloaded','verified','installed'],
- reason:['socket_closed','socket_error','upgrade_rejected','resume_unavailable','protocol_error','scope_renewal','rpc_timeout','rpc_error','rpc_send_failed','native_rejected','initialize_failed','native_disconnected','native_ready','ping_failed','read_failed','write_failed','sequence_gap','backpressure','shutdown','unknown','connect_deadline','page_resume_unavailable','page_ack_invalid','page_session_limit'],
+ reason:['control_timing','event_loop_delay','health_timing','socket_closed','socket_error','upgrade_rejected','resume_unavailable','protocol_error','scope_renewal','rpc_timeout','rpc_error','rpc_send_failed','native_rejected','initialize_failed','native_disconnected','native_ready','ping_failed','read_failed','write_failed','sequence_gap','backpressure','shutdown','unknown','connect_deadline','page_resume_unavailable','page_ack_invalid','page_session_limit'],
  errorCode:['ECONNREFUSED','ECONNRESET','ETIMEDOUT','ENETUNREACH','EHOSTUNREACH','EPIPE','ENOTFOUND','EAI_AGAIN','EAI_FAIL','EAI_NODATA','ERR_SOCKET_CLOSED','ABORT_ERR','ERR_ABORTED','CERT_HAS_EXPIRED','ERR_TLS_CERT_ALTNAME_INVALID','EPROTO','ERR_SSL_WRONG_VERSION_NUMBER','EACCES','EPERM','ENOSPC','SQLITE_BUSY','SQLITE_CANTOPEN','401','403','404','408','409','429','500','501','502','503','504','unknown'],
- errorName:['Error','TypeError','ReferenceError','RangeError','SyntaxError','AbortError'],
+ errorName:['AggregateError','Error','TypeError','ReferenceError','RangeError','SyntaxError','AbortError'],
  failureClass:['timeout','connection','native_rejected','rpc_contract','dns','tls','auth','http','parse','storage','aborted','writer_busy','unknown'],
  scope:['ai','zyy'],
- method:['GET','status','readRecords','requestSync','native-bootstrap','focusThread','diagnosticContext','getTheme','setTheme','saveDocument','getNotificationSettings','setDeviceOwner','setCompletionNotifications','startSync','stopSync','openSettings','initialize','thread/read','thread/list','thread/loaded/list','thread/turns/list','thread/items/list','thread/resume','thread/revert','thread/rollback','thread/start','turn/start','turn/steer','turn/interrupt','thread/stop','thread/queue/add','thread/queue/update','thread/queue/remove','thread/queue/list','thread/goal/get','thread/goal/set','thread/goal/clear','thread/archive','thread/unarchive','thread/section/move','thread/settings/update','config/read','account/read','getAuthStatus','permissionProfile/list','model/list','other','readStream','readThreadRecords','openDeliverable','resolveDeliverable','thread/name/set','thread/fork','thread/queue/delete','thread/queue/reorder','thread/queue/start','account/rateLimits/read','modelProvider/capabilities/read','configRequirements/read','experimentalFeature/list','remoteControl/status/read','collaborationMode/list','skills/list','app/list','mcpServerStatus/list','plugin/list','plugin/installed','thread/metadata/update','thread/unsubscribe','externalAgentConfig/import/readHistories','codex-home','home-directory','locale-info','worktree-shell-environment-config','get-global-state','get-configuration','get-settings','get-setting','paths-exist','workspace-root-options','ensure-directory','developer-instructions','mcp-codex-config','get-copilot-api-proxy-info','scopeSession','presentConversation','readSavedThreadRecords','readSavedRecord','saveReadRecord','saveVisibleProcesses','readVisibleProcesses','invalidateVisibleProcesses','thread/attachment/list','thread/backgroundTerminals/list','thread/searchOccurrences','thread/delete'],
+ method:['GET','status','readRecords','requestSync','native-bootstrap','focusThread','diagnosticContext','getTheme','setTheme','saveDocument','getNotificationSettings','setDeviceOwner','setCompletionNotifications','startSync','stopSync','openSettings','initialize','thread/read','thread/list','thread/loaded/list','thread/turns/list','thread/items/list','thread/resume','thread/revert','thread/rollback','thread/start','turn/start','turn/steer','turn/interrupt','thread/stop','thread/queue/add','thread/queue/update','thread/queue/remove','thread/queue/list','thread/goal/get','thread/goal/set','thread/goal/clear','thread/archive','thread/unarchive','thread/section/move','thread/settings/update','config/read','account/read','getAuthStatus','permissionProfile/list','model/list','other','readStream','readThreadRecords','openDeliverable','resolveDeliverable','thread/name/set','thread/fork','thread/queue/delete','thread/queue/reorder','thread/queue/start','account/rateLimits/read','modelProvider/capabilities/read','configRequirements/read','experimentalFeature/list','remoteControl/status/read','collaborationMode/list','skills/list','app/list','mcpServerStatus/list','plugin/list','plugin/installed','thread/metadata/update','thread/unsubscribe','externalAgentConfig/import/readHistories','codex-home','home-directory','locale-info','worktree-shell-environment-config','get-global-state','get-configuration','get-settings','get-setting','paths-exist','workspace-root-options','ensure-directory','developer-instructions','mcp-codex-config','get-copilot-api-proxy-info','scopeSession','presentConversation','readSavedThreadRecords','readBodyWitness','readSavedRecord','saveReadRecord','saveVisibleProcesses','readVisibleProcesses','invalidateVisibleProcesses','thread/attachment/list','thread/backgroundTerminals/list','thread/delete','thread/searchOccurrences'],
  routeClass:['native_ws','scope_session','native_read','native_catalog','native_bootstrap','cloud_events','performance','asset','local_file','other'],
  state:['connecting','disconnected','ready','connected','transport_connected','stopped'],
  transportPhase:['connecting','dns','tcp','tls','http_upgrade','hello','ready'],
  readPhase:['source_reply','native_connect','cache_read','cache_lookup','native_read','local_commit','publish_ack','cloud_reuse','reply_queue'],
 };
-const numbers=['wireSequence','payloadBytes','senderQueueFrames','attempt','retryDelayMs','closeCode','statusCode','durationMs','lastMessageAgeMs','lastPongAgeMs','bufferedBytes','pendingRequests','pendingFrames','sequence','ack','generation','socketState','processId','count','rpcCode','sentSequence','recordRevision','responseBytes','targetSequence','normalizeMs','evictMs','monotonicMs','timerLagMs','outboxBytes','oldestAgeMs','freeBytes'];
+const numbers=['receivedAtMs','edgeReceivedAtMs','edgeForwardAtMs','proxyReceivedAtMs','wireSequence','payloadBytes','senderQueueFrames','attempt','retryDelayMs','closeCode','statusCode','durationMs','lastMessageAgeMs','lastPongAgeMs','bufferedBytes','pendingRequests','pendingFrames','sequence','ack','generation','socketState','processId','count','rpcCode','sentSequence','recordRevision','responseBytes','targetSequence','normalizeMs','evictMs','monotonicMs','timerLagMs','outboxBytes','oldestAgeMs','freeBytes'];
 const booleans=['replayed','handshakeComplete','resumed','nativeReady','timedOut','cacheHit','sharedRead','sourceVerified','projectionCommitted'];
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hex=/^[a-f0-9]{16}$/;
@@ -35,8 +37,10 @@ export function hashDiagnosticId(value){
 
 // Normalize the identifiers that may be carried from a browser MCP request
 // into the front/native connection log. Unknown ids are deliberately omitted.
-export function rpcDiagnosticContext({id,method,params={},scope,connectionId,pageId}={}){
+export function rpcDiagnosticContext({id,method,params={},scope,connectionId,pageId,ipcKind,hostMethod}={}){
  const out={};
+ if(enums.ipcKind.includes(ipcKind))out.ipcKind=ipcKind;
+ if(typeof hostMethod==='string'&&hostMethod.length<=4096)out.hostMethodHash=hashDiagnosticId(hostMethod);
  if(id!==undefined&&id!==null)out.rpcIdHash=hashDiagnosticId(id);
  if(enums.method.includes(method))out.method=method;
  const scoped=enums.scope.includes(scope);
@@ -53,6 +57,7 @@ export function errorDiagnosticFields(error){
  const out={};
  const name=error?.name;
  if(enums.errorName.includes(name))out.errorName=name;
+ if(enums.policyReason.includes(error?.diagnosticPolicyReason))out.policyReason=error.diagnosticPolicyReason;
  const code=error?.rpcCode;
  if(Number.isSafeInteger(code)&&code>=-32768&&code<=99999)out.rpcCode=code;
  if(error?.code!=null&&enums.errorCode.includes(String(error.code)))out.errorCode=String(error.code);
@@ -91,6 +96,7 @@ export function safeConnectionEvent(value){
  for(const k of ['connectionId','processIdTag','parentTraceId','traceId','threadId','turnId'])if(uuid.test(value[k]||''))out[k]=value[k];
  if(page.test(value.pageId||''))out.pageId=value.pageId;
  if(hex.test(value.rpcIdHash||''))out.rpcIdHash=value.rpcIdHash;
+ if(hex.test(value.hostMethodHash||''))out.hostMethodHash=value.hostMethodHash;
  if(hex.test(value.readIdHash||''))out.readIdHash=value.readIdHash;
  if(hex.test(value.uiVersion||''))out.uiVersion=value.uiVersion;
  if(Array.isArray(value.errorFrames))out.errorFrames=value.errorFrames.filter(frame=>typeof frame==='string'&&/^(?:official-app-host|official-settings|official-files|official-boundary|registry)\.mjs:[1-9][0-9]{0,5}:[1-9][0-9]{0,5}$/.test(frame)).slice(0,4);

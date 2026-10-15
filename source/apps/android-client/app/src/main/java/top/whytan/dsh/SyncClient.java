@@ -349,6 +349,10 @@ public final class SyncClient implements Closeable {
         requestCatalog(true);
     }
 
+    public void requestStatePublication() {
+        submitWork(() -> emitState("running", null, true));
+    }
+
     private void requestCatalog(boolean force) {
         if (stopped || authenticationPaused()) return;
         if (force) catalogForce.set(true);
@@ -892,6 +896,11 @@ public final class SyncClient implements Closeable {
 
     private void scheduleThreadPrefetch(String threadId, boolean baseline, int priority, String desired) {
         if (stopped || !isUuid(threadId)) return;
+        if (store.isRetiredDirectoryThread(scope,threadId)) {
+            store.retireDirectoryPreparations(scope,threadId);
+            if (priority == PREFETCH_FOCUS_PRIORITY) queueRetiredFocusRead(threadId,baseline);
+            return;
+        }
         if(priority!=PREFETCH_ACTIVE_PRIORITY&&store.isUnstartedHistory(scope,threadId)){store.retireUnstartedPreparations(scope,threadId);return;}
         if (priority != PREFETCH_FOCUS_PRIORITY && store.isInternalDirectoryThread(scope, threadId)) return;
         if (priority == PREFETCH_FOCUS_PRIORITY) store.clearHistoryWarmFailure(scope, threadId);
@@ -899,6 +908,19 @@ public final class SyncClient implements Closeable {
         boolean focus=priority==PREFETCH_FOCUS_PRIORITY&&threadId.equals(currentFocusThreadId);
         SyncStore.Preparation job=store.requestPreparation(scope,"history",threadId,"",priority==PREFETCH_FOCUS_PRIORITY?PREFETCH_HISTORY_PRIORITY:priority,baseline,version);
         if(focus){store.promotePreparationFocus(scope,threadId,false);for(SyncStore.Preparation due:store.duePreparations(scope,System.currentTimeMillis(),MAX_PREFETCH_QUEUE))if(threadId.equals(due.threadId))queuePreparation(due);}else queuePreparation(job);
+    }
+
+    // Explicit child/detail focus is one user read even when its directory row is hidden.
+    // It creates no persisted automatic preparation or retry debt.
+    private void queueRetiredFocusRead(String threadId, boolean baseline) {
+        synchronized(prefetchLock) {
+            PrefetchTask prior=prefetchByThread.get(threadId);
+            if(prior!=null){if(prior.started||prior.priority==PREFETCH_FOCUS_PRIORITY)return;cancelQueuedPrefetchLocked(prior);}
+            PrefetchTask task=new PrefetchTask(threadId,baseline,PREFETCH_FOCUS_PRIORITY,++prefetchSequence,UUID.randomUUID().toString(),null);
+            prefetchByThread.put(threadId,task);
+            try { focusWorkers.execute(task); }
+            catch(RejectedExecutionException ignored){if(prefetchByThread.get(threadId)==task)prefetchByThread.remove(threadId);}
+        }
     }
 
     private void drainPreparations() {
@@ -918,11 +940,13 @@ public final class SyncClient implements Closeable {
     }
 
     private void queueArtifactPreparation(SyncStore.Preparation job) {
+        if(store.isRetiredDirectoryThread(scope,job.threadId)){store.retireDirectoryPreparations(scope,job.threadId);return;}
         if(!stopped&&started&&!authenticationRequired) DeliverableJobService.schedule(context,scope);
     }
 
     private void queuePreparation(SyncStore.Preparation job) {
         if (stopped || authenticationRequired || job.dueAt > System.currentTimeMillis()) return;
+        if(store.isRetiredDirectoryThread(scope,job.threadId)){store.retireDirectoryPreparations(scope,job.threadId);return;}
         if (job.priority != PREFETCH_FOCUS_PRIORITY && store.isInternalDirectoryThread(scope, job.threadId)) {
             store.finishPreparation(scope, job); return;
         }
@@ -953,7 +977,8 @@ public final class SyncClient implements Closeable {
 
     /** Claim a live event read, cancelling only a queued lower-priority job. */
     private boolean claimDirectRefresh(String threadId) {
-        synchronized (prefetchLock) {
+        if(store.isRetiredDirectoryThread(scope,threadId))return false;
+        synchronized(prefetchLock) {
             PrefetchTask prior = prefetchByThread.get(threadId);
             if (prior != null) {
                 if (prior.started) return false;
@@ -1013,6 +1038,10 @@ public final class SyncClient implements Closeable {
         }
 
         @Override public void run() {
+            if(store.isRetiredDirectoryThread(scope,threadId) && (priority != PREFETCH_FOCUS_PRIORITY || preparation != null)) {
+                synchronized(prefetchLock){if(prefetchByThread.get(queueKey)==this)prefetchByThread.remove(queueKey);}
+                store.retireDirectoryPreparations(scope,threadId); return;
+            }
             synchronized (prefetchLock) {
                 if (cancelled || prefetchByThread.get(queueKey) != this
                         || !(preparation!=null&&"archive".equals(preparation.kind))&&directRefreshThreads.contains(threadId)) {
@@ -1127,6 +1156,7 @@ public final class SyncClient implements Closeable {
 
     private void runHistoryWarm(JSONObject candidate) {
         String id = candidate.optString("threadId", "");
+        if (store.isRetiredDirectoryThread(scope,id)){store.retireDirectoryPreparations(scope,id);return;}
         if (store.isInternalDirectoryThread(scope, id)) return;
         String traceId = UUID.randomUUID().toString();
         long startedAt = SystemClock.elapsedRealtime();
@@ -1251,6 +1281,7 @@ public final class SyncClient implements Closeable {
     private void fetchThreadTurnsInternal(String threadId, boolean baseline,
                                           @Nullable String batchTraceId, boolean allowInternal) throws IOException, JSONException {
         if (threadId == null || threadId.isEmpty() || threadId.length() > 160) return;
+        if(!allowInternal&&store.isRetiredDirectoryThread(scope,threadId)){store.retireDirectoryPreparations(scope,threadId);return;}
         String traceId = NativeDiagnostics.isUuid(batchTraceId) ? batchTraceId : UUID.randomUUID().toString();
         long startedAt = SystemClock.elapsedRealtime();
         String expectedGeneration = store.catalogCursor(scope).generation;
@@ -2089,8 +2120,7 @@ public final class SyncClient implements Closeable {
         if (periodicCatalog != null) periodicCatalog.cancel(true);
         WebSocket current = socket;
         socket = null;
-        if (current != null) current.cancel();
-        http.dispatcher().cancelAll();
+        NetworkClientClose.close(http, () -> { if (current != null) current.cancel(); });
         timers.shutdownNow();
         worker.shutdownNow();
         projectionWorker.shutdownNow();
@@ -2103,8 +2133,6 @@ public final class SyncClient implements Closeable {
         prefetchWorkers.shutdownNow();
         focusWorkers.shutdownNow();
         store.clearPreparationFocus(scope);
-        http.dispatcher().executorService().shutdown();
-        http.connectionPool().evictAll();
     }
 
     private static final class CatalogSessionChangedException extends IOException {CatalogSessionChangedException(){super("catalogue session changed");}}

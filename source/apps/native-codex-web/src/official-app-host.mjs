@@ -1,7 +1,32 @@
 import {randomUUID} from 'node:crypto';
+import {gunzipSync} from 'node:zlib';
 import {workspace,fail} from './registry.mjs';
 import {createOfficialSettings} from './official-settings.mjs';
 import {ThreadTitleGeneration} from './thread-title-generation.mjs';
+// The pinned SDK uses the same initialize URL for bootstrap and live-overlay
+// reads. Keep its request encoding local; never forward user/SDK credentials.
+async function isLiveOverlay(request,url){
+ if(!request.body)return false;
+ const limit=64*1024;let bytes;
+ if(request.body instanceof ReadableStream){
+  const reader=request.body.getReader(),chunks=[];let size=0;
+  try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>limit)throw fail(413,'本地界面配置请求过大');chunks.push(value);}}
+  finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  bytes=Buffer.concat(chunks);
+ }else if(typeof request.body==='string'||request.body instanceof Uint8Array){bytes=Buffer.from(request.body);}
+ else throw fail(400,'本地界面配置请求格式无效');
+ if(bytes.length>limit)throw fail(413,'本地界面配置请求过大');
+ try{
+  if(url.searchParams.get('gz')==='1')bytes=gunzipSync(bytes,{maxOutputLength:limit});
+  let text=bytes.toString('utf8');
+  if(url.searchParams.get('se')==='1'){
+   const encoded=[...text].reverse().join('');
+   if(!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)||encoded.length%4)throw Error('encoding');
+   text=Buffer.from(encoded,'base64').toString('utf8');
+  }
+  return JSON.parse(text)?.responseMode==='live_overlay';
+ }catch{throw fail(400,'本地界面配置请求格式无效');}
+}
 // AppHost contracts follow the pinned official renderer. Native execution still
 // flows through OfficialBoundary; browser-only presentation has no auto-answer.
 export function createAppHostFactory({RpcTarget,boundary,state,persist,files,native,clients,send,browserAction,fileUrl,titleDiagnostic=()=>{},titleGenerator=new ThreadTitleGeneration({native,diagnostic:titleDiagnostic}),settings=createOfficialSettings({RpcTarget,state,persist})}){
@@ -42,6 +67,10 @@ export function createAppHostFactory({RpcTarget,boundary,state,persist,files,nat
    // official resources use AppHost.httpFetch instead. Keep the same local
    // language bootstrap, without forwarding credentials or changing routing.
    if(u.hostname==='ab.chatgpt.com'&&u.pathname.replace(/\/+$/,'')==='/v1/initialize'){
+    // These locally pinned flags do not have remote live changes. Returning
+    // bootstrap JSON here made the real live parser reject response_mode on
+    // every poll. Its native 204 contract retains the initialized flags.
+    if(await isLiveOverlay(request,u))return {response:new Response(null,{status:204})};
     // Pinned renderer gates: async question cards and their inline answer UI.
     // These only expose native questions; they do not auto-answer or change tools.
     const feature_gates=Object.fromEntries(['580984490','3125406982'].map(name=>[name,{name,value:true,rule_id:'local_native_question_ui',secondary_exposures:[]}]));

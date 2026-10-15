@@ -1,5 +1,8 @@
+import {patchSubmissionWorkspaceContext} from './official-submission-workspace.mjs';
 import {patchCodexHomeOverlap} from './official-codex-home-overlap.mjs';
+import {patchSubmissionRequirementsOverlap} from './official-requirements-overlap.mjs';
 import {patchSameAttemptHeadConfig} from './official-attempt-head-config.mjs';
+import {patchFollowerSubmissionHead} from './official-follower-submission.mjs';
 // The pinned renderer keeps a full resume promise for history consumers. A
 // submission only needs its completed Native/configuration phase. Do not turn a
 // successful thread/read into ownership or skip the original Native resume.
@@ -54,11 +57,15 @@ export function patchSubmissionReadiness(source) {
   'params:e,product:n,historyPolicy:this.history,onExecutionReady:dshResolve,isCurrentResumeAttempt:');
  replace('c={promise:s,cancel:o};return this.inFlightConversationResumes.set(e.conversationId,c),s}',
   'c={promise:s,cancel:o,executionReady:dshReady};return s.then(dshResolve,dshReject),this.inFlightConversationResumes.set(e.conversationId,c),s}');
+ // The SDK's no-client-found fallback used to rejoin the full history promise,
+ // bypassing the submission barrier above. Only an existing local submission
+ // may use that barrier; compaction, navigation and remote hosts keep theirs.
+ source=patchUnavailableOwnerSubmission(source);
  // Only the submission's compatibility hook may choose the shorter promise.
  // Normal navigation and history callers still await resumeConversation.
  replace('let t=await Rb(e,r.getHostId()).resumeConversation({conversationId:a,model:null,serviceTier:o,reasoningEffort:null,workspaceRoots:p,useAppServerPermissionDefault:s,collaborationMode:m},{readResumeInputs:KO(e,r.getHostId())});',
   'let t=await(r.dshResumeForSubmission?((...args)=>r.dshResumeForSubmission(...args)):((...args)=>Rb(e,r.getHostId()).resumeConversation(...args)))({conversationId:a,model:null,serviceTier:o,reasoningEffort:null,workspaceRoots:p,useAppServerPermissionDefault:s,collaborationMode:m},{readResumeInputs:KO(e,r.getHostId())});');
- return patchCodexHomeOverlap(patchParallelSubmissionReads(patchResumeMetadataLane(patchPreparationMetadataRefresh(patchParallelResumePreparation(source)))));
+ return patchSubmissionWorkspaceContext(patchSubmissionRequirementsOverlap(patchCodexHomeOverlap(patchParallelSubmissionReads(patchResumeMetadataLane(patchPreparationMetadataRefresh(patchParallelResumePreparation(source)))))));
 }
 
 // The renderer tool catalogue depends only on the settings already captured by
@@ -173,4 +180,12 @@ async function dshAttemptDefaultPersonality(manager,context,threadId,messageId,c
  return source.replace('async function TMs(',helpers+'async function TMs(').replace(capture,captured).replace(finish,finished).replace(read,reused);
 }
 
-export function patchSameAttemptSubmissionConfig(source){return patchSameAttemptHeadConfig(patchAttemptConfigBase(source));}
+export function patchSameAttemptSubmissionConfig(source){return patchFollowerSubmissionHead(patchSameAttemptHeadConfig(patchAttemptConfigBase(source)));}
+
+export function patchUnavailableOwnerSubmission(source){
+ const before='resumeConversationForUnavailableOwner(e,t){return this.maybeResumeConversation(e,t)}';
+ const after='resumeConversationForUnavailableOwner(e,t){return this.getHostId()===`local`&&this.dshSubmissionHead?.(e.conversationId)&&this.dshResumeForSubmission?this.dshResumeForSubmission(e,void 0,()=>this.maybeResumeConversation(e,t)):this.maybeResumeConversation(e,t)}';
+ if(source.includes(after))return source;
+ if(source.split(before).length!==2)throw Error('Pinned missing-owner submission contract changed');
+ return source.replace(before,after);
+}

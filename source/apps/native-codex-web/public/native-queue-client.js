@@ -211,12 +211,21 @@
   const reconcileVisibleSubmission=event=>{if(!receiptCanObserve())return;const id=event?.detail?.threadId||location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1];if(id)reconcileSubmission(id).catch(()=>{});};
   const stopReceiptListener=requestClient?.addRequestLifecycleListener?.(event=>{
    if(!receiptClientActive())return;
+   // Android bridge timing ends at a different boundary. Keep the actual SDK
+   // request lifecycle on both clients so preparation and receipt can be split.
+   try{window.__DSH_CLIENT_LOG__?.nativeSubmissionLifecycle?.(event);}catch{}
    if(event.type==='started'){
     const command=rememberSubmission(event);if(command)receiptWaiting.add(command.threadId);
     if(['turn/interrupt','thread/stop'].includes(event.method)&&event.params?.threadId)controlRequests.set(event.id,event.params.threadId);
     return;
    }
    if(!['completed','failed','timed-out'].includes(event.type))return;
+   // Native acceptance is enough to settle the matching local send indicator.
+   // SDK transcript/persistence callbacks may finish later; they do not grant
+   // or revoke this receipt. This is presentation only, never another dispatch.
+   const receivedCommand=event.type==='completed'&&[...submissionRequests.values()].map(requests=>requests.get(event.id)).find(Boolean);
+   const receivedTurnId=receivedCommand?.method==='turn/start'?event.result?.turn?.id:event.result?.turnId;
+   if(receivedCommand&&event.method===receivedCommand.method&&typeof receivedTurnId==='string'&&/^[0-9a-f-]{36}$/i.test(receivedTurnId)){try{window.__DSH_ANDROID_PENDING__?.acceptNativeReceipt?.({threadId:receivedCommand.threadId,traceId:receivedCommand.clientUserMessageId,turnId:receivedTurnId});}catch{}}
    // Plain timeouts retain observation only while their original promise or
    // exact unknown marker remains; a rejected request alone must stop polling.
    const timedOutCommand=event.type==='timed-out'&&[...submissionRequests.values()].map(requests=>requests.get(event.id)).find(Boolean);
@@ -230,6 +239,25 @@
   host.getActiveTurnId=id=>{const head=sending.get(id);return head?.isCurrent()?head.activeTurnId:activeTurn(id);};
   host.hasFinalAnswer=id=>{const head=sending.get(id);return head?.isCurrent()&&head.activeTurnId!==activeTurn(id)?false:finalAnswer(id);};
   client.dshSubmissionHead=id=>sending.get(id);
+  // Resume and turn preparation verify the same host Fast requirement. Share
+  // only their current submission's issued config capability, never a TTL or
+  // display cache. Both official jan() consumers still parse the Native DTO.
+  const submissionRequirements=new WeakMap();
+  if(requestClient)requestClient.dshReadSubmissionRequirements=async(id,options,warm=false)=>{
+   const head=sending.get(id),snapshot=head?.configReadSnapshot;
+   const current=()=>receiptClientActive()&&requestClient===client.requestClient&&head?.threadId===id&&sending.get(id)?.configReadSnapshot===snapshot&&sending.get(id)?.isCurrent()&&snapshot?.isCurrent()&&!client.pendingThreadSettingsUpdates?.has(id)&&client.getThreadWorkspaceState?.(id)?.pendingRevision==null;
+   const read=()=>client.sendRequest('configRequirements/read',undefined,options);
+   if(!snapshot||!current())return read();
+   if(head.submissionContext?.token&&head.submissionContext.requirements&&Object.hasOwn(head.submissionContext.requirements,'requirements'))return structuredClone(head.submissionContext.requirements);
+   const previous=submissionRequirements.get(snapshot);
+   if(previous?.threadId===id){let value;try{value=await previous.promise;}catch(error){if(submissionRequirements.get(snapshot)===previous)submissionRequirements.delete(snapshot);throw error;}if(current())return structuredClone(value);return read();}
+   const entry={threadId:id,promise:null};
+   entry.promise=Promise.resolve().then(read).then(value=>{
+    if(!current()||!value||typeof value!=='object'||Array.isArray(value)||!Object.hasOwn(value,'requirements')){if(submissionRequirements.get(snapshot)===entry)submissionRequirements.delete(snapshot);return value;}
+    return structuredClone(value);
+   },error=>{if(!warm&&submissionRequirements.get(snapshot)===entry)submissionRequirements.delete(snapshot);throw error;});
+   submissionRequirements.set(snapshot,entry);return structuredClone(await entry.promise);
+  };
   // Navigation still owns its original full hydration promise. Only an explicit
   // send with a fresh, current Native head may use the *same* resume attempt's
   // completed execution phase. A loaded thread is never an ownership grant.
@@ -240,8 +268,33 @@
   };
   if(resumeConversation){
    const submissionMethods=Object.create(Object.getPrototypeOf(client));Object.setPrototypeOf(client,submissionMethods);
+   Object.defineProperty(submissionMethods,'dshWithFollowerSubmissionHead',{value:async function(id,traceId,run){
+    // Called only by the official owner handler, after its assertion. Preserve
+    // that assertion here as well; fresh metadata alone cannot grant a writer.
+    client.assertThreadFollowerOwner(id);
+    if(sending.has(id))throw Error('这条会话正在提交，请等待接收结果');
+    const fence={isCurrent:()=>false};sending.set(id,fence);
+    const started=performance.now();
+    const log=(stage,extra={})=>{try{window.__DSH_CLIENT_LOG__?.event('send_flow',{stage,reason:'preparation',method:'turn/start',threadId:id,traceId,component:'native-http',...extra});}catch{}};
+    log('preparing');
+    try{
+     await client.waitForPendingThreadSettingsUpdate?.(id);
+     const head=await client.dshReadExecutionHead(id,{traceId});
+     client.assertThreadFollowerOwner(id);
+     if(sending.get(id)!==fence||!head.isCurrent()||client.disposed||q.disposed)throw Error('发送准备期间会话或连接已变化，消息尚未发送；草稿已保留');
+     sending.set(id,head);
+     if(!submissionReady(id))throw Error('发送执行状态尚未就绪，消息尚未发送；草稿已保留');
+     log('received',{durationMs:Math.round(performance.now()-started)});
+     return await run(head);
+    }catch(error){log('failed',{durationMs:Math.round(performance.now()-started)});throw error;}
+    finally{sending.delete(id);}
+   }});
    Object.defineProperty(submissionMethods,'dshResumeForSubmission',{value:async function(params,options,fallback=resumeConversation){
     const id=params.conversationId,head=sending.get(id),entry=client.inFlightConversationResumes?.get(id);
+    // The current Native head and an already resumed owner are sufficient for
+    // this explicit send. Re-running the original resume repeats optional
+    // workspace/configuration preparation even though execution is ready.
+    if(!entry&&submissionReady(id)&&client.getConversation(id).resumeState==='resumed')return {status:'ready',activeTurnId:head.activeTurnId,threadSource:head.threadSource};
     if(submissionReady(id)&&entry?.executionReady){
      const owner=client.getStreamRole(id),result=await entry.executionReady;
      if(result?.status!=='ready')return result;
@@ -257,7 +310,7 @@
     if(result?.status!=='ready')return result;
     if(head&&sending.get(id)===head){
      await client.waitForPendingThreadSettingsUpdate?.(id);
-     const current=await client.dshReadExecutionHead(id);sending.set(id,current);
+     const current=await client.dshReadExecutionHead(id,{priorHead:head});sending.set(id,current);
      if(!current.isCurrent()||!submissionReady(id))throw Error('发送执行状态已变化，消息尚未发送；草稿已保留');
      return {status:'ready',activeTurnId:current.activeTurnId,threadSource:current.threadSource};
     }
@@ -283,13 +336,14 @@
    const traceId=request.message?.id;
    let prerequisite='thread/read',releaseHome=null;
    try{
-    releaseHome=q.prepareMessage?.dshWarmCodexHomeQuery?.(request);
     if(!client.dshReadExecutionHead)throw Error('发送状态尚未就绪，草稿已保留');
     window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'preparing',reason:'native',method:'thread/read',threadId:id,traceId});
     // Start the independently authenticated head read alongside the existing
     // Native resume. Its owner/configuration acceptance remains mandatory;
     // display preparation must not add another sequential head-read wait.
-    const readingHead=Promise.resolve().then(()=>client.dshReadExecutionHead(id));readingHead.catch(()=>{});
+    const submissionContext=client.dshTakeSubmissionContext?.(id,request);
+    releaseHome=q.prepareMessage?.dshWarmCodexHomeQuery?.(request,submissionContext?.isCurrent?.()?submissionContext.reply?.submissionContext:null);
+    const readingHead=Promise.resolve().then(()=>client.dshReadExecutionHead(id,{traceId,...(submissionContext?{submissionContext}:{})}));readingHead.catch(()=>{});
     const resume=client.inFlightConversationResumes?.get(id);
     const failureTag=Symbol('send-prerequisite');
     const check=(work,method)=>Promise.resolve(work).catch(error=>{throw {tag:failureTag,method,error};});
@@ -303,12 +357,16 @@
     // A cold resume/reconnect can retire the parallel head while the same
     // original preparation is completing. Recheck reads once, after that
     // preparation; no command has been submitted and no write is replayed.
-    if(!head.isCurrent()){
+    if(!head.isCurrent()||resume?.executionReady&&!head.loaded){
      window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'preparing',reason:'preparation',method:'thread/read',threadId:id,traceId});
-     head=await client.dshReadExecutionHead(id);
+     head=await client.dshReadExecutionHead(id,{priorHead:head,traceId});
     }
     if(!head.isCurrent()||q.disposed||client.disposed)throw Error('发送准备期间会话或连接已变化，消息尚未发送；草稿已保留');
     sending.set(id,head);prerequisite=null;
+    // Overlap the same attempt's required policy read with SDK preparation.
+    // The SDK supplies its original options; the original consumer still
+    // validates the DTO and receives any failure, without an extra retry.
+    q.prepareMessage?.dshWarmSubmissionRequirements?.(request);
     window.__DSH_CLIENT_LOG__?.event('send_flow',{stage:'received',reason:'preparation',method:'thread/read',threadId:id,traceId});
     return await sendMessage(request,...args);
    }

@@ -95,9 +95,9 @@ public final class SyncForegroundService extends Service implements SyncClient.L
             }
             @Override public void onConditionsChanged() {
                 if (!enabled || client == null) return;
-                JSONObject state = statusSnapshot(SyncForegroundService.this, scope);
-                updateForeground(state);
-                publishStatus(state);
+                // Broadcast/network callbacks may run on the UI thread.
+                // The existing client worker owns status reads and publication.
+                client.requestStatePublication();
             }
         });
     }
@@ -135,7 +135,7 @@ public final class SyncForegroundService extends Service implements SyncClient.L
             getPreferences().edit().putString(PREF_SCOPE, scope).apply();
             enabled = true;
             setEnabled(scope, true);
-            startForegroundNow();
+            if (!startForegroundNow()) { stopSelf(startId); return START_NOT_STICKY; }
             startClient();
             backgroundConnection.start(isEnhanced(this));
             return START_STICKY;
@@ -145,7 +145,7 @@ public final class SyncForegroundService extends Service implements SyncClient.L
         scope = syncScope(this, getPreferences().getString(PREF_SCOPE, DshConfig.DEFAULT_SCOPE));
         enabled = isEnabled(scope);
         if (enabled) {
-            startForegroundNow();
+            if (!startForegroundNow()) { stopSelf(startId); return START_NOT_STICKY; }
             startClient();
             backgroundConnection.start(isEnhanced(this));
             return START_STICKY;
@@ -154,7 +154,7 @@ public final class SyncForegroundService extends Service implements SyncClient.L
         return START_NOT_STICKY;
     }
 
-    private void startForegroundNow() {
+    private boolean startForegroundNow() {
         Notification notification = foregroundNotification("正在准备持续同步");
         try {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -163,8 +163,20 @@ public final class SyncForegroundService extends Service implements SyncClient.L
                 startForeground(FOREGROUND_ID, notification);
             }
             diagnostic("shown", "service_start", diagnosticFields(null, null));
+            return true;
         } catch (RuntimeException failure) {
             diagnostic("failed", "request_failed", diagnosticFields(null, null));
+            if (Build.VERSION.SDK_INT >= 31 && failure instanceof android.app.ForegroundServiceStartNotAllowedException) {
+                // Android can deny the in-service promotion after accepting startForegroundService.
+                // Preserve explicit enabled intent; visible resume already restores it.
+                JSONObject state = store.getState(scope);
+                try {
+                    state.put("state", "start_restricted").put("running", false).put("online", false)
+                            .put("transportConnected", false).put("error", "BACKGROUND_START_RESTRICTED");
+                } catch (JSONException ignored) {}
+                store.setState(scope, state);publishStatus(state);
+                return false;
+            }
             throw failure;
         }
     }
@@ -624,8 +636,14 @@ public final class SyncForegroundService extends Service implements SyncClient.L
     }
 
     public static JSONObject statusSnapshot(Context context, String scope) {
-        String selected = DshConfig.scopeOrDefault(scope);
         try (SyncStore store = new SyncStore(context)) {
+            return statusSnapshot(context, scope, store);
+        }
+    }
+
+    /** The Activity bridge already owns a live store; avoid reopening it for every poll. */
+    static JSONObject statusSnapshot(Context context, String scope, SyncStore store) {
+        String selected = DshConfig.scopeOrDefault(scope);
             JSONObject result = store.getState(selected);
             try {
                 result.put("version", 1);
@@ -649,7 +667,6 @@ public final class SyncForegroundService extends Service implements SyncClient.L
             } catch (JSONException ignored) {
             }
             return result;
-        }
     }
 
     private static int stableId(String value) {

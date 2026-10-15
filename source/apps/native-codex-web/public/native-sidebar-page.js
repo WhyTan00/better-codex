@@ -59,36 +59,35 @@
  window.__DSH_REGISTER_NATIVE_CLIENT__=client=>{window.__DSH_INSTALL_NATIVE_READ_CACHE__?.(client);window.__DSH_READING_POSITION__?.register(client);window.__DSH_INSTALL_NATIVE_QUEUE__?.(client);if(registered.has(client))return;registered.add(client);if(client.hostId==='local'&&typeof client.hydrateBackgroundThreads==='function'){prewarmClient=client;setTimeout(prewarm,1500);}};
 
  const listUrl='/?workspace='+scope.id+'&view=chat&nativeList=1';let list=!!scope.nativeList||new URL(location.href).searchParams.get('nativeList')==='1',intent=false,lastReady=null;
- let sidebarWasOpen=false,sidebarWidth=innerWidth,keepSidebarClosedUntil=0,initialSidebarClose=touch&&!list;
+ let sidebarDesiredOpen=list,sidebarWidth=innerWidth;
  function preserveSidebarOnResize(){
   if(!touch)return;
-  if(innerWidth!==sidebarWidth){if(!list&&!sidebarWasOpen)keepSidebarClosedUntil=Date.now()+1000;sidebarWidth=innerWidth;}
+  sidebarWidth=innerWidth;
   if(list)return;
   const toggle=document.querySelector('[data-app-shell-sidebar-trigger][aria-controls="app-shell-sidebar"]');if(!toggle)return;
   const expanded=toggle.getAttribute('aria-expanded')==='true';
-  // The native desktop breakpoint can open its panel during a fold/unfold.
-  // Keep the user's closed mobile chat panel closed through that transition.
-  if((initialSidebarClose||Date.now()<keepSidebarClosedUntil)&&expanded){initialSidebarClose=false;closeSidebar();return;}
-  initialSidebarClose=false;sidebarWasOpen=expanded;
+  // Native layout/state restoration may arrive long after a fold transition.
+  // Only an explicit user toggle or list navigation changes the desired state.
+  if(!sidebarDesiredOpen&&expanded)closeSidebar();
  }
  function applyThreadVisibility(){for(const row of document.querySelectorAll('#root [data-app-action-sidebar-thread-row]')){const id=row.getAttribute('data-app-action-sidebar-thread-id')?.replace(/^local:/,''),hidden=window.__DSH_THREAD_LIST_VISIBILITY__?.isHidden(id);if(hidden)row.setAttribute('data-dsh-unsent-thread','1');else row.removeAttribute('data-dsh-unsent-thread');}}
  addEventListener('dsh:thread-list-visibility',applyThreadVisibility);
- function setView(value){list=value;root.dataset.dshView=value?'list':'chat';if(value)ensureSidebar();}
+ function setView(value){list=value;sidebarDesiredOpen=value;root.dataset.dshView=value?'list':'chat';if(value)ensureSidebar();}
  let listReadyReported=false;function ensureSidebar(){if(!list)return;if(!listReadyReported&&document.querySelector('[data-app-action-sidebar-thread-row]')){listReadyReported=true;window.__DSH_PERF__?.event('native_list_ready');}const toggle=document.querySelector('[data-app-shell-sidebar-trigger][aria-controls="app-shell-sidebar"][aria-expanded="false"]');toggle?.click();}
  function closeSidebar(){if(!touch)return;document.querySelector('[data-app-shell-sidebar-trigger][aria-controls="app-shell-sidebar"][aria-expanded="true"]')?.click();}
  function show(push=true){document.activeElement?.blur();window.__DSH_FOCUS_POLICY__?.reset('list');intent=false;setView(true);if(push&&window.__DSH_NAVIGATION__){window.__DSH_NAVIGATION__.backToList();}else if(push){const u=new URL(location.href);if(!/^\/local\/[0-9a-f-]{36}$/i.test(u.pathname)){u.pathname='/';u.searchParams.set('view','chat');}u.searchParams.set('workspace',scope.id);u.searchParams.set('nativeList','1');history.pushState({...history.state,dshListPage:true,dshNativeList:true},'',u.href);}window.__DSH_PERF__?.event('list_visible');prewarm();}
- window.__DSH_NATIVE_SIDEBAR__={show,openWorkbench(){list=false;root.dataset.dshView='chat';closeSidebar();},get isList(){return list;},restore(){setView(new URL(location.href).searchParams.get('nativeList')==='1'||!!history.state?.dshListPage);}};
+ window.__DSH_NATIVE_SIDEBAR__={show,openWorkbench(){setView(false);closeSidebar();},get isList(){return list;},restore(){setView(new URL(location.href).searchParams.get('nativeList')==='1'||!!history.state?.dshListPage);}};
  setView(list);
  document.addEventListener('click',event=>{
   const target=event.target,button=target.closest?.('button'),row=target.closest?.('[data-app-action-sidebar-thread-row]');
   if(target.closest?.('[role="menu"]')||button?.getAttribute('aria-haspopup')==='menu')return;
-  if(event.isTrusted&&target.closest?.('[data-app-shell-sidebar-trigger]')){keepSidebarClosedUntil=0;initialSidebarClose=false;sidebarWasOpen=button?.getAttribute('aria-expanded')!=='true';}
+  if(event.isTrusted&&target.closest?.('[data-app-shell-sidebar-trigger]'))sidebarDesiredOpen=button?.getAttribute('aria-expanded')!=='true';
   const label=button?.getAttribute('aria-label')||'',text=button?.textContent?.trim()||'';
   const action=/置顶|归档|Pin |Unpin|Archive/i.test(label);
   const newChat=!row&&(/^(新对话|新聊天|New chat)$/.test(label)||/^(新对话|新聊天|New chat)$/.test(text)||/中开始新聊天/.test(label));
   if(action||(!row&&!newChat))return;
   if(newChat)window.__DSH_RESET_NEW_CHAT_MODEL__?.();
-  const clicked=row?.getAttribute('data-app-action-sidebar-thread-id')?.replace(/^local:/,''),cached=list&&clicked&&lastReady===clicked&&location.pathname==='/local/'+clicked;intent=true;sidebarWasOpen=false;setView(false);if(window.__DSH_NAVIGATION__)window.__DSH_NAVIGATION__.beginConversation(clicked?'/local/'+clicked:'/');else{const u=new URL(location.href);u.searchParams.delete('nativeList');history.replaceState({...history.state,dshListPage:false,dshNativeList:false},'',u.href);}window.__DSH_PERF__?.navigation(Date.now());window.__DSH_PERF__?.event('list_click');queueMicrotask(closeSidebar);if(cached)requestAnimationFrame(()=>requestAnimationFrame(()=>{window.__DSH_PERF__?.event('cached_view');window.__DSH_PERF__?.ready(clicked);}));
+  const clicked=row?.getAttribute('data-app-action-sidebar-thread-id')?.replace(/^local:/,''),cached=list&&clicked&&lastReady===clicked&&location.pathname==='/local/'+clicked;intent=true;setView(false);if(window.__DSH_NAVIGATION__)window.__DSH_NAVIGATION__.beginConversation(clicked?'/local/'+clicked:'/');else{const u=new URL(location.href);u.searchParams.delete('nativeList');history.replaceState({...history.state,dshListPage:false,dshNativeList:false},'',u.href);}window.__DSH_PERF__?.navigation(Date.now());window.__DSH_PERF__?.event('list_click');queueMicrotask(closeSidebar);if(cached)requestAnimationFrame(()=>requestAnimationFrame(()=>{window.__DSH_PERF__?.event('cached_view');window.__DSH_PERF__?.ready(clicked);}));
  },true);
  addEventListener('dsh:conversation-ready',()=>{lastReady=location.pathname.match(/^\/local\/([0-9a-f-]{36})$/i)?.[1]||null;});
  addEventListener('dsh:native-route',()=>{if(intent||!list){setView(false);intent=false;}});

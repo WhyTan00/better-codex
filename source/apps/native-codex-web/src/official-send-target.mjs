@@ -2,6 +2,25 @@
 // The web bundle has no Android optimistic-paint phase, but its late-bound
 // submit callback still needs the same conversation identity checks.
 export const sendTargetAssetPrefix='/official-patched-v1026/assets/';
+export function patchWebSubmissionClock(source){
+ const before='dshSendOrigin.path=location.pathname;';
+ const after=before+'globalThis.__DSH_CLIENT_LOG__?.beginSubmission?.(dshSendOrigin.threadId);';
+ if(source.includes(after))return source;
+ if(source.split(before).length!==2)throw Error('Web composer submission clock contract changed');
+ return source.replace(before,after);
+}
+// Observe the original awaited submit return separately from Native acceptance.
+// The opaque action clock prevents a late A return from borrowing a later click.
+export function patchWebSubmissionReturnClock(source){
+ const edits=[
+  ['let dshAcceptedThread=null;','let dshAcceptedThread=null;const dshSubmissionClock=globalThis.__DSH_CLIENT_LOG__?.submissionClock?.(dshCompletionOrigin.threadId);'],
+  ['dshAcceptedThread=t?.threadId??null;','dshAcceptedThread=t?.threadId??null;globalThis.__DSH_CLIENT_LOG__?.submissionReturned?.(dshSubmissionClock,t);']
+ ];
+ if(edits.every(([,after])=>source.split(after).length===2))return source;
+ for(const [before]of edits)if(source.split(before).length!==2)throw Error('Web submit return clock contract changed or incomplete');
+ for(const [before,after]of edits)source=source.replace(before,after);
+ return source;
+}
 export function patchWebSendTarget(source){
  const edits=[
   ['s=Cv(async(a={})=>{','s=Cv(async(a={})=>{const dshSendOrigin={threadId:PC(r),clientThreadId:r.value.kind===`local`?r.value.clientThreadId:r.value.kind===`new`?r.value.browserTabMentionConversationId:null,path:location.pathname};if(n.type===`local`&&a.navigation!==`background`){const route=location.pathname.match(/^\\/local\\/([a-f0-9-]{36})$/i)?.[1]??null;if(route?route!==dshSendOrigin.threadId&&route!==dshSendOrigin.clientThreadId:dshSendOrigin.threadId!=null)throw Error(`会话正在切换，请返回原会话后发送`);}'],
@@ -64,7 +83,7 @@ export function patchSendPreparationPaint(source){
 // when this creation still owns the captured selection, even with onCreated.
 // A later list/new-chat/conversation selection invalidates that permission.
 export function patchAcceptedCreationNavigation(source){
- if(source.includes('const dshCreationSelection='))return source;
+ if(source.includes('const dshCreationSelection='))return patchLogicalPresentationOwnership(source);
  const replacements=[
  ['const dshCompletionOrigin={threadId:c,clientThreadId:o,path:location.pathname};','const dshCompletionOrigin={threadId:c,clientThreadId:o,path:location.pathname,selectionRevision:window.__DSH_NAVIGATION__?.selectionRevision?.()};'],
  ['const dshOwnsComposer=()=>{if(K.type!==`local`)return true;','const dshOwnsComposer=()=>{if(K.type!==`local`)return true;if(dshCompletionOrigin.selectionRevision!=null&&window.__DSH_NAVIGATION__?.selectionRevision?.()!==dshCompletionOrigin.selectionRevision)return false;'],
@@ -77,5 +96,16 @@ export function patchAcceptedCreationNavigation(source){
  if(source.split(origin).length!==2)throw Error('Accepted creation origin contract changed');source=source.replace(origin,next);
  const navigation='i||(F&&M!=null&&o!=null&&e.get(D_e)?.pathname===Mv(o)?m(Mv(t),{replace:!0}):F&&g==null&&M==null&&f()&&m(`/local/${t}`))';
  const accepted='i||(F&&dshSubmitOrigin.threadId==null&&dshSubmitOwns(t)?m(Mv(t),{replace:!0}):F&&M!=null&&o!=null&&e.get(D_e)?.pathname===Mv(o)?m(Mv(t),{replace:!0}):F&&g==null&&M==null&&f()&&m(`/local/${t}`))';
- if(source.split(navigation).length!==2)throw Error('Accepted creation route contract changed');source=source.replace(navigation,accepted);const bind='if(dshSubmitOwns(t))dshSubmittedThread=t;try{';if(source.split(bind).length===2)return source.replace(bind,'window.__DSH_ANDROID_PENDING__?.bindThread?.(o,t);if(dshSubmitOwns(t))dshSubmittedThread=t;try{');const legacy='K=(0,P9.default)(async t=>{try{o!=null&&G()';if(source.split(legacy).length!==2)throw Error('Accepted creation binding contract changed');return source.replace(legacy,'K=(0,P9.default)(async t=>{window.__DSH_ANDROID_PENDING__?.bindThread?.(o,t);if(dshSubmitOwns(t))dshSubmittedThread=t;try{o!=null&&G()');
+ if(source.split(navigation).length!==2)throw Error('Accepted creation route contract changed');source=source.replace(navigation,accepted);const bind='if(dshSubmitOwns(t))dshSubmittedThread=t;try{';if(source.split(bind).length===2)return patchLogicalPresentationOwnership(source.replace(bind,'window.__DSH_ANDROID_PENDING__?.bindThread?.(o,t);if(dshSubmitOwns(t))dshSubmittedThread=t;try{'));const legacy='K=(0,P9.default)(async t=>{try{o!=null&&G()';if(source.split(legacy).length!==2)throw Error('Accepted creation binding contract changed');return patchLogicalPresentationOwnership(source.replace(legacy,'K=(0,P9.default)(async t=>{window.__DSH_ANDROID_PENDING__?.bindThread?.(o,t);if(dshSubmitOwns(t))dshSubmittedThread=t;try{o!=null&&G()'));
+}
+
+// The selected renderer can reach new/home before the browser URL mirrors it.
+export function patchLogicalPresentationOwnership(source){
+ const prefix='const dshPresentationPath=()=>window.__DSH_NAVIGATION__?.presentationPath?.()??location.pathname;';
+ const count=source.split(prefix).length-1;if(count===2)return source;if(count)throw Error('Incomplete logical presentation guard');
+ for(const [begin,end]of [['const dshCompletionOrigin=',';i=dshOwnedCallback(i);'],['const dshSubmitOrigin=','let k=']]){
+  const start=source.indexOf(begin),finish=source.indexOf(end,start);if(start<0||finish<=start)throw Error('Logical presentation ownership contract changed');
+  const block=source.slice(start,finish);if(block.split('location.pathname').length<4)throw Error('Logical presentation route anchors changed');
+  source=source.replace(block,prefix+block.replaceAll('location.pathname','dshPresentationPath()'));
+ }return source;
 }

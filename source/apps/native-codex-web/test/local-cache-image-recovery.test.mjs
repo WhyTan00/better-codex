@@ -30,7 +30,7 @@ function fixture({durable=new Map(),records=new Map(),scopeId='ai',sourceGenerat
  const memoryMeta=new Map([['catalog-generation',sourceGeneration]]),localReads=[],network=[],paint=[];
  const scoped=key=>scopeId+':'+key;
  const context={Map,Set,Promise,Date,JSON,Math,structuredClone,Symbol,setTimeout,clearTimeout,CACHE_IO_TIMEOUT_MS:1200,
-  scope:{id:scopeId},memoryMeta,diagnostics:{},historyViewEpoch:1,nativeClient:{disposed:false},androidReader:true,nativeEventEpoch:new Map(),savedReadVersions:new Map(),
+  scope:{id:scopeId},memoryMeta,diagnostics:{},historyViewEpoch:1,nativeClient:{disposed:false},androidReader:true,nativeEventEpoch:new Map(),savedReadVersions:new Map(),rememberNativeItemHeads(){},
   document:{visibilityState:'visible'},location:{pathname:'/local/'+id},navigator:{onLine:false},window:{__DSH_NATIVE_SIDEBAR__:{isList:false}},
   remaining:deadline=>Math.max(1,deadline-Date.now()),
   meta:async key=>key==='catalog-generation'?memoryMeta.get(key):structuredClone(durable.get(scoped(key))),

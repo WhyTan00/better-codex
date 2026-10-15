@@ -1,6 +1,7 @@
 // 官方 renderer 的服务端边界：固定工作区过滤，不改变家庭共享身份或既有执行权限。
 import {createHash} from 'node:crypto';
 import {AppCatalogCache} from './app-catalog-cache.mjs';
+import {ownedVisualizationRootAllowed} from './owned-visualization-root.mjs';
 import {realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {runtimeProfile} from './runtime-profile.mjs';
@@ -10,12 +11,12 @@ import {errorDiagnosticFields,hashDiagnosticId} from './connection-diagnostics.m
 import {internalThread} from './native-read-cache.mjs';
 const READS=new Set(['thread/read','thread/turns/list','thread/items/list','thread/queue/list','thread/goal/get','thread/attachment/list','thread/backgroundTerminals/list','thread/searchOccurrences']);
 const HISTORY_WRITES=new Set(['thread/revert']);
-const WRITES=new Set(['thread/resume','thread/name/set','thread/archive','thread/unarchive','thread/delete','turn/start','turn/interrupt','thread/stop','turn/steer','thread/fork','thread/section/move','thread/settings/update','thread/queue/add','thread/queue/update','thread/queue/delete','thread/queue/reorder','thread/queue/start','thread/goal/set','thread/goal/clear',...HISTORY_WRITES]);
+const WRITES=new Set(['thread/resume','thread/metadata/update','thread/name/set','thread/archive','thread/unarchive','thread/delete','turn/start','turn/interrupt','thread/stop','turn/steer','thread/fork','thread/section/move','thread/settings/update','thread/queue/add','thread/queue/update','thread/queue/delete','thread/queue/reorder','thread/queue/start','thread/goal/set','thread/goal/clear',...HISTORY_WRITES]);
 const GLOBAL=new Set(['model/list','modelProvider/capabilities/read','account/read','account/rateLimits/read','configRequirements/read','experimentalFeature/list','remoteControl/status/read','collaborationMode/list']);
 // The shared scoped product does not expose these Desktop-only capabilities.
 // Report an unavailable method, not expired credentials; do not forward it or
 // fabricate an empty successful result for private/global Native data.
-const UNAVAILABLE=new Set(['plugin/list','plugin/installed','externalAgentConfig/import/readHistories','thread/metadata/update','thread/rollback']);
+const UNAVAILABLE=new Set(['plugin/installed','externalAgentConfig/import/readHistories','thread/rollback']);
 const CONFIG_KEYS=['model','review_model','model_provider','approval_policy','approvals_reviewer','sandbox_mode','sandbox_workspace_write','model_reasoning_effort','model_reasoning_summary','model_verbosity','service_tier','personality','web_search','features'];
 const PREFERENCE_WRITES=new Set(['config/batchWrite','config/value/write']);
 const PREFERENCE_KEYS=['model','model_reasoning_effort','service_tier'];
@@ -58,7 +59,7 @@ function elicitationReply(value,params){
  if(!['form','openai/form','openaiForm','url','openai/userVerification'].includes(params.mode))throw fail(400,'补充输入形式无效');
 }
 const nativeProfile=mode=>({'workspace-write':':workspace','read-only':':read-only','danger-full-access':':danger-full-access'}[mode]);
-async function runtimeRootAllowed(root,ws,threadId){if(await belongs(root,ws))return true;if(!threadId||typeof root!=='string')return false;const base=path.join(runtimeProfile.codexHome,'visualizations');if(!root.startsWith(base+path.sep))return false;const match=root.slice(base.length+1).match(/^(\d{4}\/\d{2}\/\d{2})\/([0-9a-f-]{36})(?:\/|$)/i);if(match?.[2]!==threadId)return false;try{const expected=path.join(await realpath(base),match[1],threadId),actual=await realpath(root);return actual===expected||actual.startsWith(expected+path.sep);}catch{return false;}}
+async function runtimeRootAllowed(root,ws,threadId){if(await belongs(root,ws))return true;return ownedVisualizationRootAllowed(root,runtimeProfile.codexHome,threadId);}
 // New Native replies describe the existing local host as an environment. The
 // renderer echoes that descriptor on the first turn. Normalize only the same
 // previously allowed cwd/roots; never select a remote host or widen a scope.
@@ -236,8 +237,20 @@ export class OfficialBoundary {
  }
  async #dispatch(scope,request,{clientId='',pageId='',connectionId='',capacityGuard=null}={}){
   const ws=workspace(scope),method=request?.method,p={...(request?.params||{})};let resumePolicy=null;
+  const submissionContext=p.dshSubmissionContext;delete p.dshSubmissionContext;if(submissionContext!=null&&(method!=='turn/start'||typeof submissionContext!=='string'))throw fail(400,'发送信息凭证无效');
   if(UNAVAILABLE.has(method))throw Object.assign(fail(501,'当前分区工作台暂不提供这项可选能力'),{rpcCode:-32601});
   await this.native.start();
+  if(method==='plugin/list'){
+   if(Object.keys(p).some(k=>!['cwds','forceRefetch','marketplaceKinds'].includes(k)))throw fail(400,'插件目录请求参数无效');
+   if(Object.hasOwn(p,'forceRefetch')&&typeof p.forceRefetch!=='boolean')throw fail(400,'插件目录刷新参数无效');
+   if(p.marketplaceKinds!=null&&(!Array.isArray(p.marketplaceKinds)||p.marketplaceKinds.some(k=>!['local','vertical','workspace-directory','shared-with-me','created-by-me-remote'].includes(k))))throw fail(400,'插件目录类型无效');
+   if(p.cwds!=null&&(!Array.isArray(p.cwds)||p.cwds.some(cwd=>typeof cwd!=='string'||!path.isAbsolute(cwd))))throw fail(400,'插件工作目录无效');
+   // The official local SDK appends this internal testing marketplace to its
+   // scoped roots. It is a technical discovery hint, never a workspace grant.
+   const technicalCwd=path.join(runtimeProfile.codexHome,'.tmp/marketplaces/openai-internal-testing');
+   const requestedCwds=(p.cwds??[ws.root]).filter(cwd=>cwd!==technicalCwd),cwds=requestedCwds.length?requestedCwds:[ws.root];if(!(await Promise.all(cwds.map(cwd=>belongs(cwd,ws)))).every(Boolean))throw Object.assign(fail(403,'插件工作目录超出当前分区'),{diagnosticPolicyReason:'workspace_policy_denied'});
+   return this.native.rpc(method,{...p,cwds},{id:request.id,scope,pageId,connectionId,params:{...p,cwds}});
+  }
   if(this.capacityRetry&&method==='dsh/capacityRetry/read')return this.capacityRetry.read(scope,p);
   if(this.capacityRetry&&method==='dsh/capacityRetry/cancel')return this.capacityRetry.stop(scope,p);
   if(method==='config/read'){
@@ -288,7 +301,7 @@ export class OfficialBoundary {
    return {...result,data};
   }
   if(GLOBAL.has(method))return this.native.rpc(method,p);
-  if(method==='skills/list'||method==='hooks/list'){const cwds=p.cwds?.length?p.cwds:[ws.root];for(const cwd of cwds)if(!await belongs(cwd,ws))throw fail(403,'技能或钩子工作目录超出当前工作区');return this.native.rpc(method,{...p,cwds});}
+  if(method==='skills/list'||method==='hooks/list'){const cwds=p.cwds?.length?p.cwds:[ws.root];for(const cwd of cwds)if(!await belongs(cwd,ws))throw Object.assign(fail(403,'技能或钩子工作目录超出当前工作区'),{diagnosticPolicyReason:'workspace_policy_denied'});return this.native.rpc(method,{...p,cwds});}
   if(method==='app/list')return (await this.readAppCatalog(scope,{params:p,diagnostic:{id:request.id,scope,pageId,connectionId,params:p}})).result;
   if(method==='mcpServerStatus/list'){
    // The renderer requests this through multiple hooks during recovery. Share
@@ -297,7 +310,7 @@ export class OfficialBoundary {
    let pending=this.auxiliaryReads.get(key);if(!pending){pending=Promise.resolve().then(()=>this.native.rpc(method,p));this.auxiliaryReads.set(key,pending);pending.finally(()=>{if(this.auxiliaryReads.get(key)===pending)this.auxiliaryReads.delete(key);}).catch(()=>{});}
    return structuredClone(await pending);
   }
-  if(method!=='thread/start'&&!WRITES.has(method))throw fail(403,'此能力尚未开放于分区工作台');
+  if(method!=='thread/start'&&!WRITES.has(method))throw Object.assign(fail(403,'此能力尚未开放于分区工作台'),{diagnosticPolicyReason:'native_method_unmapped'});
   if(runtimeProfile.portable&&ws.readOnly)throw fail(403,'Workspace is read-only');
   if(HISTORY_WRITES.has(method)){
    // The official edit action rewrites history before starting its replacement
@@ -348,6 +361,12 @@ export class OfficialBoundary {
   }
   if(p.cwd&&!await belongs(p.cwd,ws))throw fail(403,'工作目录超出当前工作区');
   if(p.runtimeWorkspaceRoots&&(!Array.isArray(p.runtimeWorkspaceRoots)||!(await Promise.all(p.runtimeWorkspaceRoots.map(root=>runtimeRootAllowed(root,ws,p.threadId)))).every(Boolean)))throw fail(403,'运行工作区超出当前分区');
+  if(method==='thread/metadata/update'){
+   validateId(p.threadId);
+   // Only the renderer's actual Git-branch patch is mapped. Keep all metadata
+   // changes in the original scoped serial Journal and Native writer gate.
+   if(Object.keys(p).some(k=>!['threadId','gitInfo'].includes(k))||!plain(p.gitInfo)||Object.keys(p.gitInfo).length!==1||!Object.hasOwn(p.gitInfo,'branch')||p.gitInfo.branch!==null&&(typeof p.gitInfo.branch!=='string'||!p.gitInfo.branch.length))throw fail(400,'这里只允许更新此会话的 Git 分支元信息');
+  }
   if(method==='thread/settings/update'){
    // The native picker updates the current thread, not config/batchWrite.
    // Its deprecated delegation hint is ignored by Native; keep host governance.
@@ -362,6 +381,7 @@ export class OfficialBoundary {
    const r=await this.journal.run(ws.id,id,{method,params:{...p,...(requestEffort===undefined?{}:{config:{model_reasoning_effort:requestEffort}})}},async()=>{
     // Resume is the native atomic writer-lock acquisition. A historical origin
     // is not a reason to deny it; other mutations still require this host.
+    if(submissionContext!=null){if(!this.verifySubmissionContext)throw fail(409,'宿主尚不支持此发送信息凭证');await this.verifySubmissionContext(scope,p.threadId,submissionContext);this.onSubmissionContextVerified?.({scope,threadId:p.threadId,pageId,connectionId});}
     if(['turn/start','turn/steer',...HISTORY_WRITES].includes(method)&&this.historyIsPreparing(scope,p.threadId)){await this.checked(ws,p.threadId,{fresh:true});throw fail(409,'旧会话历史仍在准备，输入已保留；请等待准备完成后再操作。');}
     const thread=method==='thread/start'?null:['thread/resume','thread/section/move','thread/delete'].includes(method)?await this.checked(ws,p.threadId,{fresh:method==='thread/delete'||method==='thread/resume'&&!!this.historyUpgradeBeforeResume}):await this.writable(ws,p.threadId);
     // A successful scope check must precede any official CLI migration. Its
@@ -382,6 +402,10 @@ export class OfficialBoundary {
     if(capacityGuard&&!capacityGuard())throw fail(409,'原回合已变化，自动重试已取消');
     const nativeParams=['thread/start','thread/resume'].includes(method)&&(this.enableDefaultModeQuestions||requestEffort!==undefined)?{...p,config:{...(this.enableDefaultModeQuestions?{'features.default_mode_request_user_input':true}:{}),...(requestEffort===undefined?{}:{model_reasoning_effort:requestEffort})}}:p;
     const diagnostic={id:request.id,scope,pageId,connectionId,params:nativeParams},startObservation=method==='turn/start'?{terminalTurns:new Set(),closed:false,lastStarted:null}:null;if(startObservation)this.pendingStarts.set(p.threadId,startObservation);let value;try{value=await this.native.rpc(method,nativeParams,diagnostic);}catch(e){if(method==='thread/resume'&&/no rollout found for thread id|not materialized yet/i.test(e.message||'')){const empty=await this.loadedEmptyThread(ws,p.threadId);if(empty){if(p.model!=null||requestEffort!==undefined)await this.native.rpc('thread/settings/update',{threadId:p.threadId,...(p.model==null?{}:{model:p.model}),...(requestEffort===undefined?{}:{effort:requestEffort})},{id:request.id,scope,params:{threadId:p.threadId,...(p.model==null?{}:{model:p.model}),...(requestEffort===undefined?{}:{effort:requestEffort})}});value={...empty,...(p.model==null?{}:{model:p.model}),...(requestEffort===undefined?{}:{reasoningEffort:requestEffort}),turnsBackwardsCursor:null,itemsBackwardsCursor:null};this.unmaterialized.add(p.threadId);}else throw e;}else if(![503,504].includes(e.code)&&/writer.*(?:lock|ownership)|thread.*already.*(?:use|open|load)/i.test(e.message||''))throw Object.assign(fail(409,'此会话仍由另一个 Codex 执行端持有；当前操作未执行，输入已保留。'),{rpcCode:e.rpcCode});else throw e;}finally{if(startObservation&&this.pendingStarts.get(p.threadId)===startObservation)this.pendingStarts.delete(p.threadId);}
+    if(method==='thread/metadata/update'){
+     if(value?.thread?.id!==p.threadId||!await belongs(value.thread.cwd,ws))throw fail(502,'宿主返回的会话元信息不匹配');
+     this.remember(value.thread);
+    }
     try{this.onNativeResponse(scope,method,p,value);}catch{}
     if(HISTORY_WRITES.has(method)&&value.thread){this.remember(value.thread);this.unmaterialized.delete(p.threadId);this.active.delete(p.threadId);}
     if(method==='thread/resume'&&value.thread){if(!this.journal.ownsThread(ws.id,value.thread.id))this.journal.manageThread(ws.id,value.thread.id);this.remember(value.thread);}

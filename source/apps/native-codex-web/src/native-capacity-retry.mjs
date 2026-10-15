@@ -16,7 +16,7 @@ export class NativeCapacityRetry {
  constructor({boundary,now=Date.now,setTimer=setTimeout,clearTimer=clearTimeout}){Object.assign(this,{boundary,now,setTimer,clearTimer});this.entries=new Map();this.errors=new Map();this.closed=false;}
  status(entry){return entry?{threadId:entry.threadId,failedTurnId:entry.failedTurnId,dueAt:entry.dueAt,state:entry.state,...(entry.retryTurnId?{retryTurnId:entry.retryTurnId}:{})}:null;}
  publish(entry,state){entry.state=state;this.entries.delete(entry.threadId);this.entries.set(entry.threadId,entry);while(this.entries.size>256){const id=[...this.entries].find(([,e])=>!['verifying','waiting','checking','dispatching'].includes(e.state))?.[0];if(!id)break;this.entries.delete(id);}}
- cancel(scope,threadId,expectedTurnId){const entry=this.entries.get(threadId);if(!entry||entry.scope!==scope)return null;if(expectedTurnId!=null&&expectedTurnId!==entry.failedTurnId)throw fail(409,'等待重试的回合已改变');if(['verifying','waiting','checking','dispatching'].includes(entry.state)&&!entry.dispatched){this.clearTimer(entry.timer);this.publish(entry,'cancelled');}return this.status(entry);}
+ cancel(scope,threadId,expectedTurnId){const entry=this.entries.get(threadId);if(!entry||entry.scope!==scope)return null;if(expectedTurnId!=null&&expectedTurnId!==entry.failedTurnId)throw fail(409,'等待重试的回合已改变');if(['verifying','waiting','checking','dispatching','unavailable'].includes(entry.state)&&!entry.dispatched){this.clearTimer(entry.timer);this.publish(entry,'cancelled');}return this.status(entry);}
  manual(scope,method,params){if(['turn/start','turn/steer','turn/interrupt','thread/stop','thread/revert','thread/archive','thread/delete','thread/settings/update'].includes(method))this.cancel(scope,params?.threadId);}
  observe(message){
   if(this.closed)return;const p=message.params||{},threadId=p.threadId,turnId=p.turnId||p.turn?.id;if(!threadId||!turnId)return;
@@ -58,7 +58,14 @@ export class NativeCapacityRetry {
    if(this.entries.get(entry.threadId)===entry&&!this.closed){entry.retryTurnId=result.turn?.id;this.publish(entry,'submitted');}
   }catch(error){if(this.current(entry,'checking','dispatching','running'))this.publish(entry,[503,504].includes(error.code)||/待核对|重复执行/.test(error.message||'')?'unknown':'unavailable');}
  }
- async read(scope,params){validateId(params.threadId);if(Object.keys(params).some(k=>k!=='threadId'))throw fail(400,'重试状态参数无效');await this.boundary.checked(workspace(scope),params.threadId);const entry=this.entries.get(params.threadId);return {enabled:scope==='ai',retry:entry?.scope===scope?this.status(entry):null};}
+ async read(scope,params){validateId(params.threadId);if(Object.keys(params).some(k=>k!=='threadId'))throw fail(400,'重试状态参数无效');await this.boundary.checked(workspace(scope),params.threadId);const entry=this.entries.get(params.threadId);
+  // A missed notification must not keep a retired failure banner across app
+  // restarts. Inspect only the exact latest turn; never retry or resume here.
+  if(entry?.scope===scope&&['unavailable','unknown'].includes(entry.state)&&this.boundary.native.state==='ready'){
+   const latest=(await this.boundary.native.rpc('thread/turns/list',{threadId:entry.threadId,limit:1,itemsView:'notLoaded',sortDirection:'desc'})).data?.[0];
+   if(this.entries.get(entry.threadId)===entry&&latest?.id&&latest.id!==entry.failedTurnId)this.publish(entry,'superseded');
+  }
+  return {enabled:scope==='ai',retry:entry?.scope===scope?this.status(entry):null};}
  async stop(scope,params){validateId(params.threadId);if(Object.keys(params).some(k=>!['threadId','failedTurnId'].includes(k))||typeof params.failedTurnId!=='string'||!params.failedTurnId||params.failedTurnId.length>256)throw fail(400,'停止重试参数无效');await this.boundary.writable(workspace(scope),params.threadId);return {retry:this.cancel(scope,params.threadId,params.failedTurnId)};}
  connectionLost(){for(const e of this.entries.values())if(['verifying','waiting','checking','dispatching','running'].includes(e.state)){this.clearTimer(e.timer);this.publish(e,['dispatching','running'].includes(e.state)?'unknown':'unavailable');}}
  close(){this.closed=true;for(const e of this.entries.values())this.clearTimer(e.timer);this.errors.clear();}

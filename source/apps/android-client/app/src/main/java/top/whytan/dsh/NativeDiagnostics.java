@@ -35,15 +35,18 @@ public final class NativeDiagnostics {
     private static final long TTL = 7L * 86400000L;
     private static final Set<String> COMPONENTS = set("android-app android-sync android-network android-store android-notification android-update android-webview android-bridge diagnostic-upload");
     private static final Set<String> STAGES = set("attempt dispatch connected received committed failed closed reconnecting skipped shown started stopped background foreground downloaded verified installed cancelled pending boot");
-    private static final Set<String> ERRORS = set("NullPointerException IllegalStateException IllegalArgumentException SecurityException IOException SQLiteException OutOfMemoryError RuntimeException Error unknown");
+    private static final Set<String> ERRORS = set("SSLHandshakeException SSLException SocketTimeoutException UnknownHostException InterruptedIOException NullPointerException IllegalStateException IllegalArgumentException SecurityException IOException SQLiteException OutOfMemoryError RuntimeException Error unknown JSONException SQLiteConstraintException SQLiteDatabaseLockedException SQLiteDiskIOException SQLiteFullException SQLiteReadOnlyDatabaseException SQLiteBlobTooBigException SQLiteCantOpenDatabaseException");
     private static final Set<String> FAILURE_CLASSES = set("dns tls timeout connection auth http parse aborted storage rpc_contract unknown");
-    private static final Set<String> METHODS = set("GET thread/read thread/list thread/turns/list thread/items/list native-bootstrap status readRecords readStream readThreadRecords requestSync focusThread openDeliverable resolveDeliverable diagnosticContext getTheme setTheme saveDocument getNotificationSettings setDeviceOwner setCompletionNotifications startSync stopSync openSettings scopeSession presentConversation readSavedThreadRecords readSavedRecord saveReadRecord saveVisibleProcesses readVisibleProcesses invalidateVisibleProcesses");
+    private static final Set<String> METHODS = set("GET thread/read thread/list thread/turns/list thread/items/list native-bootstrap status readRecords readStream readThreadRecords requestSync focusThread openDeliverable resolveDeliverable diagnosticContext getTheme setTheme saveDocument getNotificationSettings setDeviceOwner setCompletionNotifications startSync stopSync openSettings scopeSession presentConversation readSavedThreadRecords readBodyWitness readSavedRecord saveReadRecord saveVisibleProcesses readVisibleProcesses invalidateVisibleProcesses");
     private static final Set<String> ROUTES = set("scope_session native_catalog native_read native_bootstrap cloud_events other");
     private static final Set<String> IDS = set("traceId parentTraceId connectionId threadId turnId generation");
-    private static final Set<String> NUMBERS = set("durationMs revision count statusCode closeCode attempt itemCount turnCount pendingCount recordCursor eventCursor viewportHeight viewportOffset documentOffset composerTop composerBottom webViewOffset streamCursor catalogIntervalMs heartbeatMs");
-    private static final Set<String> BOOLS = set("online nativeOnline fresh localStored wasClean transportConnected textAvailable cacheReady enabled validated metered wifi cellular vpn batteryExempt deviceIdle powerSave backgroundRestricted screenInteractive wakeHeld enhanced networkAvailable networkMonitorRegistered");
+    private static final Set<String> NUMBERS = set("dnsStartMs dnsEndMs connectStartMs connectEndMs tlsStartMs tlsEndMs requestHeadersMs responseHeadersMs responseBodyStartMs responseBodyEndMs responseBytes downloadBytes expectedBytes durationMs revision count statusCode closeCode attempt itemCount turnCount pendingCount recordCursor eventCursor viewportHeight viewportOffset documentOffset composerTop composerBottom webViewOffset streamCursor catalogIntervalMs heartbeatMs storeWaitMs storeOpenMs storeQueryMs storeDecodeMs storeMetadataMs storeValidateMs storeSerializeMs storeWriteMs");
+    private static final Set<String> NETWORK_PHASES = set("queued dns connect tls request_headers response_headers response_body complete");
+    private static final Set<String> DOWNLOAD_PHASES = set("queued response_headers response_body file_open file_write integrity_verify package_verify install_file");
+    private static final Set<String> STORE_PHASES = set("enter open query decode metadata validate revision serialize insert complete");
+    private static final Set<String> BOOLS = set("connectionReused networkFailed online nativeOnline fresh localStored wasClean transportConnected textAvailable cacheReady enabled validated metered wifi cellular vpn batteryExempt deviceIdle powerSave backgroundRestricted screenInteractive wakeHeld enhanced networkAvailable networkMonitorRegistered");
     // Fixed operation labels only. Expanded alongside the gateway contract, never arbitrary error text.
-    private static final Set<String> REASONS = set("unknown empty focus_committed focus_failed focus_requested request_start request_received history_rejected uncaught_exception memory_pressure document_start foreground background activity_create activity_resume activity_pause activity_stop activity_destroy new_intent notification_open notification_ready navigation_cancelled navigation_timeout network_available network_lost network_changed network_unavailable validated_changed capabilities_changed screen_on screen_off user_present idle_changed power_save_changed device_awake service_create service_start service_stop service_destroy sticky_restart boot_restore package_replaced user_stop sync_start sync_stop socket_open socket_closed socket_error heartbeat_timeout send_failed auth_required request_failed catalog_refresh catalog_committed history_prefetch history_committed history_failed completion_received completion_posted completion_suppressed body_ready body_partial body_unavailable store_failed store_committed cache_import bridge_request bridge_reply bridge_failed main_frame page_started page_finished page_commit http_error ssl_error web_error renderer_gone check_start check_latest check_available check_failed download_start download_complete download_failed verify_ok verify_failed install_requested install_cancelled permission_required ui_embedded ui_cached ui_download ui_verified ui_failed cancelled stopped scope_changed periodic user_request ack_missing ack_partial ui_apply diagnostic_flush stream_received stream_committed stream_gap content_prepared content_painted input_empty layout_repaired sync_policy");
+    private static final Set<String> REASONS = set("network_summary unknown empty focus_committed focus_failed focus_requested request_start request_received history_rejected uncaught_exception memory_pressure document_start foreground background activity_create activity_resume activity_pause activity_stop activity_destroy new_intent notification_open notification_ready navigation_cancelled navigation_timeout network_available network_lost network_changed network_unavailable validated_changed capabilities_changed screen_on screen_off user_present idle_changed power_save_changed device_awake service_create service_start service_stop service_destroy sticky_restart boot_restore package_replaced user_stop sync_start sync_stop socket_open socket_closed socket_error heartbeat_timeout send_failed auth_required request_failed catalog_refresh catalog_committed history_prefetch history_committed history_failed completion_received completion_posted completion_suppressed body_ready body_partial body_unavailable store_failed store_committed cache_import bridge_request bridge_reply bridge_failed main_frame page_started page_finished page_commit http_error ssl_error web_error renderer_gone check_start check_latest check_available check_failed download_start download_complete download_failed verify_ok verify_failed install_requested install_cancelled permission_required ui_embedded ui_cached ui_download ui_verified ui_failed cancelled stopped scope_changed periodic user_request ack_missing ack_partial ui_apply diagnostic_flush stream_received stream_committed stream_gap content_prepared content_painted input_empty layout_repaired sync_policy");
     private static Set<String> set(String value) { return new HashSet<>(Arrays.asList(value.split(" "))); }
 
     /** Highest tier is bounded separately by the outbox retention ordering. */
@@ -53,7 +56,8 @@ public final class NativeDiagnostics {
         // A status broadcast is routine telemetry, not an application incident.
         if ("android-app".equals(component) && "received".equals(stage) && "periodic".equals(reason)) return 0;
         if ("send_flow".equals(kind) || "js_error".equals(kind) || "promise_rejection".equals(kind)
-                || "history_applied".equals(kind) || "content_readiness".equals(kind)) return 2;
+                || "history_applied".equals(kind) || "history_rejected".equals(kind) || "content_readiness".equals(kind)) return 2;
+        if("android-bridge".equals(component)&&fields!=null&&fields.optLong("durationMs")>=250L)return 2;
         if ("notification_open".equals(reason) || "history_rejected".equals(reason)
                 || "notification_ready".equals(reason) || "completion_posted".equals(reason)
                 || "failed".equals(stage) || "closed".equals(stage) || "pending".equals(stage)
@@ -80,6 +84,7 @@ public final class NativeDiagnostics {
     private final AtomicLong volatilePersistFailures = new AtomicLong();
     private final Set<String> queuedFlush = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> uploading = new HashSet<>(); // writer confined
+    private final java.util.Map<String,Long> uploadRetryAt = new java.util.HashMap<>(); // writer confined
     private final java.util.Map<String,String> uploadOutcomes = new java.util.HashMap<>(); // network confined
     private final String processId = UUID.randomUUID().toString();
     private volatile String lastScope;
@@ -113,20 +118,25 @@ public final class NativeDiagnostics {
 
     /** Durable device receipt only. The existing network outbox owns server delivery. */
     public void acceptWebEvents(String scope,JSONArray events,java.util.function.Consumer<JSONArray> result) {
+        acceptWebEventsReceipt(scope,events,receipt->{JSONArray discarded=receipt==null?null:receipt.optJSONArray("discardedEventIds");result.accept(receipt!=null&&(discarded==null||discarded.length()==0)?receipt.optJSONArray("acknowledgedEventIds"):null);});
+    }
+    public void acceptWebEventsReceipt(String scope,JSONArray events,java.util.function.Consumer<JSONObject> result) {
         if(!DshConfig.isScope(scope)||events==null||events.length()>30||events.toString().getBytes(StandardCharsets.UTF_8).length>32768||!admit(2)){result.accept(null);return;}
         writer.execute(()->{
-            JSONArray accepted=new JSONArray();SQLiteDatabase sql=null;boolean committed=false;
+            JSONArray received=new JSONArray(),accepted=new JSONArray(),discarded=new JSONArray();SQLiteDatabase sql=null;boolean committed=false;
             try{
                 java.util.List<JSONObject> rows=new java.util.ArrayList<>();for(int i=0;i<events.length();i++)rows.add(cleanWebEvent(events.getJSONObject(i)));
                 sql=db.getWritableDatabase();sql.beginTransaction();
-                for(JSONObject event:rows){String id=event.getString("eventId");ContentValues row=new ContentValues();row.put("id",id);row.put("scope",scope);row.put("at",event.getLong("clientAt"));row.put("payload",event.toString());row.put("priority",retentionPriority(event.optString("component"),event.optString("stage"),event));sql.insertWithOnConflict("outbox",null,row,SQLiteDatabase.CONFLICT_IGNORE);accepted.put(id);}
+                for(JSONObject event:rows){String id=event.getString("eventId");ContentValues row=new ContentValues();row.put("id",id);row.put("scope",scope);row.put("at",event.getLong("clientAt"));row.put("payload",event.toString());row.put("priority",retentionPriority(event.optString("component"),event.optString("stage"),event));sql.insertWithOnConflict("outbox",null,row,SQLiteDatabase.CONFLICT_IGNORE);received.put(id);}
                 int overflow=sql.delete("outbox","scope=? AND id NOT IN (SELECT id FROM outbox WHERE scope=? ORDER BY priority DESC,at DESC,rowid DESC LIMIT 2000)",new String[]{scope,scope});if(overflow>0)db.addMetric(scope,"journalDropped",overflow);
-                // A retained receipt cannot acknowledge a row evicted in this batch.
-                for(int i=0;i<accepted.length();i++)try(Cursor found=sql.rawQuery("SELECT 1 FROM outbox WHERE scope=? AND id=?",new String[]{scope,accepted.getString(i)})){if(!found.moveToFirst())throw new IllegalStateException("diagnostic retention full");}
+                // Retention eviction of one ordinary sample cannot roll back
+                // new incidents. Report discarded IDs separately from storage ACKs.
+                for(int i=0;i<received.length();i++)try(Cursor found=sql.rawQuery("SELECT 1 FROM outbox WHERE scope=? AND id=?",new String[]{scope,received.getString(i)})){if(found.moveToFirst())accepted.put(received.getString(i));else discarded.put(received.getString(i));}
                 sql.setTransactionSuccessful();committed=true;
             }catch(Exception failure){volatilePersistFailures.incrementAndGet();}
             finally{try{if(sql!=null&&sql.inTransaction())sql.endTransaction();}catch(Exception failure){committed=false;}release(2);}
-            result.accept(committed?accepted:null);if(committed)flushOnWriter(scope);
+            JSONObject receipt=null;if(committed)try{receipt=new JSONObject().put("received",true).put("acknowledgedEventIds",accepted).put("discardedEventIds",discarded);}catch(org.json.JSONException ignored){}
+            result.accept(receipt);if(committed)flushOnWriter(scope);
         });
     }
     private final OkHttpClient http;
@@ -173,9 +183,13 @@ this.http = DshNetwork.builder(context).connectTimeout(10, TimeUnit.SECONDS)
             for (String key : NUMBERS) { Object value = fields.opt(key); if (value instanceof Number) { double n = ((Number)value).doubleValue(); if (Double.isFinite(n) && n >= 0 && n <= 9007199254740991d && n == Math.rint(n)) out.put(key, value); } }
             for (String key : BOOLS) if (fields.opt(key) instanceof Boolean) out.put(key, fields.opt(key));
             String mode = fields.optString("syncMode", ""); if (Arrays.asList("foreground", "active", "settling", "checking", "idle", "offline").contains(mode)) out.put("syncMode", mode);
+            String storeScope = fields.optString("scope", ""); if(DshConfig.isScope(storeScope))out.put("scope",storeScope);
+            String storePhase = fields.optString("storePhase", ""); if(STORE_PHASES.contains(storePhase))out.put("storePhase",storePhase);
             String error = fields.optString("errorName", ""); if (!error.isEmpty()) out.put("errorName", ERRORS.contains(error) ? error : "unknown");
             String method=fields.optString("method", "");if(METHODS.contains(method))out.put("method",method);
             String route=fields.optString("routeClass", "");if(ROUTES.contains(route))out.put("routeClass",route);
+            String networkPhase=fields.optString("networkPhase", "");if(NETWORK_PHASES.contains(networkPhase))out.put("networkPhase",networkPhase);
+String downloadPhase=fields.optString("downloadPhase", "");if(DOWNLOAD_PHASES.contains(downloadPhase))out.put("downloadPhase",downloadPhase);
             String failure=fields.optString("failureClass", "");if(FAILURE_CLASSES.contains(failure))out.put("failureClass",failure);
             String reason = fields.optString("reason", ""); if (!reason.isEmpty()) out.put("reason", REASONS.contains(reason) ? reason : "unknown");
             for (String key : new String[]{"uiVersion", "previousUiVersion", "contentHash"}) { String ui = fields.optString(key, ""); if (ui.matches("[a-f0-9]{16}")) out.put(key, ui); }
@@ -201,6 +215,27 @@ this.http = DshNetwork.builder(context).connectTimeout(10, TimeUnit.SECONDS)
             if (priority == 0) queuedNormal.decrementAndGet();
         }
     }
+    static String storeErrorName(Throwable failure) {
+        String name=failure.getClass().getSimpleName();
+        if(ERRORS.contains(name))return name;
+        if(failure instanceof android.database.sqlite.SQLiteException)return "SQLiteException";
+        if(failure instanceof RuntimeException)return "RuntimeException";
+        return "unknown";
+    }
+    void storeTiming(String scope,String method,String traceId,SyncStore.OperationTiming timing) {
+        try {
+            if(!DshConfig.isScope(scope))return;
+            JSONObject fields=timing.fields();
+            if(!timing.failed()&&fields.getLong("durationMs")<250L)return;
+            fields.put("method",method).put("traceId",traceId).put("reason",timing.failed()?"store_failed":"bridge_reply");
+            fields.put("scope",scope);
+            JSONObject safe=safeFields(fields);
+            safe.put("component","android-store").put("stage",timing.failed()?"failed":"received");
+            android.util.Log.i("DshStoreTiming",safe.toString());
+            event(scope,"android-store",timing.failed()?"failed":"received",safe);
+        }catch(Exception ignored){ /* Observability must never change a bridge result. */ }
+    }
+
     public void event(String scope, String component, String stage, JSONObject fields) {
         if (!DshConfig.isScope(scope) || !COMPONENTS.contains(component) || !STAGES.contains(stage)) return;
         lastScope=scope;
@@ -235,7 +270,9 @@ this.http = DshNetwork.builder(context).connectTimeout(10, TimeUnit.SECONDS)
     }
     public void flush(String scope) { if (DshConfig.isScope(scope) && queuedFlush.add(scope)) writer.execute(() -> {queuedFlush.remove(scope);flushOnWriter(scope);}); }
     private void flushOnWriter(String scope) {
-        if (uploading.contains(scope)) return;
+        // A newly persisted WebView event is not permission to retry a failed
+        // network upload. Keep the durable receipt independent of delivery.
+        if (uploading.contains(scope) || SystemClock.elapsedRealtime() < uploadRetryAt.getOrDefault(scope, 0L)) return;
         try {
             int expired=db.getWritableDatabase().delete("outbox","scope=? AND at<?",new String[]{scope,Long.toString(System.currentTimeMillis()-TTL)});if(expired>0)db.addMetric(scope,"journalDropped",expired);
             JSONArray events = new JSONArray(); Set<String> ids = new HashSet<>();
@@ -296,6 +333,8 @@ this.http = DshNetwork.builder(context).connectTimeout(10, TimeUnit.SECONDS)
                 committed=true;
             } catch (Exception ignored) { try { db.addMetric(scope,"persistFailures",1); } catch (Exception unavailable) { volatilePersistFailures.incrementAndGet(); } }
             finally { uploading.remove(scope); }
+            if (ok && committed) uploadRetryAt.remove(scope);
+            else uploadRetryAt.put(scope, SystemClock.elapsedRealtime() + 30000L);
             // Drain only after a full accepted batch; failures wait for the normal next opportunity.
             if (ok && committed) writer.schedule(() -> flushOnWriter(scope), 300, TimeUnit.MILLISECONDS);
         });

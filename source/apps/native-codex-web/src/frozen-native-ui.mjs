@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {assertClientDiagnosticClosure} from './official-diagnostic-closure.mjs';
 
 // Both the cloud assets and the front entry use this exact accepted package.
 // A release must never regenerate its entry from an older source tree.
@@ -23,5 +24,9 @@ export async function frozenNativeUI(directory=new URL('../public/accepted-nativ
   const asset=name.match(/^native-assets\/(v\d+)\/([^/]+)$/);if(asset)files.set('/official-patched-'+asset[1]+'/assets/'+asset[2],text);
  }
  for(const key of ['scope','runtime','pwa','css','loader','shell','initial'])if(!files.has(manifest[key]))throw Error('Frozen UI missing '+key);
+ // A declared conversation renderer cannot depend on an upstream copy that
+ // may disappear after a Desktop update. Its exact bytes belong to this UI.
+ for(const key of ['primary','thread'])if(manifest[key]&&!files.has(manifest[key]))throw Error('Frozen UI missing '+key);
+ assertClientDiagnosticClosure(files.get(manifest.loader),files.get(manifest.scope));
  return {manifest,files,worker:content.get('native-ui/worker.js')};
 }

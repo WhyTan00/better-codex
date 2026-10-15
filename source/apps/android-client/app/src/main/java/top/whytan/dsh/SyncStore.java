@@ -32,7 +32,7 @@ import java.util.UUID;
  */
 public final class SyncStore extends SQLiteOpenHelper implements Closeable {
     private static final String DATABASE_NAME = "native-sync-v1.sqlite";
-    private static final int DATABASE_VERSION = 5;
+    private static final int DATABASE_VERSION = 7;
     private static final String META_STATE = "state";
     private static final String META_GENERATION = "generation";
     private static final String META_BOOTSTRAP = "bootstrap";
@@ -71,6 +71,54 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         RECORD_KINDS.add("historyCursor");
     }
 
+    /** Optional bridge-owned metadata only; no payload, keys, SQL or exception text. */
+    static final class OperationTiming {
+        private final long started = android.os.SystemClock.elapsedRealtime();
+        private long phaseAt = started;
+        private String phase = "enter";
+        private long waitMs, openMs, queryMs, decodeMs, metadataMs, validateMs, serializeMs, writeMs;
+        private String errorName, failureClass, failurePhase;
+        private void addElapsed() {
+            long ms = Math.max(0L, android.os.SystemClock.elapsedRealtime() - phaseAt);
+            switch (phase) {
+                case "enter": waitMs += ms; break;
+                case "open": openMs += ms; break;
+                case "query": case "revision": queryMs += ms; break;
+                case "decode": decodeMs += ms; break;
+                case "metadata": metadataMs += ms; break;
+                case "validate": validateMs += ms; break;
+                case "serialize": serializeMs += ms; break;
+                case "insert": writeMs += ms; break;
+                default: break;
+            }
+            phaseAt = android.os.SystemClock.elapsedRealtime();
+        }
+        void phase(String next) { addElapsed(); phase = next; }
+        void failed(Throwable failure) {
+            if (errorName != null) return;
+            failurePhase = phase;
+            errorName = NativeDiagnostics.storeErrorName(failure);
+            failureClass = failure instanceof android.database.sqlite.SQLiteException ? "storage"
+                    : failure instanceof JSONException ? "parse"
+                    : failure instanceof IllegalArgumentException ? "rpc_contract" : "unknown";
+        }
+        boolean failed() { return errorName != null; }
+        JSONObject fields() throws JSONException {
+            addElapsed();
+            JSONObject value = new JSONObject().put("durationMs", Math.max(0L, android.os.SystemClock.elapsedRealtime()-started))
+                    .put("storePhase",failed()?failurePhase:phase).put("storeWaitMs",waitMs).put("storeOpenMs",openMs).put("storeQueryMs",queryMs)
+                    .put("storeDecodeMs",decodeMs).put("storeMetadataMs",metadataMs).put("storeValidateMs",validateMs)
+                    .put("storeSerializeMs",serializeMs).put("storeWriteMs",writeMs);
+            if (failed()) value.put("errorName",errorName).put("failureClass",failureClass);
+            return value;
+        }
+    }
+    private static final ThreadLocal<OperationTiming> operationTiming = new ThreadLocal<>();
+    static OperationTiming beginOperationTiming() { OperationTiming value=new OperationTiming(); operationTiming.set(value); return value; }
+    static void endOperationTiming() { operationTiming.remove(); }
+    static void storePhase(String phase) { OperationTiming value=operationTiming.get(); if(value!=null)value.phase(phase); }
+    static void operationFailed(Throwable failure) { OperationTiming value=operationTiming.get(); if(value!=null)value.failed(failure); }
+
     private final Context appContext;
 
     public SyncStore(Context context) {
@@ -105,10 +153,16 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         db.execSQL("CREATE TABLE IF NOT EXISTS records (scope TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, thread_id TEXT NOT NULL DEFAULT '', generation TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL, payload TEXT, confirmed_at TEXT NOT NULL DEFAULT '', bytes INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, source_generation TEXT NOT NULL DEFAULT '', change_seq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope,key))");
         db.execSQL("CREATE INDEX IF NOT EXISTS records_revision ON records(scope,revision)");
         db.execSQL("CREATE INDEX IF NOT EXISTS records_kind ON records(scope,kind,deleted)");
+        // Opening a selected chat must use metadata for that chat, not walk
+        // every workspace payload in revision order. Include all identity
+        // columns so finding the two keys never loads history bodies.
+        db.execSQL("CREATE INDEX IF NOT EXISTS records_thread_opening ON records(scope,thread_id,source_generation,revision DESC,key,generation,deleted)");
+        createRecordPageIndex(db);
         // Read archives survive a relay/view rebuild. Original provenance and
         // pagination remain intact; these rows never advance sync or execution.
         db.execSQL("CREATE TABLE IF NOT EXISTS saved_records (scope TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, thread_id TEXT NOT NULL DEFAULT '', generation TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL, payload TEXT, confirmed_at TEXT NOT NULL DEFAULT '', bytes INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, source_generation TEXT NOT NULL DEFAULT '', change_seq INTEGER NOT NULL DEFAULT 0, saved_at INTEGER NOT NULL, PRIMARY KEY(scope,key,source_generation,generation))");
         db.execSQL("CREATE INDEX IF NOT EXISTS saved_records_thread ON saved_records(scope,thread_id,saved_at DESC)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS saved_records_opening ON saved_records(scope,thread_id,source_generation,generation,revision DESC,key,deleted)");
         db.execSQL("CREATE TABLE IF NOT EXISTS record_changes (scope TEXT NOT NULL, seq INTEGER NOT NULL, source_generation TEXT NOT NULL DEFAULT '', record_json TEXT NOT NULL, PRIMARY KEY(scope,seq))");
         db.execSQL("CREATE INDEX IF NOT EXISTS record_changes_scope_seq ON record_changes(scope,seq)");
         db.execSQL("CREATE INDEX IF NOT EXISTS record_changes_scope_generation_seq ON record_changes(scope,source_generation,seq)");
@@ -121,8 +175,17 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         db.execSQL("CREATE INDEX IF NOT EXISTS sync_preparations_due ON sync_preparations(scope,due_at,priority,requested_at)");
     }
 
+    private static void createRecordPageIndex(SQLiteDatabase db) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS records_scope_generation_change_seq ON records(scope,source_generation,change_seq)");
+    }
+
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion == 6 && newVersion == 7) {
+            // An index-only migration: original DTOs, cursors and archives stay intact.
+            createRecordPageIndex(db);
+            return;
+        }
         // v1 was never released. Recreate the change table so old rows without
         // a source generation cannot be mixed into a v2 page.
         if (oldVersion < 2) {
@@ -280,12 +343,35 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         getWritableDatabase().delete("meta","scope=? AND key LIKE 'stream:%'",new String[]{scope});
     }
 
+    /** A real adopted catalog tombstone retires only derived work, never local originals. */
+    public synchronized boolean isRetiredDirectoryThread(String scope, String thread) {
+        return DshConfig.isScope(scope) && isUuid(thread)
+                && getMeta(scope, "archive-deleted-thread:" + thread) != null;
+    }
+
+    private void retireDirectoryPreparationsLocked(SQLiteDatabase db, String scope, String thread) {
+        ensureFocusPriorities(db);
+        db.delete("sync_preparation_focus", "scope=? AND key LIKE ?", new String[]{scope, "%:" + thread + ":%"});
+        db.delete("sync_preparations", "scope=? AND thread_id=?", new String[]{scope, thread});
+        db.delete("meta", "scope=? AND key=?", new String[]{scope, "thread-runtime:" + thread});
+    }
+
+    public synchronized void retireDirectoryPreparations(String scope, String thread) {
+        if (!isRetiredDirectoryThread(scope, thread)) return;
+        SQLiteDatabase db=getWritableDatabase(); db.beginTransaction();
+        try { retireDirectoryPreparationsLocked(db,scope,thread); db.setTransactionSuccessful(); }
+        finally { db.endTransaction(); }
+    }
+
     /** Native runtime status is independent of history/catalog preparation. */
     public synchronized void commitRuntimeStatus(String scope, InboxEntry entry, JSONObject event) throws JSONException {
         String thread = event.optString("threadId");
         JSONObject status = event.optJSONObject("status");
         if (!isUuid(thread) || status == null || status.optString("type").isEmpty()) {
             completeEvent(scope, entry.id); return;
+        }
+        if (isRetiredDirectoryThread(scope,thread)) {
+            retireDirectoryPreparations(scope,thread); completeEvent(scope,entry.id); return;
         }
         SQLiteDatabase db = getWritableDatabase(); db.beginTransaction();
         try {
@@ -300,7 +386,10 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
 
     /** A foreground Native catalog read also repairs a missed status event. */
     public synchronized void reconcileCatalogRuntime(String scope, JSONObject record, String epoch, long beforeSeq) throws JSONException {
-        if (!"catalog".equals(record.optString("kind")) || record.optBoolean("deleted")) return;
+        if (!"catalog".equals(record.optString("kind"))) return;
+        if (record.optBoolean("deleted")) {
+            retireDirectoryPreparations(scope,record.optString("threadId")); return;
+        }
         String thread = record.optString("threadId"), key = "thread-runtime:" + thread;
         JSONObject old = parseObject(getMeta(scope, key));
         if (old == null || !epoch.equals(eventCursor(scope).epoch)
@@ -320,6 +409,10 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
                 || (!("history".equals(kind)||"archive".equals(kind)) && !isUuid(turnId))) throw new IllegalArgumentException("invalid preparation");
         String key = kind + ":" + threadId + ":" + (turnId == null ? "" : turnId);
         String target = safe(desired, 512);
+        if (isRetiredDirectoryThread(scope,threadId)) {
+            retireDirectoryPreparations(scope,threadId);
+            return new Preparation(key,kind,threadId,turnId==null?"":turnId,0L,target,priority,baseline,Long.MAX_VALUE,0,System.currentTimeMillis());
+        }
         if ("history".equals(kind) && historyPreparationReady(scope,threadId,target)) {
             getWritableDatabase().delete("sync_preparations","scope=? AND key=? AND desired=?",new String[]{scope,key,target});
             return new Preparation(key,kind,threadId,"",0L,target,priority,baseline,Long.MAX_VALUE,0,System.currentTimeMillis());
@@ -354,6 +447,12 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
 
     public synchronized List<Preparation> duePreparations(String scope, long now, int limit) {
         List<Preparation> result = new ArrayList<>();
+        // Older installed databases can already contain tombstones plus orphan jobs.
+        List<String> retired = new ArrayList<>();
+        try (Cursor rows=getReadableDatabase().rawQuery("SELECT DISTINCT thread_id FROM sync_preparations p WHERE scope=? AND EXISTS(SELECT 1 FROM meta m WHERE m.scope=p.scope AND m.key='archive-deleted-thread:'||p.thread_id)",new String[]{scope})) {
+            while(rows.moveToNext()) retired.add(rows.getString(0));
+        }
+        for(String thread:retired) retireDirectoryPreparations(scope,thread);
         try (Cursor rows = getReadableDatabase().query("sync_preparations", null,
                 "scope=? AND due_at<=?",new String[]{scope,Long.toString(now)},null,null,
                 "priority ASC,requested_at ASC,key ASC",Integer.toString(Math.max(1,Math.min(limit,128))))) {
@@ -566,9 +665,15 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         JSONObject prior=parseObject(getMeta(scope,key)),value=new JSONObject(incoming.toString());
         if(prior!=null&&prior.optString("sourceGeneration").equals(incoming.optString("sourceGeneration"))
                 &&prior.optString("generation").equals(incoming.optString("generation"))
-                &&prior.optLong("turnStartedAtMs")==incoming.optLong("turnStartedAtMs")&&prior.optLong("savedAt")>invalidated) {
+                &&prior.optLong("savedAt")>invalidated) {
+            // UI clocks differ between live notifications and Native history.
+            // UUID + source/history generation own identity; compare only
+            // optional raw Native start times, preserving the older witness.
+            long previousNativeStart=prior.optLong("nativeTurnStartedAtMs"),incomingNativeStart=incoming.optLong("nativeTurnStartedAtMs");
+            if(previousNativeStart>0&&incomingNativeStart>0&&previousNativeStart!=incomingNativeStart)return;
             JSONObject newer=prior.optLong("savedAt")>incoming.optLong("savedAt")?prior:incoming,older=newer==prior?incoming:prior;
-            value=new JSONObject(newer.toString());JSONArray items=value.getJSONArray("items"),order=value.getJSONArray("order");Set<String> seen=new HashSet<>(),ordered=new HashSet<>();
+            value=new JSONObject(newer.toString());if(value.optLong("nativeTurnStartedAtMs")<=0&&older.optLong("nativeTurnStartedAtMs")>0)value.put("nativeTurnStartedAtMs",older.optLong("nativeTurnStartedAtMs"));
+            JSONArray items=value.getJSONArray("items"),order=value.getJSONArray("order");Set<String> seen=new HashSet<>(),ordered=new HashSet<>();
             for(int i=0;i<items.length();i++)seen.add(items.getJSONObject(i).optString("id"));for(int i=0;i<order.length();i++)ordered.add(order.optString(i));
             JSONArray previous=older.optJSONArray("items");for(int i=0;previous!=null&&i<previous.length();i++){JSONObject item=previous.getJSONObject(i);if(!item.optString("id").isEmpty()&&seen.add(item.optString("id")))items.put(item);}
             // Keep the older timeline's anchors; insert newly observed items
@@ -775,7 +880,7 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
      * transaction has completed. The diagnostic payload contains identifiers
      * and counters only; it never includes the record key or payload body.
      */
-    public synchronized void applyNativeRecord(JSONObject record) throws JSONException {
+    public void applyNativeRecord(JSONObject record) throws JSONException {
         applyNativeRecord(record, null);
     }
 
@@ -784,16 +889,23 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
      * trace is metadata-only and lets a history read connect its HTTP child
      * request to the SQLite commit without putting IDs in business payloads.
      */
-    public synchronized void applyNativeRecord(JSONObject record, @Nullable String batchTraceId) throws JSONException {
+    public void applyNativeRecord(JSONObject record, @Nullable String batchTraceId) throws JSONException {
         String scope = record == null ? "" : record.optString("scope", "");
         String traceId = NativeDiagnostics.isUuid(batchTraceId) ? batchTraceId : UUID.randomUUID().toString();
+        long waiting = android.os.SystemClock.elapsedRealtime();
+        synchronized(this) {
+        long acquired = android.os.SystemClock.elapsedRealtime();
+        if (DshConfig.isScope(scope) && acquired - waiting >= 250L)
+            diagnostic(scope, "started", "store_committed", traceId, record, new JSONObject().put("durationMs", acquired - waiting));
         if (DshConfig.isScope(scope)) diagnostic(scope, "attempt", "store_committed", traceId, record, null);
         try {
             applyNativeRecordLocked(record);
-            if (DshConfig.isScope(scope)) diagnostic(scope, "committed", "store_committed", traceId, record, null);
+            if (DshConfig.isScope(scope)) diagnostic(scope, "committed", "store_committed", traceId, record,
+                new JSONObject().put("durationMs", android.os.SystemClock.elapsedRealtime() - acquired));
         } catch (JSONException | RuntimeException failure) {
             if (DshConfig.isScope(scope)) diagnostic(scope, "failed", "store_failed", traceId, record, null);
             throw failure;
+        }
         }
     }
 
@@ -979,6 +1091,9 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
                 }
             }
             if (oldGeneration != null && oldGeneration.equals(generation) && oldRevision >= revision) {
+                // Re-observing an already adopted tombstone repairs legacy derived debt.
+                if ("catalog".equals(kind) && isRetiredDirectoryThread(scope,record.optString("threadId")))
+                    retireDirectoryPreparationsLocked(db,scope,record.optString("threadId"));
                 db.setTransactionSuccessful();
                 return;
             }
@@ -1006,6 +1121,8 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
             boolean realDelete=record.optBoolean("deleted")&&(eviction==null||!eviction.optBoolean("cacheEvicted"));
             String fence="catalog".equals(kind)?"archive-deleted-thread:"+record.optString("threadId"):isHistoryReadKey(key)?"archive-deleted:"+key:null;
             if(fence!=null){if(realDelete)putMetaLocked(db,scope,fence,"1");else if(!record.optBoolean("deleted"))db.delete("meta","scope=? AND key=?",new String[]{scope,fence});}
+            if ("catalog".equals(kind) && realDelete)
+                retireDirectoryPreparationsLocked(db,scope,record.optString("threadId"));
             if (!record.optBoolean("deleted") && ("history".equals(kind) || "turn".equals(kind) || "item".equals(kind))) {
                 values.put("saved_at",System.currentTimeMillis());
                 db.insertWithOnConflict("saved_records",null,values,SQLiteDatabase.CONFLICT_REPLACE);
@@ -1032,6 +1149,7 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         JSONObject fields = new JSONObject();
         try {
             fields.put("traceId", traceId);
+            fields.put("reason", reason);
             if (record != null) {
                 String threadId = record.optString("threadId", "");
                 if (NativeDiagnostics.isUuid(threadId)) fields.put("threadId", threadId);
@@ -1047,6 +1165,8 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
                 if (revision instanceof Number) fields.put("revision", revision);
                 Object count = extra.opt("count");
                 if (count instanceof Number) fields.put("count", count);
+                Object duration = extra.opt("durationMs");
+                if (duration instanceof Number) fields.put("durationMs", duration);
             }
             NativeDiagnostics.get(appContext).event(scope, "android-store", stage, fields);
         } catch (Exception ignored) {
@@ -1097,27 +1217,68 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
     /** Read the selected thread directly without advancing the workspace import cursor. */
     public synchronized JSONObject readThreadRecords(String scope, String thread) throws JSONException {
         if (!DshConfig.isScope(scope) || !isUuid(thread)) throw new IllegalArgumentException("invalid thread");
-        String generation=sourceGeneration(scope);
-        JSONArray records=new JSONArray();int bytes=0;
-        try (Cursor rows=getReadableDatabase().query("records",
-                new String[]{"scope","key","kind","thread_id","generation","revision","payload","confirmed_at","bytes","deleted","source_generation","change_seq"},
-                "scope=? AND thread_id=? AND source_generation=? AND (key LIKE ? OR key LIKE ?)",
-                new String[]{scope,thread,generation,"read:[\"thread/read\",%","read:[\"thread/turns/list\",%"},null,null,"revision DESC","200")) {
-            while(rows.moveToNext()) {
-                JSONObject record=rowToRecord(rows);String key=record.optString("key");
-                if(!key.startsWith("read:"))continue;
-                JSONArray request;try{request=new JSONArray(key.substring(5));}catch(JSONException invalid){continue;}
-                String method=request.optString(0);JSONObject params=request.optJSONObject(1);
-                if(params==null||params.has("cursor")&&!params.isNull("cursor")||!("thread/read".equals(method)||"thread/turns/list".equals(method)))continue;
-                if("thread/read".equals(method)&&params.optBoolean("includeTurns"))continue;
-                if("thread/turns/list".equals(method)&&!"summary".equals(params.optString("itemsView")))continue;
-                validateRecord(record,false);int size=utf8Bytes(record.toString());
-                if(bytes+size>(size>MAX_PAGE_BYTES||bytes>MAX_PAGE_BYTES?MAX_BODY_ENVELOPE_BYTES:MAX_PAGE_BYTES))break;
-                records.put(record);bytes+=size;
+        String source = sourceGeneration(scope);
+        JSONArray records = initialThreadRecords("records", scope, thread, source, "");
+        // Foreground reads are also durably archived before workspace import.
+        // A valid but older projection must not hide that newer local page.
+        // Decode only the two selected opening records; never scan old bodies.
+        if(records.length()==2&&!records.getJSONObject(0).optBoolean("deleted")&&!records.getJSONObject(1).optBoolean("deleted")
+                &&getMeta(scope,"archive-deleted-thread:"+thread)==null) {
+            String generation=records.getJSONObject(0).optString("generation");
+            JSONArray saved=initialThreadRecords("saved_records",scope,thread,source,generation);
+            if(saved.length()==2)for(int i=0;i<2;i++) {
+                JSONObject current=records.getJSONObject(i),durable=saved.getJSONObject(i);
+                if(!durable.optBoolean("deleted")&&generation.equals(durable.optString("generation"))&&durable.optLong("revision")>current.optLong("revision"))records.put(i,durable);
             }
         }
-        return new JSONObject().put("scope",scope).put("threadId",thread).put("generation",generation)
-                .put("records",records);
+        return new JSONObject().put("scope", scope).put("threadId", thread).put("generation", source).put("records", records).put("bodyWitness",rendererBodyWitness(scope,thread));
+    }
+
+    // Scan only read identities first. A selected opening never decodes old
+    // cursor pages or every size/view variant merely to discard their bodies.
+    private JSONArray initialThreadRecords(String table, String scope, String thread, String source, String generation) throws JSONException {
+        SQLiteDatabase db = getReadableDatabase();
+        String where = "scope=? AND thread_id=? AND source_generation=?";
+        List<String> args = new ArrayList<>(java.util.Arrays.asList(scope, thread, source));
+        if (!generation.isEmpty()) { where += " AND generation=?"; args.add(generation); }
+        where += " AND (key LIKE ? OR key LIKE ?)";
+        args.add("read:[\"thread/read\",%"); args.add("read:[\"thread/turns/list\",%");
+        String headKey = null, turnKey = null, headGeneration = null;
+        Map<String,String> summaryKeys = new HashMap<>();
+        // The small identity columns may span many disk pages. Payloads do not.
+        try (Cursor rows = db.query(table, new String[]{"key", "generation", "deleted"}, where, args.toArray(new String[0]), null, null, "revision DESC", null)) {
+            while (rows.moveToNext()) {
+                String key = rows.getString(0);
+                JSONArray request;
+                try { request = new JSONArray(key.substring(5)); } catch (JSONException invalid) { continue; }
+                JSONObject params = request.optJSONObject(1); String method = request.optString(0);
+                if (params == null || !thread.equals(params.optString("threadId")) || params.has("cursor") && !params.isNull("cursor")) continue;
+                boolean head = "thread/read".equals(method) && !params.optBoolean("includeTurns");
+                boolean turns = "thread/turns/list".equals(method) && "summary".equals(params.optString("itemsView")) && "desc".equals(params.optString("sortDirection", "desc"));
+                if (!head && !turns || "saved_records".equals(table) && (rows.getInt(2) != 0 || getMeta(scope, "archive-deleted:" + key) != null)) continue;
+                if (head && headKey == null) { headKey = key; headGeneration = rows.getString(1); }
+                if (turns) summaryKeys.putIfAbsent(rows.getString(1),key);
+                if (headKey != null) turnKey = summaryKeys.get(headGeneration);
+                if (headKey != null && turnKey != null) break;
+            }
+        }
+        JSONArray result = new JSONArray(); int bytes = 0;
+        for (String key : new String[]{headKey, turnKey}) {
+            if (key == null) continue;
+            String selection = "scope=? AND key=? AND source_generation=?";
+            List<String> exact = new ArrayList<>(java.util.Arrays.asList(scope, key, source));
+            if (!generation.isEmpty()) { selection += " AND generation=?"; exact.add(generation); }
+            try (Cursor rows = db.query(table, READ_COLUMNS, selection, exact.toArray(new String[0]), null, null, "revision DESC", "1")) {
+                if (!rows.moveToFirst()) continue;
+                JSONObject record = rowToRecord(rows); validateRecord(record, false);
+                // Keep the existing source/thread generation and envelope fences.
+                if (headGeneration != null && !headGeneration.equals(record.optString("generation"))) continue;
+                int size = utf8Bytes(record.toString());
+                if (bytes + size > (size > MAX_PAGE_BYTES || bytes > MAX_PAGE_BYTES ? MAX_BODY_ENVELOPE_BYTES : MAX_PAGE_BYTES)) continue;
+                result.put(record); bytes += size;
+            }
+        }
+        return result;
     }
 
     private static final String[] READ_COLUMNS={"scope","key","kind","thread_id","generation","revision","payload","confirmed_at","bytes","deleted","source_generation","change_seq"};
@@ -1128,16 +1289,45 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
     }
     public synchronized JSONObject readSavedRecord(String scope,String key,String source,String generation) throws JSONException {
         if (!DshConfig.isScope(scope) || !isHistoryReadKey(key) || source.length()>MAX_SOURCE_GENERATION_LENGTH || generation.length()>160 || source.isEmpty()!=generation.isEmpty()) throw new IllegalArgumentException("invalid read identity");
+        return readSavedRecordFiltered(scope,key,source,generation);
+    }
+
+    // The current-reader API permits a source-only filter before a body witness
+    // exists. Apply those same filters when falling back to durable history;
+    // an absent projection is a cache miss, not an invalid exact-archive read.
+    private JSONObject readSavedRecordFiltered(String scope,String key,String source,String generation) throws JSONException {
         String thread=new JSONArray(key.substring(5)).getJSONObject(1).getString("threadId");
         JSONObject empty=new JSONObject().put("scope",scope).put("record",JSONObject.NULL);
         if(getMeta(scope,"archive-deleted-thread:"+thread)!=null||getMeta(scope,"archive-deleted:"+key)!=null)return empty;
-        String selection="scope=? AND key=?";String[] args={scope,key};
-        if(!source.isEmpty()){selection+=" AND source_generation=? AND generation=?";args=new String[]{scope,key,source,generation};}
+        String selection="scope=? AND key=?";java.util.List<String> filters=new java.util.ArrayList<>();filters.add(scope);filters.add(key);
+        if(!source.isEmpty()){selection+=" AND source_generation=?";filters.add(source);}
+        if(!generation.isEmpty()){selection+=" AND generation=?";filters.add(generation);}
+        String[] args=filters.toArray(new String[0]);
         try(Cursor rows=getReadableDatabase().query("saved_records",READ_COLUMNS,selection,args,null,null,"saved_at DESC,rowid DESC","1")) {
             if(!rows.moveToFirst())return empty;
             JSONObject record=rowToRecord(rows);validateRecord(record,false);
             return new JSONObject().put("scope",scope).put("record",record).put("saved",true);
         }
+    }
+
+    public synchronized JSONObject readLocalRecord(String scope,String key,String source,String generation)throws JSONException {
+        if(!DshConfig.isScope(scope)||key==null||key.length()>MAX_KEY_LENGTH||source.length()>MAX_SOURCE_GENERATION_LENGTH||generation.length()>160||!(isHistoryReadKey(key)||key.startsWith("turn:")||key.startsWith("item:")))throw new IllegalArgumentException("invalid local read");
+        try(Cursor rows=getReadableDatabase().query("records",READ_COLUMNS,"scope=? AND key=?",new String[]{scope,key},null,null,null,"1")) {
+            if(rows.moveToFirst()) {
+                JSONObject record=rowToRecord(rows);validateRecord(record,false);
+                if(!record.optBoolean("deleted")&&(source.isEmpty()||source.equals(record.optString("sourceGeneration")))&&(generation.isEmpty()||generation.equals(record.optString("generation"))))
+                    return new JSONObject().put("scope",scope).put("record",record).put("saved",false);
+            }
+        }
+        return isHistoryReadKey(key)?readSavedRecordFiltered(scope,key,source,generation):new JSONObject().put("scope",scope).put("record",JSONObject.NULL);
+    }
+
+    public synchronized JSONObject rendererBodyWitness(String scope,String thread)throws JSONException {
+        if(!DshConfig.isScope(scope)||!isUuid(thread))throw new IllegalArgumentException("invalid body witness");
+        JSONObject catalog=catalogRecord(scope,thread);
+        return new JSONObject().put("scope",scope).put("threadId",thread).put("sourceGeneration",sourceGeneration(scope))
+            .put("generation",catalog==null?"":catalog.optString("generation")).put("bodyCounter",bodyChangeCounter(scope,thread))
+            .put("retired",isRetiredDirectoryThread(scope,thread));
     }
 
     private static boolean isHistoryReadKey(String key) {
@@ -1149,17 +1339,23 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
 
     /** Save a validated reader DTO without changing the projection or its ACK. */
     public synchronized void saveReadRecord(String scope,JSONObject record) throws JSONException {
+        storePhase("validate");
         validateRecord(record,false);
-        if(record.optBoolean("deleted"))return;
+        if(record.optBoolean("deleted")){storePhase("complete");return;}
         String key=record.optString("key"),kind=record.optString("kind");
         if(!scope.equals(record.optString("scope"))||!isHistoryReadKey(key)||!record.optString("threadId").equals(new JSONArray(key.substring(5)).getJSONObject(1).optString("threadId"))||!("history".equals(kind)||"turn".equals(kind)||"item".equals(kind)))throw new IllegalArgumentException("invalid archive record");
+        storePhase("open");
         SQLiteDatabase db=getWritableDatabase();
+        storePhase("revision");
         // A delayed write in one version must not replace a newer saved page.
         try(Cursor old=db.query("saved_records",new String[]{"revision"},"scope=? AND key=? AND source_generation=? AND generation=?",new String[]{scope,key,record.getString("sourceGeneration"),record.getString("generation")},null,null,null)){
-            if(old.moveToFirst()&&old.getLong(0)>=record.getLong("revision"))return;
+            if(old.moveToFirst()&&old.getLong(0)>=record.getLong("revision")){storePhase("complete");return;}
         }
+        storePhase("serialize");
         ContentValues values=new ContentValues();values.put("scope",scope);values.put("key",key);values.put("kind",kind);values.put("thread_id",record.optString("threadId"));values.put("generation",record.getString("generation"));values.put("source_generation",record.getString("sourceGeneration"));values.put("revision",record.getLong("revision"));values.put("payload",record.opt("payload").toString());values.put("confirmed_at",record.optString("confirmedAt"));values.put("bytes",record.optLong("bytes"));values.put("deleted",record.optBoolean("deleted")?1:0);values.put("change_seq",0);values.put("saved_at",System.currentTimeMillis());
+        storePhase("insert");
         db.insertWithOnConflict("saved_records",null,values,SQLiteDatabase.CONFLICT_REPLACE);
+        storePhase("complete");
     }
 
     public synchronized JSONObject readSavedThreadRecords(String scope,String thread) throws JSONException {
@@ -1168,18 +1364,9 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         if(getMeta(scope,"archive-deleted-thread:"+thread)!=null)return new JSONObject().put("scope",scope).put("threadId",thread).put("records",new JSONArray());
         try(Cursor versions=db.rawQuery("SELECT source_generation,generation FROM saved_records WHERE scope=? AND thread_id=? GROUP BY source_generation,generation ORDER BY MAX(saved_at) DESC",new String[]{scope,thread})){
             while(versions.moveToNext()){
-                String source=versions.getString(0),generation=versions.getString(1);JSONArray records=new JSONArray();boolean head=false,turns=false;int bytes=0;
-                try(Cursor rows=db.query("saved_records",READ_COLUMNS,"scope=? AND thread_id=? AND source_generation=? AND generation=? AND (key LIKE ? OR key LIKE ?)",new String[]{scope,thread,source,generation,"read:[\"thread/read\",%","read:[\"thread/turns/list\",%"},null,null,"revision DESC",null)){
-                    while(rows.moveToNext()){
-                        JSONObject record=rowToRecord(rows);String key=record.optString("key");if(record.optBoolean("deleted")||!isHistoryReadKey(key)||getMeta(scope,"archive-deleted:"+key)!=null)continue;
-                        JSONArray request=new JSONArray(key.substring(5));JSONObject params=request.getJSONObject(1);String method=request.getString(0);
-                        if(params.has("cursor")&&!params.isNull("cursor"))continue;
-                        boolean isHead="thread/read".equals(method)&&!params.optBoolean("includeTurns"),isTurns="thread/turns/list".equals(method)&&"summary".equals(params.optString("itemsView"))&&"desc".equals(params.optString("sortDirection"));
-                        if(!isHead&&!isTurns)continue;int size=utf8Bytes(record.toString());if(bytes+size>(size>MAX_PAGE_BYTES||bytes>MAX_PAGE_BYTES?MAX_BODY_ENVELOPE_BYTES:MAX_PAGE_BYTES))continue;
-                        if(isHead&&head||isTurns&&turns)continue;records.put(record);bytes+=size;head|=isHead;turns|=isTurns;if(head&&turns)break;
-                    }
-                }
-                if(head&&turns)return new JSONObject().put("scope",scope).put("threadId",thread).put("generation",source).put("saved",true).put("records",records);
+                String source=versions.getString(0),generation=versions.getString(1);
+                JSONArray records=initialThreadRecords("saved_records",scope,thread,source,generation);
+                if(records.length()==2)return new JSONObject().put("scope",scope).put("threadId",thread).put("generation",source).put("saved",true).put("records",records);
             }
         }
         return new JSONObject().put("scope",scope).put("threadId",thread).put("records",new JSONArray());
@@ -1196,14 +1383,20 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         putMeta(scope,"read-archive:"+thread,progress.toString());
     }
 
-    public synchronized JSONObject readRecords(String scope, long after, int limit) {
+    public synchronized JSONObject readRecords(String scope, long after, int limit) { return readRecords(scope,after,limit,false); }
+
+    /** Index replication never opens unrelated history payloads. */
+    public synchronized JSONObject readRecords(String scope,long after,int limit,boolean indexOnly) {
         int bounded = Math.max(1, Math.min(200, limit));
         long requestedAfter = boundedCursor(after);
         long cursorValue = requestedAfter;
         JSONArray records = new JSONArray();
+        JSONArray bodyChanges = new JSONArray();
+        int visited = 0;
         boolean hasMore = false;
         boolean resetRequired = false;
         int pageBytes = 0;
+        storePhase("open");
         String generation = sourceGeneration(scope);
         if (generation.isEmpty()) generation = "uninitialized";
         SQLiteDatabase db = getReadableDatabase();
@@ -1212,6 +1405,7 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         // audit bodies cannot invalidate an in-generation cursor. In particular,
         // a full snapshot may page through old keys below the retained log.
         // Only a different source generation or a future cursor requires reset.
+        storePhase("query");
         long floor = longMetaLocked(db, scope, META_GENERATION_FLOOR, 0L);
         if (requestedAfter > 0L) resetRequired = requestedAfter < floor
                 || requestedAfter > localRecordCursorLocked(db, scope);
@@ -1219,13 +1413,28 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         if (!resetRequired && !"uninitialized".equals(generation)) {
             String selection = "scope=? AND source_generation=? AND change_seq>?";
             String[] args = new String[]{scope, generation, Long.toString(requestedAfter)};
-            try (Cursor rows = db.query("records", new String[]{"scope", "key", "kind", "thread_id", "generation", "revision", "payload", "confirmed_at", "bytes", "deleted", "source_generation", "change_seq"}, selection, args,
+            try (Cursor rows = db.query("records", indexOnly ? new String[]{"scope", "key", "kind", "thread_id", "generation", "revision", "confirmed_at", "bytes", "deleted", "source_generation", "change_seq"} : READ_COLUMNS, selection, args,
                     null, null, "change_seq ASC", Integer.toString(bounded + 1))) {
-                while (rows.moveToNext()) {
-                    long seq = rows.getLong(11);
+                boolean first = rows.moveToFirst();
+                storePhase("decode");
+                while (first || rows.moveToNext()) {
+                    first = false;
+                    long seq = rows.getLong(indexOnly ? 10 : 11);
+                    if(indexOnly && java.util.Arrays.asList("history","turn","item").contains(rows.getString(2))) {
+                        if(visited>=bounded){hasMore=true;break;}
+                        try {
+                            JSONObject ref=new JSONObject().put("scope",scope).put("key",rows.getString(1)).put("kind",rows.getString(2)).put("threadId",rows.getString(3))
+                                .put("generation",rows.getString(4)).put("revision",rows.getLong(5)).put("sourceGeneration",rows.getString(9)).put("deleted",rows.getInt(8)!=0);
+                            bodyChanges.put(ref);visited++;cursorValue=seq;continue;
+                        }catch(JSONException invalid){resetRequired=true;break;}
+                    }
                     JSONObject record;
                     try {
-                        record = rowToRecord(rows);
+                        if(indexOnly) {
+                            try(Cursor payload=db.query("records",READ_COLUMNS,"scope=? AND key=? AND source_generation=?",new String[]{scope,rows.getString(1),generation},null,null,null,"1")) {
+                                if(!payload.moveToFirst())throw new JSONException("index record disappeared");record=rowToRecord(payload);
+                            }
+                        }else record = rowToRecord(rows);
                         validateRecord(record, false);
                     } catch (JSONException invalid) {
                         resetRequired = true;
@@ -1233,7 +1442,7 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
                     }
                     String raw = record.toString();
                     int bytes = utf8Bytes(raw);
-                    if (records.length() >= bounded || pageBytes > 0 && pageBytes + bytes > MAX_PAGE_BYTES) {
+                    if (visited >= bounded || pageBytes > 0 && pageBytes + bytes > MAX_PAGE_BYTES) {
                         hasMore = true;
                         break;
                     }
@@ -1243,19 +1452,21 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
                         resetRequired = true;
                         break;
                     }
-                    records.put(record);
+                    records.put(record);visited++;
                     pageBytes += bytes;
                     cursorValue = seq;
                 }
             }
         }
 
+        storePhase("metadata");
         JSONObject result = new JSONObject();
         try {
             result.put("version", 1);
             result.put("scope", scope);
             result.put("generation", generation);
             result.put("records", records);
+            if(indexOnly){result.put("indexOnly",true);result.put("bodyChanges",bodyChanges);}
             result.put("cursor", cursorValue);
             result.put("hasMore", hasMore);
             JSONObject status = getCatalogStatus(scope);
@@ -1269,8 +1480,10 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
             if (bootstrap != null) result.put("bootstrap", bootstrap);
             result.put("resetRequired", resetRequired);
         } catch (JSONException ignored) {
+            operationFailed(ignored); // Observer-only; keep the original partial DTO return.
             // All keys and values above are primitive or JSONObject instances.
         }
+        storePhase("complete");
         return result;
     }
 
@@ -1428,7 +1641,7 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         }
         // A newly started Native thread can arrive before its catalog row.
         for (Map.Entry<String, JSONObject> entry : runtimeById.entrySet()) {
-            if (counted.contains(entry.getKey()) || isInternalDirectoryThread(scope, entry.getKey())) continue;
+            if (counted.contains(entry.getKey()) || isRetiredDirectoryThread(scope,entry.getKey()) || isInternalDirectoryThread(scope, entry.getKey())) continue;
             JSONObject status = entry.getValue().optJSONObject("status");
             if (status == null || !"active".equals(status.optString("type"))) continue;
             count++; if (firstId.isEmpty()) firstId = entry.getKey();
@@ -1456,10 +1669,9 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
                     String id = rows.getString(0);
                     if (id == null || id.isEmpty()) continue;
                     if (isUnstartedHistory(scope,id)) continue;
-                    String version = historyPreparationVersion(scope,id);
                     JSONObject section = thread.optJSONObject("section");
                     boolean pinned = thread.optBoolean("isPinned", false) || section != null && "Pinned".equalsIgnoreCase(section.optString("name"));
-                    candidates.add(new JSONObject().put("threadId", id).put("version", version)
+                    candidates.add(new JSONObject().put("threadId", id)
                             .put("pinned", pinned).put("updatedAt", thread.optLong("updatedAt", 0L)));
                 } catch (JSONException ignored) { }
             }
@@ -1473,7 +1685,8 @@ public final class SyncStore extends SQLiteOpenHelper implements Closeable {
         List<JSONObject> due = new ArrayList<>(); int recent = 0;
         for (JSONObject candidate : candidates) {
             if (!candidate.optBoolean("pinned") && recent++ >= 20) continue;
-            String id=candidate.optString("threadId"),version=candidate.optString("version");
+            String id=candidate.optString("threadId"),version=historyPreparationVersion(scope,id);
+            try { candidate.put("version",version); } catch (JSONException ignored) { continue; }
             if (!historyWarmDue(scope,id,version,System.currentTimeMillis())) continue;
             try {
                 JSONObject prior=parseObject(getMeta(scope,"history-warm:"+id));

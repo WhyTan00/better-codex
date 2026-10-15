@@ -41,4 +41,11 @@ public class HistoryPriorityDurabilityTest {
   store.saveVisibleProcesses(scope,first);store.saveVisibleProcesses(scope,next);store.close();store=new SyncStore(context);
   assertEquals("[\"prompt\",\"earlier\",\"later\",\"final\"]",store.readVisibleProcesses(scope,id(1),id(2)).getJSONObject("value").getJSONArray("order").toString());
  }
+ @Test public void displayClockDriftDoesNotErasePreviouslySeenItemsOrNativeWitness()throws Exception {
+  store.saveVisibleProcesses(scope,seen(100,"old").put("turnStartedAtMs",1007).put("nativeTurnStartedAtMs",1000));
+  store.close();store=new SyncStore(context);store.saveVisibleProcesses(scope,seen(200,"new").put("turnStartedAtMs",1000));
+  JSONObject value=store.readVisibleProcesses(scope,id(1),id(2)).getJSONObject("value");assertEquals(2,value.getJSONArray("items").length());assertEquals(1000,value.getLong("nativeTurnStartedAtMs"));
+  store.saveVisibleProcesses(scope,seen(300,"conflict").put("nativeTurnStartedAtMs",2000));
+  value=store.readVisibleProcesses(scope,id(1),id(2)).getJSONObject("value");assertEquals(2,value.getJSONArray("items").length());assertEquals(200,value.getLong("savedAt"));
+ }
 }

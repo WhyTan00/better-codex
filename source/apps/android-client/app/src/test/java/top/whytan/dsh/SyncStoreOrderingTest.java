@@ -498,6 +498,20 @@ public class SyncStoreOrderingTest {
         JSONObject old=store.readSavedRecord("ai",head).getJSONObject("record");store.saveReadRecord("ai",new JSONObject(old.toString()).put("sourceGeneration","new-source").put("generation","new-body").put("revision",500));
         JSONObject exact=store.readSavedRecord("ai",head,old.getString("sourceGeneration"),old.getString("generation")).getJSONObject("record");assertEquals(1,exact.getLong("revision"));
     }
+    @Test public void finalOnlyDisplayFromTheActualWebProducerSurvivesDatabaseReopen() throws Exception {
+        String fixture=System.getenv("DSH_VISIBLE_DISPLAY_FIXTURE");
+        JSONObject value=fixture==null?new JSONObject().put("schemaVersion",1).put("scope","ai").put("threadId",THREAD_ID).put("turnId",TURN_ID)
+            .put("sourceGeneration","source").put("generation","generation").put("savedAt",System.currentTimeMillis()).put("turnStartedAtMs",1000)
+            .put("order",new JSONArray().put("user").put("final")).put("items",new JSONArray().put(new JSONObject().put("id","final").put("type","agentMessage").put("phase","final_answer").put("text","done")))
+            :new JSONObject(new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(fixture)),java.nio.charset.StandardCharsets.UTF_8));
+        String thread=value.getString("threadId"),turn=value.getString("turnId");long cursor=store.localRecordCursor("ai");
+        store.saveVisibleProcesses("ai",value);store.close();store=new SyncStore(context);
+        JSONObject restored=store.readVisibleProcesses("ai",thread,turn).getJSONObject("value");
+        assertEquals("done",restored.getJSONArray("items").getJSONObject(0).getString("text"));assertEquals("final_answer",restored.getJSONArray("items").getJSONObject(0).getString("phase"));
+        assertFalse(restored.has("status"));assertFalse(restored.has("params"));assertEquals(cursor,store.localRecordCursor("ai"));
+        assertTrue(store.readVisibleProcesses("zyy",thread,turn).isNull("value"));
+        store.invalidateVisibleProcesses("ai",thread,value.getLong("savedAt")+1);assertTrue(store.readVisibleProcesses("ai",thread,turn).isNull("value"));
+    }
     private static boolean containsKey(JSONArray values, String key) {
         for (int index = 0; index < values.length(); index++) {
             JSONObject value = values.optJSONObject(index);
@@ -521,5 +535,67 @@ public class SyncStoreOrderingTest {
                 .put("payload", payload)
                 .put("deleted", false)
                 .put("sourceGeneration", sourceGeneration);
+    }
+    @Test public void currentOpeningCannotHideNewerSameGenerationSavedSummary() throws Exception {
+        String head="read:[\"thread/read\",{\"threadId\":\""+THREAD_ID+"\",\"includeTurns\":false}]";
+        String oldSummary="read:[\"thread/turns/list\",{\"threadId\":\""+THREAD_ID+"\",\"itemsView\":\"summary\",\"sortDirection\":\"desc\",\"limit\":20}]";
+        String newSummary=oldSummary.replace("20","2");
+        JSONObject h=record("history",head,new JSONObject().put("result",new JSONObject().put("thread",new JSONObject().put("id",THREAD_ID))),1);
+        JSONObject old=record("turn",oldSummary,new JSONObject().put("result",new JSONObject().put("data",new JSONArray().put(new JSONObject().put("id","old")))),2);
+        store.applyNativeRecord(h);store.applyNativeRecord(old);
+        JSONObject fresh=record("turn",newSummary,new JSONObject().put("result",new JSONObject().put("data",new JSONArray().put(new JSONObject().put("id",TURN_ID).put("items",new JSONArray().put(new JSONObject().put("type","agentMessage").put("phase","final_answer").put("text","done")))))),3);
+        store.saveReadRecord("ai",fresh);store.close();store=new SyncStore(context);
+        JSONArray selected=store.readThreadRecords("ai",THREAD_ID).getJSONArray("records");assertEquals(2,selected.length());assertEquals(3,selected.getJSONObject(1).getLong("revision"));assertEquals(TURN_ID,selected.getJSONObject(1).getJSONObject("payload").getJSONObject("result").getJSONArray("data").getJSONObject(0).getString("id"));
+        store.saveReadRecord("ai",new JSONObject(fresh.toString()).put("sourceGeneration","foreign-source").put("generation","foreign-history").put("revision",100));
+        assertEquals(3,store.readThreadRecords("ai",THREAD_ID).getJSONArray("records").getJSONObject(1).getLong("revision"));
+        store.applyNativeRecord(new JSONObject(old.toString()).put("revision",4).put("deleted",true));assertTrue(store.readThreadRecords("ai",THREAD_ID).getJSONArray("records").getJSONObject(1).getBoolean("deleted"));
+    }
+    @Test public void selectedOpeningUsesCoveringThreadIndexAfterVersionFiveUpgrade() throws Exception {
+        JSONObject retained=record("history","read:[\"thread/read\",{\"threadId\":\""+THREAD_ID+"\",\"includeTurns\":false}]",new JSONObject().put("result",new JSONObject().put("thread",new JSONObject().put("id",THREAD_ID))),1);
+        store.applyNativeRecord(retained);android.database.sqlite.SQLiteDatabase db=store.getWritableDatabase();
+        db.execSQL("DROP INDEX records_thread_opening");db.execSQL("DROP INDEX saved_records_opening");db.setVersion(5);store.close();store=new SyncStore(context);db=store.getReadableDatabase();
+        String sql="EXPLAIN QUERY PLAN SELECT key,generation,deleted FROM records WHERE scope=? AND thread_id=? AND source_generation=? AND (key LIKE ? OR key LIKE ?) ORDER BY revision DESC";
+        try(android.database.Cursor rows=db.rawQuery(sql,new String[]{"ai",THREAD_ID,"source","read:[\"thread/read\",%","read:[\"thread/turns/list\",%"})){assertTrue(rows.moveToFirst());String plan=rows.getString(3);assertTrue(plan,plan.contains("COVERING INDEX records_thread_opening"));assertTrue(plan,plan.contains("thread_id=?"));}
+        sql="EXPLAIN QUERY PLAN SELECT key,generation,deleted FROM saved_records WHERE scope=? AND thread_id=? AND source_generation=? AND generation=? ORDER BY revision DESC";
+        try(android.database.Cursor rows=db.rawQuery(sql,new String[]{"ai",THREAD_ID,"source","generation"})){assertTrue(rows.moveToFirst());assertTrue(rows.getString(3),rows.getString(3).contains("COVERING INDEX saved_records_opening"));}
+        assertEquals(THREAD_ID,store.readThreadRecords("ai",THREAD_ID).getJSONArray("records").getJSONObject(0).getString("threadId"));assertEquals(1,store.readSavedRecord("ai",retained.getString("key")).getJSONObject("record").getLong("revision"));
+    }
+
+    @Test public void versionSixMigrationOnlyAddsPageIndexAndPreservesExactResults() throws Exception {
+        store.applyNativeRecord(record("catalog","thread:"+THREAD_ID,new JSONObject().put("nativeThread",new JSONObject().put("id",THREAD_ID)),1));
+        store.applyNativeRecord(record("catalog","thread:"+TURN_ID,new JSONObject(),2).put("threadId",TURN_ID).put("deleted",true));
+        String key="read:[\"thread/read\",{\"threadId\":\""+THREAD_ID+"\",\"includeTurns\":false}]";
+        store.applyNativeRecord(record("history",key,new JSONObject().put("result",new JSONObject().put("thread",new JSONObject().put("id",THREAD_ID))),3));
+        store.saveHistoryCursor("ai",THREAD_ID,new JSONObject().put("cursor","retained-cursor"));
+        store.saveBootstrap("ai",new JSONObject().put("marker","retained-bootstrap"));
+        android.database.sqlite.SQLiteDatabase db=store.getWritableDatabase();db.execSQL("DROP INDEX records_scope_generation_change_seq");
+        String body=store.readRecords("ai",0,200,false).toString(),index=store.readRecords("ai",0,200,true).toString();
+        long cursor=store.localRecordCursor("ai");java.util.Map<String,String> before=storeTables(db);
+        // This is a migration-preservation check. Robolectric's observed PRAGMA
+        // value is not evidence of the device's FULL durability configuration.
+        int synchronousBefore;
+        try(android.database.Cursor rows=db.rawQuery("PRAGMA synchronous",null)){assertTrue(rows.moveToFirst());synchronousBefore=rows.getInt(0);}
+        db.setVersion(6);store.close();store=new SyncStore(context);db=store.getReadableDatabase();
+        assertEquals(7,db.getVersion());assertTrue(db.isWriteAheadLoggingEnabled());
+        try(android.database.Cursor rows=db.rawQuery("PRAGMA synchronous",null)){assertTrue(rows.moveToFirst());assertEquals(synchronousBefore,rows.getInt(0));}
+        assertEquals(before,storeTables(db));assertEquals(cursor,store.localRecordCursor("ai"));
+        assertEquals(body,store.readRecords("ai",0,200,false).toString());assertEquals(index,store.readRecords("ai",0,200,true).toString());
+        boolean usesIndex=false;
+        try(android.database.Cursor rows=db.rawQuery("EXPLAIN QUERY PLAN SELECT scope,key,kind,thread_id,generation,revision,confirmed_at,bytes,deleted,source_generation,change_seq FROM records WHERE scope=? AND source_generation=? AND change_seq>? ORDER BY change_seq ASC LIMIT 201",new String[]{"ai","g-1","0"})){
+            while(rows.moveToNext()){String detail=rows.getString(3);usesIndex|=detail.contains("records_scope_generation_change_seq");assertFalse(detail,detail.contains("TEMP B-TREE"));}
+        }
+        assertTrue(usesIndex);assertNotNull(store.readSavedRecord("ai",key).getJSONObject("record"));
+    }
+    private static java.util.Map<String,String> storeTables(android.database.sqlite.SQLiteDatabase db) throws Exception {
+        java.util.Map<String,String> out=new java.util.TreeMap<>();
+        try(android.database.Cursor tables=db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",null)){
+            while(tables.moveToNext()){String name=tables.getString(0);StringBuilder value=new StringBuilder();
+                try(android.database.Cursor rows=db.rawQuery("SELECT * FROM "+name+" ORDER BY rowid",null)){
+                    while(rows.moveToNext())for(int i=0;i<rows.getColumnCount();i++)value.append(rows.isNull(i)?"<null>":rows.getString(i)).append('\u0000');
+                }
+                out.put(name,value.toString());
+            }
+        }
+        return out;
     }
 }

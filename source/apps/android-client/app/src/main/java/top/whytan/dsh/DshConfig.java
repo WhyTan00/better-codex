@@ -8,7 +8,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
-/** Build-time HTTPS endpoints owned by the person deploying Better Codex. */
+/** Build-time endpoints owned by the adopter. */
 public final class DshConfig {
     public static final String ORIGIN = BuildConfig.WORKBENCH_ORIGIN;
     public static final String HOST = Uri.parse(ORIGIN).getHost();

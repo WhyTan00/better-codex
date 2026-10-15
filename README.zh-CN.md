@@ -1,5 +1,7 @@
 # Better Codex
 
+**10 月 15 日源码同步：**发送与控制通道隔离、完成状态和本地历史恢复、Android 生命周期、PDF 预览及有界诊断已同步。见[变更与未闭环事项](docs/updates/2026-10-15.md)。本次更新 `main`，现有 beta.9 下载资产不变。
+
 [English](README.md) · [安装说明](docs/open-source-setup.md) · [项目插件](docs/plugins.md) · [验收范围](docs/portable-validation.md)
 
 **原生 Codex，加上按你的项目与习惯组织的工作台。**

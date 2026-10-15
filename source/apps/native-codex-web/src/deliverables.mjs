@@ -2,7 +2,7 @@ import path from 'node:path';
 import {mkdir,open,readFile,writeFile,rename,unlink,stat,readdir} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
-import {fileEtag,fileMime} from './official-files.mjs';
+import {fileEtag,fileMime,fileContentKind} from './official-files.mjs';
 import {fail,workspace,SCOPES} from './registry.mjs';
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const MAX_FILE=256*1024*1024,MAX_CACHE=4*1024*1024*1024,MAX_FILES=64;
@@ -52,7 +52,7 @@ export class Deliverables {
   const dir=path.join(this.root,workspace(scope).id),data=path.join(dir,id+'.bin'),metadata=path.join(dir,id+'.json');
   await mkdir(dir,{recursive:true,mode:0o700});
   try{const old=JSON.parse(await readFile(metadata,'utf8')),info=await stat(data);
-   if(old.id===id&&old.scope===scope&&old.path===source.path&&old.sourceVersion===source.etag&&old.size===info.size){old.accessedAt=Date.now();await writeFile(metadata,JSON.stringify(old),{mode:0o600});return {...old,internalPath:data};}
+   if(old.id===id&&old.scope===scope&&old.path===source.path&&old.sourceVersion===source.etag&&old.size===info.size){old.mime=fileMime(source.path);old.contentKind=fileContentKind(old.mime);old.accessedAt=Date.now();await writeFile(metadata,JSON.stringify(old),{mode:0o600});return {...old,internalPath:data};}
   }catch{}
   await this.reserve(source.size);
   const temporary=data+'.'+randomUUID()+'.part';let input,output,length=0;const hash=createHash('sha256');
@@ -65,7 +65,7 @@ export class Deliverables {
    await output.sync();await output.close();output=null;
    const contentHash=hash.digest('hex'),mime=fileMime(source.path);
    const entry={id,scope,path:source.path,name:path.basename(source.path),sourceVersion:source.etag,version:'sha256:'+contentHash,sha256:contentHash,size:length,mime,
-    contentKind:mime.startsWith('image/')?'image':mime==='application/pdf'?'pdf':/^(text\/|application\/json)/.test(mime)?'text':'binary',mtimeMs:before.mtimeMs,createdAtMs:before.birthtimeMs,accessedAt:Date.now()};
+    contentKind:fileContentKind(mime),mtimeMs:before.mtimeMs,createdAtMs:before.birthtimeMs,accessedAt:Date.now()};
    await rename(temporary,data);await writeFile(metadata,JSON.stringify(entry),{mode:0o600});
    return {...entry,internalPath:data};
   }finally{await input?.close();await output?.close();await unlink(temporary).catch(()=>{});this.reserved=Math.max(0,(this.reserved||0)-source.size);}

@@ -30,7 +30,7 @@ export function catalogEntry(thread){return {
 export class NativeReadCache {
  constructor(dir,{boundary,budget=512*1024*1024}={}){
   mkdirSync(dir,{recursive:true,mode:0o700});this.db=new DatabaseSync(path.join(dir,'native-read.sqlite'));chmodSync(path.join(dir,'native-read.sqlite'),0o600);
-  Object.assign(this,{boundary,budget,dir});this.loading=new Map();this.catalogLoading=new Map();this.internalThreads=new Set();this.touches=new Map();
+  Object.assign(this,{boundary,budget,dir});this.loading=new Map();this.catalogLoading=new Map();this.catalogCheckedAt=new Map();this.internalThreads=new Set();this.touches=new Map();
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
    CREATE TABLE IF NOT EXISTS cache_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cache_changes(revision INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,key TEXT NOT NULL);
@@ -131,7 +131,7 @@ export class NativeReadCache {
   return this.put(scope,'thread:'+thread.id,'catalog',thread.id,catalogEntry(metadata));}
  async catalog(scope,{fresh=false}={}){
   workspace(scope);if(this.catalogLoading.has(scope))return this.catalogLoading.get(scope);
-  if(!fresh&&this.get(scope,'catalog-status'))return this.changes(0,100,scope,'catalog');
+  if(!fresh&&this.get(scope,'catalog-status')?.payload?.complete===true&&Date.now()-(this.catalogCheckedAt.get(scope)||0)<5*60*1000)return this.changes(0,100,scope,'catalog');
   const work=(async()=>{const started=this.db.prepare('SELECT COALESCE(MAX(revision),0) revision FROM cache_records').get().revision,ids=new Set(),seen=new Set();let cursor;
    do{const page=await this.boundary.call(scope,{method:'thread/list',params:{limit:50,sortKey:'updated_at',...(cursor?{cursor}:{})}});
     const threads=await reconcileCatalogStatus(this.boundary,scope,page.data.filter(thread=>!this.rememberInternal(thread)),{previous:id=>this.get(scope,'thread:'+id)?.payload?.nativeThread});
@@ -150,6 +150,7 @@ export class NativeReadCache {
    }while(cursor);
    for(const row of this.db.prepare("SELECT key,thread_id,revision FROM cache_records WHERE scope=? AND kind='catalog' AND deleted=0").all(scope))if(!ids.has(row.thread_id)&&row.revision<=started)this.put(scope,row.key,'catalog',row.thread_id,null,{deleted:true});
    this.put(scope,'catalog-status','catalog-status','',{complete:true,count:ids.size});
+   this.catalogCheckedAt.set(scope,Date.now());
    return this.changes(0,100,scope,'catalog');
   })().finally(()=>this.catalogLoading.delete(scope));this.catalogLoading.set(scope,work);return work;
  }
